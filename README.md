@@ -117,6 +117,14 @@ parametrized test (`tests/test_full_pipeline.py` has the existing pattern).
 
 ## License
 
-[GPL-3.0-or-later](LICENSE). The Brother calibration tables that
-`extract_blobs.sh` pulls in remain under their own licence and never
-enter this repository.
+[GPL-3.0-or-later](LICENSE). The PPD in `cups/` is derived from
+Brother's GPL-2.0-or-later HL-4150CDN PPD; see the file header for
+attribution. The Brother calibration tables that `extract_blobs.sh`
+pulls in remain under their own licence and never enter this
+repository.
+
+## Trademarks
+
+Brother and HL-4150CDN are trademarks of Brother Industries, Ltd. This
+project is an independent, community-driven driver and is not affiliated
+with, endorsed by, or sponsored by Brother Industries, Ltd.

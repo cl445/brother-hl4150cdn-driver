@@ -2,7 +2,11 @@
 
 *%================================================
 *%	Brother HL-4150CDN Open Source Driver
-*%	Based on original Brother PPD
+*%	Based on Brother's HL-4150CDN PPD,
+*%	  Copyright (C) 2005 Brother Industries, Ltd.,
+*%	  licensed under GPL-2.0-or-later.
+*%	Modifications Copyright (C) 2026 Claas Flint,
+*%	  licensed under GPL-3.0-or-later.
 *%================================================
 
 *%==== General Information Keywords ========================
