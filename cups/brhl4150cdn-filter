@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""
+CUPS filter for the Brother HL-4150CDN.
+
+Receives PostScript from CUPS, rasterizes via Ghostscript, and converts
+to XL2HB using the brfilter pipeline.
+
+Usage (called by CUPS):
+    brhl4150cdn-filter job-id user title copies options [filename]
+"""
+
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+# When installed, all modules live alongside this script in /usr/local/lib/brhl4150cdn/
+# Add that directory to sys.path so imports work.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "lib", "brhl4150cdn")
+if os.path.isdir(_LIB_DIR):
+    sys.path.insert(0, _LIB_DIR)
+else:
+    # Development mode: use src/ from the repo
+    _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+    _SRC_DIR = os.path.join(_REPO_ROOT, "src")
+    if os.path.isdir(_SRC_DIR):
+        sys.path.insert(0, _SRC_DIR)
+
+from brfilter import (  # noqa: E402
+    DuplexMode,
+    PrintSettings,
+    filter_duplex_pages,
+    filter_page,
+    read_ppm,
+)
+from xl2hb import PAPER_SIZES  # noqa: E402
+
+# Ghostscript paper name mapping
+GS_PAPER_MAP = {
+    "A4": "a4",
+    "Letter": "letter",
+    "Legal": "legal",
+    "Executive": "executive",
+    "A5": "a5",
+    "JISB5": "jisb5",
+    "Env10": "com10",
+    "EnvMonarch": "monarch",
+}
+
+# Paper dimensions in PostScript points (72 dpi) for custom sizes
+PAPER_POINTS = {
+    "A4": (595, 842),
+    "Letter": (612, 792),
+    "Legal": (612, 1008),
+    "Executive": (522, 756),
+    "A5": (420, 595),
+    "JISB5": (516, 729),
+    "Postcard": (284, 419),
+    "EnvDL": (312, 624),
+    "EnvC5": (459, 649),
+    "Env10": (297, 684),
+    "EnvMonarch": (279, 540),
+}
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: brhl4150cdn-filter: %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("brhl4150cdn-filter")
+
+
+def build_gs_command(input_path: str, page_size: str) -> list[str]:
+    """Build the Ghostscript command for rasterizing PS to PPM."""
+    gs = shutil.which("gs")
+    if gs is None:
+        # macOS might have it as gsnd or in a different location
+        for alt in ["/opt/homebrew/bin/gs", "/usr/local/bin/gs"]:
+            if os.path.isfile(alt):
+                gs = alt
+                break
+    if gs is None:
+        logger.error("Ghostscript (gs) not found in PATH")
+        sys.exit(1)
+
+    cmd = [
+        gs,
+        "-sDEVICE=ppmraw",
+        "-r600",
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dSAFER",
+        "-dQUIET",
+        "-sOutputFile=-",
+    ]
+
+    # Paper size
+    gs_paper = GS_PAPER_MAP.get(page_size)
+    if gs_paper:
+        cmd.append(f"-sPAPERSIZE={gs_paper}")
+    elif page_size in PAPER_POINTS:
+        w_pt, h_pt = PAPER_POINTS[page_size]
+        cmd.extend([f"-dDEVICEWIDTHPOINTS={w_pt}", f"-dDEVICEHEIGHTPOINTS={h_pt}"])
+    else:
+        cmd.append("-sPAPERSIZE=a4")
+
+    cmd.append(input_path)
+    return cmd
+
+
+def crop_page(pixel_data: bytes, src_width: int, src_height: int, page_size: str) -> tuple[int, int, bytes]:
+    """Crop a full-page GS render to the printable area.
+
+    The printer's printable area starts at offset (100, 100) pixels from
+    the physical page edge. The printable dimensions come from PAPER_SIZES.
+    """
+    target_w, target_h = PAPER_SIZES.get(page_size, PAPER_SIZES["A4"])
+
+    # Offset in pixels at 600 dpi (corresponds to SetPageOrigin(100,100))
+    x_off = 100
+    y_off = 100
+
+    # Clamp to available source dimensions
+    crop_w = min(target_w, src_width - x_off)
+    crop_h = min(target_h, src_height - y_off)
+
+    if crop_w <= 0 or crop_h <= 0:
+        # Page too small for any printable area
+        return target_w, target_h, b"\xff" * (target_w * target_h * 3)
+
+    # Extract the cropped region row by row
+    rows = []
+    src_bpr = src_width * 3
+    for y in range(crop_h):
+        src_y = y + y_off
+        if src_y >= src_height:
+            break
+        row_start = src_y * src_bpr + x_off * 3
+        row_end = row_start + crop_w * 3
+        row = pixel_data[row_start:row_end]
+        # Pad row to target width if needed
+        if crop_w < target_w:
+            row += b"\xff" * ((target_w - crop_w) * 3)
+        rows.append(row)
+
+    # Pad remaining rows with white
+    white_row = b"\xff" * (target_w * 3)
+    while len(rows) < target_h:
+        rows.append(white_row)
+
+    return target_w, target_h, b"".join(rows)
+
+
+def find_lut_dir() -> str | None:
+    """Find the LUT directory for dither tables."""
+    # Installed location
+    installed = os.path.join(_LIB_DIR, "lut")
+    if os.path.isdir(installed):
+        return installed
+
+    # Development location
+    dev = os.path.join(
+        os.path.dirname(_SCRIPT_DIR), "original", "extracted_lpr",
+        "usr", "local", "Brother", "Printer", "hl4150cdn", "inf", "lut"
+    )
+    if os.path.isdir(dev):
+        return dev
+
+    return None
+
+
+def main() -> None:
+    # Parse CUPS filter arguments
+    # Usage: filter job-id user title copies options [filename]
+    if len(sys.argv) < 6:
+        logger.error("Usage: %s job-id user title copies options [filename]", sys.argv[0])
+        sys.exit(1)
+
+    job_id = sys.argv[1]
+    user = sys.argv[2]
+    title = sys.argv[3]
+    copies = int(sys.argv[4])
+    options_str = sys.argv[5]
+    input_file = sys.argv[6] if len(sys.argv) > 6 else None
+
+    logger.info("job=%s user=%s title=%r copies=%d", job_id, user, title, copies)
+
+    # Parse CUPS options into PrintSettings
+    settings = PrintSettings.from_cups_options(options_str, copies)
+    logger.info("settings: page_size=%s duplex=%s resolution=%s mono=%s",
+                settings.page_size, settings.duplex, settings.resolution, settings.mono_color)
+
+    # If reading from stdin, save to temp file (GS needs a file)
+    tmp_input = None
+    if input_file is None:
+        tmp_input = tempfile.NamedTemporaryFile(suffix=".ps", delete=False)
+        try:
+            while True:
+                chunk = sys.stdin.buffer.read(65536)
+                if not chunk:
+                    break
+                tmp_input.write(chunk)
+            tmp_input.close()
+            input_file = tmp_input.name
+        except Exception:
+            if tmp_input:
+                os.unlink(tmp_input.name)
+            raise
+
+    try:
+        # Run Ghostscript: PS -> PPM stream
+        gs_cmd = build_gs_command(input_file, settings.page_size)
+        logger.info("running: %s", ' '.join(gs_cmd))
+
+        gs_proc = subprocess.Popen(
+            gs_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Read PPM pages from GS stdout
+        pages: list[tuple[int, int, bytes]] = []
+        page_num = 0
+
+        while True:
+            result = read_ppm(gs_proc.stdout)
+            if result is None:
+                break
+            width, height, _maxval, pixel_data = result
+            page_num += 1
+            logger.info("page %d: %dx%d pixels from GS", page_num, width, height)
+
+            # Crop to printable area
+            crop_w, crop_h, cropped_data = crop_page(
+                pixel_data, width, height, settings.page_size
+            )
+            logger.info("page %d: cropped to %dx%d", page_num, crop_w, crop_h)
+            pages.append((crop_w, crop_h, cropped_data))
+
+        gs_proc.wait()
+        gs_stderr = gs_proc.stderr.read().decode("utf-8", errors="replace").strip()
+        if gs_stderr:
+            logger.info("GS stderr: %s", gs_stderr)
+        if gs_proc.returncode != 0:
+            logger.error("Ghostscript exited with code %d", gs_proc.returncode)
+            sys.exit(1)
+
+        if not pages:
+            logger.error("No pages produced by Ghostscript")
+            sys.exit(1)
+
+        logger.info("total pages: %d", len(pages))
+
+        # Handle reverse printing
+        if settings.reverse:
+            pages.reverse()
+
+        # Find LUT directory
+        lut_dir = find_lut_dir()
+
+        # Output XL2HB to stdout
+        output = sys.stdout.buffer
+
+        if settings.duplex != DuplexMode.NONE:
+            # Duplex: process pages in pairs
+            for i in range(0, len(pages), 2):
+                pair = pages[i:i + 2]
+                filter_duplex_pages(pair, settings, output, lut_dir=lut_dir)
+        else:
+            # Simplex: one page at a time
+            for i, (w, h, data) in enumerate(pages):
+                logger.info("rendering page %d/%d", i + 1, len(pages))
+                filter_page(w, h, data, settings, output, lut_dir=lut_dir)
+
+        logger.info("done")
+
+    finally:
+        if tmp_input:
+            os.unlink(tmp_input.name)
+
+
+if __name__ == "__main__":
+    main()

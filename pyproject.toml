@@ -1,0 +1,173 @@
+[project]
+name = "brother-hl4150cdn-driver"
+version = "1.0.0"
+description = "Open-source driver replacement for the Brother HL-4150CDN color laser printer (XL2HB protocol, CUPS integration)"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Claas Flint", email = "claas.flint@akator.de" }]
+keywords = ["brother", "hl4150cdn", "cups", "printer-driver", "xl2hb", "pcl-xl"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Printing",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+]
+dependencies = [
+    "numpy>=2.4.3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-cov>=7.1", "zstandard>=0.23"]
+dev = ["ruff>=0.15.12", "nox>=2026.4.10", "pyrefly>=0.63.0", "deptry>=0.21"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+preview = true   # required for DOC (pydoclint) rules
+explicit-preview-rules = true   # only enable preview rules listed in `select`
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "PLC",   # pylint convention
+    "PLE",   # pylint error
+    "PLR",   # pylint refactor
+    "PLW",   # pylint warning
+    "C4",    # flake8-comprehensions
+    "RUF",   # ruff-specific rules
+    "S",     # flake8-bandit (security)
+    "PT",    # flake8-pytest-style
+    "TCH",   # flake8-type-checking
+    "ARG",   # flake8-unused-arguments
+    "A",     # flake8-builtins
+    "N",     # pep8-naming
+    "PERF",  # perflint
+    "FLY",   # flynt (f-string conversion)
+    "PIE",   # flake8-pie
+    "RSE",   # flake8-raise
+    "RET",   # flake8-return
+    "T20",   # flake8-print
+    "YTT",   # flake8-2020
+    "DTZ",   # flake8-datetimez
+    "ISC",   # flake8-implicit-str-concat
+    "ICN",   # flake8-import-conventions
+    "G",     # flake8-logging-format
+    "INP",   # flake8-no-pep420
+    "TID",   # flake8-tidy-imports
+    "FBT",   # flake8-boolean-trap
+    "COM",   # flake8-commas
+    "LOG",   # flake8-logging
+    "NPY",   # numpy-specific rules
+    "EXE",   # flake8-executable (shebang consistency)
+    "ERA",   # flake8-eradicate (commented-out code)
+    "FURB",  # refurb (modern Python idioms)
+    "PTH",   # flake8-use-pathlib
+    "D",     # pydocstyle (google convention)
+    "BLE",   # flake8-blind-except
+    "SLOT",  # flake8-slots
+    "Q",     # flake8-quotes
+    "FA",    # flake8-future-annotations
+    "PYI",   # flake8-pyi
+    "TD",    # flake8-todos
+    "FIX",   # flake8-fixme
+    "ASYNC", # flake8-async
+    "EM",    # flake8-errmsg
+    "T10",    # flake8-debugger (forgotten breakpoint/pdb)
+    "SLF",    # flake8-self (private-member access)
+    "DOC201", # pydoclint (preview): docstring missing Returns
+    "DOC501", # pydoclint (preview): docstring missing Raises
+]
+ignore = [
+    "PLR2004", # magic values are fine for binary protocol analysis
+    "PLR0912", # too many branches - common in protocol parsing
+    "PLR0913", # too many arguments - common in low-level APIs
+    "PLR0915", # too many statements
+    "COM812",  # trailing comma - conflicts with formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ARG",     # unused arguments common in fixtures
+    "S",       # security warnings not relevant for tests
+    "PLR",     # complexity metrics relaxed for tests
+    "PLC0415", # imports inside test methods (pytest isolation pattern)
+    "D",       # docstrings not required for test classes/methods
+    "SLF",     # tests legitimately poke private caches for isolation
+    "DOC",     # Returns/Raises sections not required in tests
+]
+"src/xl2hb.py" = ["FBT001", "FBT002"]  # boolean params map PJL options naturally
+"src/color_lut.py" = ["PLC0415"]   # local import keeps the parametric fallback generator out of the hot path
+"src/tone_curve.py" = ["PLC0415"]  # ditto for gamma curve generation
+"noxfile.py" = [
+    "A001",    # format() shadows builtin - standard nox convention
+]
+"scripts/**/*.py" = [
+    "T201",    # print is intended in ad-hoc RE scripts
+    "S101",    # assert is fine in one-shot scripts
+    "INP001",  # scripts/ is not a package
+    "N806",    # uppercase matrix names follow linalg convention
+    "PLR1716", # chained range comparisons read better as written
+    "DOC",     # Returns/Raises sections not required in ad-hoc scripts
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["brfilter", "xl2hb", "dither"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "if __name__ == .__main__.",
+    "pragma: no cover",
+]
+
+[tool.deptry]
+# `pythonpath = ["src", "tests"]` makes these flat imports — they're first-party.
+known_first_party = [
+    "brfilter", "brother_encode", "cli", "color_lut", "color_lut_gen",
+    "dither", "fine_encoder", "pipeline", "plane_encoders", "ppm",
+    "rle", "saturation", "settings", "tone_curve", "transforms", "xl2hb",
+]
+# Treat the `test` and `dev` extras as dev groups so their entries
+# (pytest, ruff, ...) are not required to be imported from main code.
+optional_dependencies_dev_groups = ["test", "dev"]
+# noxfile.py is a dev-tool config; it's expected to import the dev tool itself.
+extend_exclude = ["noxfile\\.py"]
+
+[tool.pyrefly]
+python-version = "3.13"
+search-path = ["src", "tests"]
+project-includes = ["src/**/*.py", "tests/**/*.py", "main.py", "noxfile.py"]
+project-excludes = [".venv/**", ".nox/**", "__pycache__/**"]
+untyped-def-behavior = "check-and-infer-return-type"
+strict-callable-subtyping = true
+replace-imports-with-any = ["numba"]

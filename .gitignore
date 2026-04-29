@@ -1,0 +1,40 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.nox/
+.pytest_cache/
+.ruff_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Brother proprietary blobs — extracted on-demand by scripts/extract_blobs.sh.
+# Not redistributed; the script downloads the official Brother driver and
+# extracts them locally so the user keeps Brother's calibration tables
+# under Brother's license (EU 2009/24/EC Art. 6 — interoperability).
+src/lut/
+src/color_data/
+.brother-blobs/
+# Local code-intelligence / agent tooling — not part of the released project
+.gitnexus/
+.claude/
+CLAUDE.md
+AGENTS.md

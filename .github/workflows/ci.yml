@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: lint + format + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install dev extras
+        run: uv sync --extra dev
+      - name: Ruff lint
+        run: uv run nox -s lint
+      - name: Ruff format check
+        run: uv run nox -s format_check
+      - name: Pyrefly typecheck
+        run: uv run nox -s typecheck
+
+  tests:
+    name: pytest (with Brother blobs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install test extras
+        run: uv sync --extra test
+      - name: Pull Brother blobs (verified MD5; not redistributed)
+        run: ./scripts/extract_blobs.sh
+      - name: Run pytest
+        run: uv run nox -s tests
