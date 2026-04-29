@@ -3,8 +3,10 @@
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
+from color_lut import INVERSE_LUT_PATH, write_inverse_lut
 from pipeline import filter_page
 from ppm import read_ppm
 from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
@@ -22,8 +24,33 @@ def main() -> None:
     parser.add_argument("--fine", "-f", action="store_true", help="Fine quality (2400 dpi class dithering)")
     parser.add_argument("--duplex", choices=["none", "long", "short"], default="none")
     parser.add_argument("--debug", "-d", action="store_true", help="Debug output to stderr")
+    parser.add_argument(
+        "--precompute-lut",
+        nargs="?",
+        const=str(INVERSE_LUT_PATH),
+        default=None,
+        metavar="PATH",
+        help=(
+            "Precompute the RGB→KCMY inverse LUT and exit. "
+            f"Default target: {INVERSE_LUT_PATH}."
+        ),
+    )
 
     args = parser.parse_args()
+
+    if args.precompute_lut is not None:
+        logging.basicConfig(
+            level=logging.DEBUG if args.debug else logging.INFO,
+            format="%(levelname)s: %(name)s: %(message)s",
+            stream=sys.stderr,
+        )
+        target = Path(args.precompute_lut)
+        logger.info("Precomputing inverse LUT to %s ...", target)
+        t0 = time.perf_counter()
+        written = write_inverse_lut(target)
+        size_mb = written.stat().st_size / 1024 / 1024
+        logger.info("Wrote %.1f MiB to %s in %.1fs", size_mb, written, time.perf_counter() - t0)
+        return
 
     settings = PrintSettings.from_rc_file(args.rc) if args.rc and Path(args.rc).exists() else PrintSettings()
 

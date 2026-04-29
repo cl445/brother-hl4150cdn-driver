@@ -103,6 +103,12 @@ def _load_interp_tables() -> npt.NDArray[np.uint8]:
 # Captures show the standard driver uses pure K black.
 _K_PRESET = np.array([0, 0, 0, 255], dtype=np.int32)
 
+# Precomputed full RGB→KCMY lookup table.
+# Last axis order is K, C, M, Y in pixel-brightness convention
+# (0 = full ink, 255 = no ink).
+INVERSE_LUT_PATH = _DATA_DIR / "inverse_lut.npy"
+_INVERSE_LUT_SHAPE = (256, 256, 256, 4)
+
 
 @functools.lru_cache(maxsize=1)
 def _load_data() -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8]]:
@@ -114,8 +120,70 @@ def _load_data() -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8]]:
     return _load_lut(), _load_interp_tables()
 
 
+@functools.lru_cache(maxsize=1)
+def _load_inverse_lut() -> npt.NDArray[np.uint8] | None:
+    """Load the precomputed RGB→KCMY inverse LUT into RAM, or None if absent.
+
+    Returns:
+        Array of shape (256, 256, 256, 4) uint8, or None when the cache
+        file is missing or has an unexpected shape.
+    """
+    path = INVERSE_LUT_PATH
+    if not path.exists():
+        return None
+    try:
+        arr = np.load(path, allow_pickle=False)
+    except (ValueError, OSError) as exc:
+        logger.warning("Failed to load inverse LUT %s: %s", path, exc)
+        return None
+    if arr.shape != _INVERSE_LUT_SHAPE or arr.dtype != np.uint8:
+        logger.warning("Inverse LUT %s has unexpected shape %s/%s, ignoring", path, arr.shape, arr.dtype)
+        return None
+    return arr
+
+
+def precompute_inverse_lut() -> npt.NDArray[np.uint8]:
+    """Evaluate the tetrahedral interpolation over all 16.7M RGB inputs.
+
+    Iterates one R-slice at a time so the working set stays small enough
+    for memory-constrained hosts.
+
+    Returns:
+        (256, 256, 256, 4) uint8 array; last axis is K, C, M, Y.
+    """
+    out = np.empty(_INVERSE_LUT_SHAPE, dtype=np.uint8)
+    g_grid, b_grid = np.meshgrid(np.arange(256, dtype=np.uint8), np.arange(256, dtype=np.uint8), indexing="ij")
+    gb_flat = np.empty((65536, 3), dtype=np.uint8)
+    gb_flat[:, 1] = g_grid.ravel()
+    gb_flat[:, 2] = b_grid.ravel()
+    for r in range(256):
+        gb_flat[:, 0] = r
+        k_b, c_b, m_b, y_b = _rgb_to_cmyk_interp(gb_flat.tobytes(), 65536)
+        out[r, :, :, 0] = np.frombuffer(k_b, dtype=np.uint8).reshape(256, 256)
+        out[r, :, :, 1] = np.frombuffer(c_b, dtype=np.uint8).reshape(256, 256)
+        out[r, :, :, 2] = np.frombuffer(m_b, dtype=np.uint8).reshape(256, 256)
+        out[r, :, :, 3] = np.frombuffer(y_b, dtype=np.uint8).reshape(256, 256)
+    return out
+
+
+def write_inverse_lut(path: Path | None = None) -> Path:
+    """Precompute the inverse LUT and save it to ``path`` (default INVERSE_LUT_PATH).
+
+    Returns:
+        The path the array was written to.
+    """
+    target = path or INVERSE_LUT_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    arr = precompute_inverse_lut()
+    np.save(target, arr, allow_pickle=False)
+    return target
+
+
 def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
     """Convert one RGB scanline to CMYK using the driver's 3D LUT.
+
+    Uses the precomputed inverse LUT when present; otherwise falls back
+    to per-pixel tetrahedral interpolation.
 
     Args:
         rgb_row: Raw RGB pixel data (width * 3 bytes).
@@ -126,6 +194,26 @@ def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, by
         Values use pixel-brightness convention (0=full ink, 255=no ink)
         matching dither_channel_1bpp input.
     """
+    inv = _load_inverse_lut()
+    if inv is not None:
+        rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
+        idx = (
+            (rgb[:, 0].astype(np.uint32) << 16)
+            | (rgb[:, 1].astype(np.uint32) << 8)
+            | rgb[:, 2].astype(np.uint32)
+        )
+        kcmy = inv.reshape(-1, 4)[idx]
+        return (
+            kcmy[:, 0].tobytes(),
+            kcmy[:, 1].tobytes(),
+            kcmy[:, 2].tobytes(),
+            kcmy[:, 3].tobytes(),
+        )
+    return _rgb_to_cmyk_interp(rgb_row, width)
+
+
+def _rgb_to_cmyk_interp(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
+    """Per-pixel tetrahedral interpolation through the 17×17×17 LUT grid."""
     lut, interp = _load_data()
 
     rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)

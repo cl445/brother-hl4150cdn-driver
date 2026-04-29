@@ -35,9 +35,25 @@ class DitherChannel:
     threshold_matrix: npt.NDArray[np.uint8] | None = field(default=None, repr=False)
     # shape (height, width), dtype uint8 — threshold[y][x]: dot if ink > threshold
 
+    # Threshold matrix tiled to the target page width, keyed by width.
+    _tiled_cache: dict[int, npt.NDArray[np.uint8]] = field(default_factory=dict, init=False, repr=False)
+
 
 # Module-level cache for default channels (lazily initialized)
 _cache: dict[str, dict[str, DitherChannel]] = {}
+
+
+def _get_tiled_thresholds(channel: DitherChannel, width: int) -> npt.NDArray[np.uint8]:
+    """Return the channel's threshold matrix tiled to `width`, cached on the channel."""
+    cached = channel._tiled_cache.get(width)
+    if cached is not None:
+        return cached
+    tm = channel.threshold_matrix
+    assert tm is not None
+    repeats = (width + channel.width - 1) // channel.width
+    tiled = np.tile(tm, (1, repeats))[:, :width].copy()  # (height, width)
+    channel._tiled_cache[width] = tiled
+    return tiled
 
 
 def _bayer_matrix(n: int) -> list[list[int]]:
@@ -291,10 +307,7 @@ def dither_channel_1bpp(row: bytes, y: int, width: int, channel: DitherChannel |
     if channel.threshold_matrix is not None:
         # Numpy fast-path: vectorized threshold comparison
         ink = 255 - np.frombuffer(row, dtype=np.uint8, count=width)
-        mat_row = channel.threshold_matrix[y % channel.height]
-        # Tile the matrix row to cover the full width
-        repeats = (width + channel.width - 1) // channel.width
-        thresholds = np.tile(mat_row, repeats)[:width]
+        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height]
         dots = ink > thresholds
         packed = np.packbits(dots)
         return bytes(packed[:bpl])
@@ -367,15 +380,8 @@ def dither_cmyk_1bpp(
         k_ink = cmyk[:, 3]
 
         results = []
-        for ink_arr, tm, ch in (
-            (k_ink, k_tm, k_ch),
-            (c_ink, c_tm, c_ch),
-            (m_ink, m_tm, m_ch),
-            (y_ink, y_tm, y_ch),
-        ):
-            mat_row = tm[y % ch.height]
-            repeats = (width + ch.width - 1) // ch.width
-            thresholds = np.tile(mat_row, repeats)[:width]
+        for ink_arr, ch in ((k_ink, k_ch), (c_ink, c_ch), (m_ink, m_ch), (y_ink, y_ch)):
+            thresholds = _get_tiled_thresholds(ch, width)[y % ch.height]
             dots = ink_arr > thresholds
             packed = np.packbits(dots)
             results.append(bytes(packed[:bpl]))
@@ -461,9 +467,7 @@ def dither_channel_4bpp(row: bytes, y: int, width: int, channel: DitherChannel |
         pixels = np.frombuffer(row, dtype=np.uint8, count=width)
         ink = (255 - pixels).astype(np.int32)
 
-        mat_row = channel.threshold_matrix[y % channel.height]
-        repeats = (width + channel.width - 1) // channel.width
-        thresholds = np.tile(mat_row, repeats)[:width].astype(np.int32)
+        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height].astype(np.int32)
 
         base = (ink * 15) // 255
         frac = (ink * 15) % 255
@@ -538,15 +542,8 @@ def dither_cmyk_4bpp(
         k_ink = cmyk[:, 3].astype(np.int32)
 
         results = []
-        for ink_arr, tm, ch in (
-            (k_ink, k_tm, k_ch),
-            (c_ink, c_tm, c_ch),
-            (m_ink, m_tm, m_ch),
-            (y_ink, y_tm, y_ch),
-        ):
-            mat_row = tm[y % ch.height]
-            repeats = (width + ch.width - 1) // ch.width
-            thresholds = np.tile(mat_row, repeats)[:width].astype(np.int32)
+        for ink_arr, ch in ((k_ink, k_ch), (c_ink, c_ch), (m_ink, m_ch), (y_ink, y_ch)):
+            thresholds = _get_tiled_thresholds(ch, width)[y % ch.height].astype(np.int32)
 
             base = (ink_arr * 15) // 255
             frac = (ink_arr * 15) % 255

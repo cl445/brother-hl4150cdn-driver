@@ -21,53 +21,58 @@ from enum import IntEnum, auto
 
 import numpy as np
 
+try:
+    from _rle_fast import group_bits, pack_groups  # type: ignore[import-not-found]
 
-def group_bits(data: bytes, group_size: int) -> list[int]:
-    """Group input byte data into values of group_size bits each (MSB first).
+    HAS_CYTHON_RLE = True
+except ImportError:
+    HAS_CYTHON_RLE = False
 
-    Returns:
-        List of integer groups; the last entry is zero-padded if the
-        bit count is not a multiple of `group_size`.
-    """
-    total_bits = len(data) * 8
-    if total_bits == 0:
-        return []
+    def group_bits(data: bytes, group_size: int) -> list[int]:
+        """Group input byte data into values of group_size bits each (MSB first).
 
-    bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
-    n_full = total_bits // group_size
+        Returns:
+            List of integer groups; the last entry is zero-padded if the
+            bit count is not a multiple of `group_size`.
+        """
+        total_bits = len(data) * 8
+        if total_bits == 0:
+            return []
 
-    if n_full > 0:
-        full_bits = bits[: n_full * group_size].reshape(n_full, group_size)
-        powers = 1 << np.arange(group_size - 1, -1, -1, dtype=np.uint32)
-        groups = (full_bits.astype(np.uint32) * powers).sum(axis=1).tolist()
-    else:
-        groups = []
+        bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
+        n_full = total_bits // group_size
 
-    remaining = total_bits - n_full * group_size
-    if remaining > 0:
-        value = 0
-        offset = n_full * group_size
-        for i in range(remaining):
-            if bits[offset + i]:
-                value |= 1 << (group_size - 1 - i)
-        groups.append(value)
+        if n_full > 0:
+            full_bits = bits[: n_full * group_size].reshape(n_full, group_size)
+            powers = 1 << np.arange(group_size - 1, -1, -1, dtype=np.uint32)
+            groups = (full_bits.astype(np.uint32) * powers).sum(axis=1).tolist()
+        else:
+            groups = []
 
-    return groups
+        remaining = total_bits - n_full * group_size
+        if remaining > 0:
+            value = 0
+            offset = n_full * group_size
+            for i in range(remaining):
+                if bits[offset + i]:
+                    value |= 1 << (group_size - 1 - i)
+            groups.append(value)
 
+        return groups
 
-def pack_groups(groups: list[int], group_size: int) -> bytes:
-    """Pack N-bit groups into bytes, MSB first.
+    def pack_groups(groups: list[int], group_size: int) -> bytes:
+        """Pack N-bit groups into bytes, MSB first.
 
-    Returns:
-        Packed byte string of length `ceil(len(groups) * group_size / 8)`.
-    """
-    if not groups:
-        return b""
+        Returns:
+            Packed byte string of length `ceil(len(groups) * group_size / 8)`.
+        """
+        if not groups:
+            return b""
 
-    arr = np.array(groups, dtype=np.uint32)
-    shifts = np.arange(group_size - 1, -1, -1, dtype=np.uint32)
-    bit_matrix = ((arr[:, None] >> shifts[None, :]) & 1).astype(np.uint8)
-    return np.packbits(bit_matrix.ravel()).tobytes()
+        arr = np.array(groups, dtype=np.uint32)
+        shifts = np.arange(group_size - 1, -1, -1, dtype=np.uint32)
+        bit_matrix = ((arr[:, None] >> shifts[None, :]) & 1).astype(np.uint8)
+        return np.packbits(bit_matrix.ravel()).tobytes()
 
 
 def data_to_encode_groups(data: bytes, read_group: int, encode_group: int) -> list[int]:
