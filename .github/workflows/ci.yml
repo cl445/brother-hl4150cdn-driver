@@ -42,4 +42,4 @@ jobs:
       - name: Pull Brother blobs (verified MD5; not redistributed)
         run: ./scripts/extract_blobs.sh
       - name: Run pytest
-        run: uv run nox -s tests
+        run: uv run pytest tests/
