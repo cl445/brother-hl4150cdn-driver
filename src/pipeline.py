@@ -11,8 +11,10 @@ from functools import partial
 from pathlib import Path
 from typing import BinaryIO
 
+import numpy as np
+
 from brother_encode import encode_c_plane, encode_fine_plane, encode_m_plane_10, encode_plane
-from dither import DitherChannel, dither_channel_1bpp, dither_channel_4bpp, load_dither_tables
+from dither import DitherChannel, dither_channel_1bpp_arr, dither_channel_4bpp_arr, load_dither_tables
 from saturation import adjust_saturation
 from settings import (
     DUPLEX_MAP,
@@ -24,12 +26,12 @@ from settings import (
     Resolution,
     input_slot_to_tray,
 )
-from tone_curve import apply_tone_curve, build_tone_curve
+from tone_curve import apply_tone_curve_arr, build_tone_curve
 from transforms import (
     apply_input_remap_rgb,
     apply_vivid,
     build_input_remap_lut,
-    rgb_line_to_cmyk_intensities,
+    rgb_line_to_cmyk_intensities_arr,
 )
 from xl2hb import (
     FLUSH_ORDER,
@@ -44,11 +46,8 @@ from xl2hb import (
 
 logger = logging.getLogger(__name__)
 
-# Plane order on the wire: K=0, C=1, M=2, Y=3 (matching XL2HB's FLUSH_ORDER).
-_PLANE_IDS = {"K": 0, "C": 1, "M": 2, "Y": 3}
-
-# Per-mode dither dispatcher (intensity row, line_idx, sw, channel) -> packed bytes.
-_DITHER_FNS = {False: dither_channel_1bpp, True: dither_channel_4bpp}
+# Per-mode dither dispatcher (intensity ndarray, line_idx, sw, channel) -> packed bytes.
+_DITHER_FNS = {False: dither_channel_1bpp_arr, True: dither_channel_4bpp_arr}
 
 # Per-mode plane encoders, keyed by plane id; partial() pins the K/Y label.
 _PlaneEncoder = Callable[[bytes], bytes]
@@ -106,7 +105,7 @@ def _render_page(
             w.write_read_image(start, count, pid, blob)
         pb.reset(next_line)
 
-    pad = b"\xff" * (sw - width) if sw > width else b""
+    pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
 
     # Pre-build LUTs (constant per page).
     tone_lut = None
@@ -132,6 +131,7 @@ def _render_page(
     row_bytes = width * 3
     blank_plane = bytes(bpl)
     blank_planes = dict.fromkeys(range(4), blank_plane)
+    blank_plane_comp = dict.fromkeys(range(4), b"")
     # apply_input_remap_rgb explicitly preserves (255,255,255); saturation
     # and vivid leave the gray axis untouched; the LUT clamps white→0 ink.
     # Only tone_curve can deposit ink on white, so skip the short-circuit
@@ -153,28 +153,30 @@ def _render_page(
                     rgb_row = apply_vivid(rgb_row, width)
                 if input_remap is not None:
                     rgb_row = apply_input_remap_rgb(rgb_row, width, *input_remap)
-                intensities = dict(
-                    zip(
-                        "KCMY",
-                        rgb_line_to_cmyk_intensities(rgb_row, width, color_matching=settings.color_matching),
-                        strict=True,
-                    )
+                k_arr, c_arr, m_arr, y_arr = rgb_line_to_cmyk_intensities_arr(
+                    rgb_row, width, color_matching=settings.color_matching
                 )
-                # Optional gamma path (kept for legacy gamma_select use).
                 if tone_lut is not None:
-                    intensities["K"], intensities["C"], intensities["M"], intensities["Y"] = apply_tone_curve(
-                        intensities["K"], intensities["C"], intensities["M"], intensities["Y"], tone_lut
-                    )
-                if pad:
-                    intensities = {ch: arr + pad for ch, arr in intensities.items()}
+                    k_arr, c_arr, m_arr, y_arr = apply_tone_curve_arr(k_arr, c_arr, m_arr, y_arr, tone_lut)
+                if pad_arr is not None:
+                    k_arr = np.concatenate((k_arr, pad_arr))
+                    c_arr = np.concatenate((c_arr, pad_arr))
+                    m_arr = np.concatenate((m_arr, pad_arr))
+                    y_arr = np.concatenate((y_arr, pad_arr))
 
                 plane_data = {
-                    _PLANE_IDS[ch]: dither_fn(arr, line_idx, sw, channels[ch]) for ch, arr in intensities.items()
+                    0: dither_fn(k_arr, line_idx, sw, channels["K"]),
+                    1: dither_fn(c_arr, line_idx, sw, channels["C"]),
+                    2: dither_fn(m_arr, line_idx, sw, channels["M"]),
+                    3: dither_fn(y_arr, line_idx, sw, channels["Y"]),
                 }
         else:
             plane_data = blank_planes
 
-        plane_comp = {pid: encoders[pid](data) for pid, data in plane_data.items()}
+        if plane_data is blank_planes:
+            plane_comp = blank_plane_comp
+        else:
+            plane_comp = {pid: encoders[pid](data) for pid, data in plane_data.items()}
 
         # Per-plane independent flush. Process planes in order C, M, Y, K.
         # Empty line + accumulated data → flush that plane. Non-empty line →

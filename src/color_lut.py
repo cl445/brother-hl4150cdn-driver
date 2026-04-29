@@ -179,6 +179,27 @@ def write_inverse_lut(path: Path | None = None) -> Path:
     return target
 
 
+_NDArrayU8 = npt.NDArray[np.uint8]
+
+
+def rgb_to_cmyk_lut_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
+    """Like :func:`rgb_to_cmyk_lut` but returns ndarrays directly.
+
+    Lets callers in the hot path avoid a bytes→ndarray roundtrip.
+    """
+    inv = _load_inverse_lut()
+    if inv is not None:
+        rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
+        idx = (
+            (rgb[:, 0].astype(np.uint32) << 16)
+            | (rgb[:, 1].astype(np.uint32) << 8)
+            | rgb[:, 2].astype(np.uint32)
+        )
+        kcmy = np.ascontiguousarray(inv.reshape(-1, 4)[idx])
+        return kcmy[:, 0], kcmy[:, 1], kcmy[:, 2], kcmy[:, 3]
+    return _rgb_to_cmyk_interp_arr(rgb_row, width)
+
+
 def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
     """Convert one RGB scanline to CMYK using the driver's 3D LUT.
 
@@ -194,32 +215,16 @@ def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, by
         Values use pixel-brightness convention (0=full ink, 255=no ink)
         matching dither_channel_1bpp input.
     """
-    inv = _load_inverse_lut()
-    if inv is not None:
-        rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
-        idx = (
-            (rgb[:, 0].astype(np.uint32) << 16)
-            | (rgb[:, 1].astype(np.uint32) << 8)
-            | rgb[:, 2].astype(np.uint32)
-        )
-        kcmy = inv.reshape(-1, 4)[idx]
-        return (
-            kcmy[:, 0].tobytes(),
-            kcmy[:, 1].tobytes(),
-            kcmy[:, 2].tobytes(),
-            kcmy[:, 3].tobytes(),
-        )
-    return _rgb_to_cmyk_interp(rgb_row, width)
+    k, c, m, y = rgb_to_cmyk_lut_arr(rgb_row, width)
+    return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()
 
 
-def _rgb_to_cmyk_interp(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
+def _rgb_to_cmyk_interp_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Per-pixel tetrahedral interpolation through the 17×17×17 LUT grid."""
     lut, interp = _load_data()
 
     rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
 
-    # Split into grid index (hi) and fractional weight (frac) via pre-computed tables.
-    # Replaces 6 np.where calls with 6 table lookups (fancy indexing).
     r_hi = _HI[rgb[:, 0]]
     r_frac = _FRAC[rgb[:, 0]]
     g_hi = _HI[rgb[:, 1]]
@@ -228,30 +233,27 @@ def _rgb_to_cmyk_interp(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes
     b_frac = _FRAC[rgb[:, 2]]
 
     # Look up interpolation weights: interp[b_frac][(g_frac * 17 + r_frac)] → 9 bytes
-    entry_idx = g_frac * _LUT_DIM + r_frac  # (width,)
-    weights = interp[b_frac, entry_idx]  # (width, 9)
+    entry_idx = g_frac * _LUT_DIM + r_frac
+    weights = interp[b_frac, entry_idx]
 
-    total = weights[:, 0].astype(np.int32)  # (width,)
+    total = weights[:, 0].astype(np.int32)
     if np.any(total == 0):
         logger.error("Zero interpolation weight detected, LUT data may be corrupt")
         total = np.maximum(total, 1)
-    w = weights[:, 1:9].astype(np.int32)  # (width, 8)
+    w = weights[:, 1:9].astype(np.int32)
 
     # Cube base index + 8 corner gathering
-    cube_base = r_hi * 289 + g_hi * 17 + b_hi  # (width,)
-    corner_idx = cube_base[:, None] + _CORNER_OFFSETS  # (width, 8)
+    cube_base = r_hi * 289 + g_hi * 17 + b_hi
+    corner_idx = cube_base[:, None] + _CORNER_OFFSETS
     np.clip(corner_idx, 0, _LUT_ENTRIES - 1, out=corner_idx)
-    corners = lut[corner_idx]  # (width, 8, 4) — unpacked [C, M, Y, K]
+    corners = lut[corner_idx]
 
-    # Weighted accumulation in int32 (max per channel: 255*255*8 = 520200, fits int32).
-    # w (width, 8, 1) * corners (width, 8, 4) → sum axis 1 → (width, 4)
-    accum = (w[:, :, None] * corners).sum(axis=1)  # (width, 4)
+    # Per channel, max accumulator value is 255*255*8 = 520200 — fits int32.
+    accum = (w[:, :, None] * corners).sum(axis=1)
 
-    # Normalize with rounding bias
-    rounding = (total >> 1)[:, None]  # (width, 1)
-    cmyk = (accum + rounding) // total[:, None]  # (width, 4)
+    rounding = (total >> 1)[:, None]
+    cmyk = (accum + rounding) // total[:, None]
 
-    # Handle special cases via boolean indexing (replaces 8 np.where calls)
     is_black = (rgb[:, 0] == 0) & (rgb[:, 1] == 0) & (rgb[:, 2] == 0)
     is_white = (rgb[:, 0] == 255) & (rgb[:, 1] == 255) & (rgb[:, 2] == 255)
     if np.any(is_black):
@@ -259,7 +261,13 @@ def _rgb_to_cmyk_interp(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes
     if np.any(is_white):
         cmyk[is_white] = 0
 
-    # Convert ink amount (0=no ink, 255=full) → pixel-brightness (0=full ink, 255=no ink)
-    result = (255 - cmyk).astype(np.uint8)  # (width, 4)
+    # Ink amount (0=no ink, 255=full) → pixel-brightness (0=full ink, 255=no ink).
+    result = np.ascontiguousarray((255 - cmyk).astype(np.uint8))
 
-    return result[:, 3].tobytes(), result[:, 0].tobytes(), result[:, 1].tobytes(), result[:, 2].tobytes()
+    return result[:, 3], result[:, 0], result[:, 1], result[:, 2]
+
+
+def _rgb_to_cmyk_interp(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
+    """Per-pixel tetrahedral interpolation through the 17×17×17 LUT grid."""
+    k, c, m, y = _rgb_to_cmyk_interp_arr(rgb_row, width)
+    return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()

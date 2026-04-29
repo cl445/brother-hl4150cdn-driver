@@ -287,6 +287,25 @@ def _ensure_defaults() -> dict[str, DitherChannel]:
     return _cache["default"]
 
 
+def dither_channel_1bpp_arr(
+    row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel | None = None
+) -> bytes:
+    """Like :func:`dither_channel_1bpp` but takes an ndarray instead of bytes."""
+    if channel is None:
+        channel = _ensure_defaults()["K"]
+
+    bpl = (width + 7) // 8
+
+    if channel.threshold_matrix is not None:
+        ink = 255 - row_arr
+        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height]
+        dots = ink > thresholds
+        packed = np.packbits(dots)
+        return bytes(packed[:bpl])
+
+    return dither_channel_1bpp(row_arr.tobytes(), y, width, channel)
+
+
 def dither_channel_1bpp(row: bytes, y: int, width: int, channel: DitherChannel | None = None) -> bytes:
     """Dither single-channel pixel row to 1bpp packed bitmap.
 
@@ -442,6 +461,26 @@ def _nibble_pack(levels: npt.NDArray[np.uint8], width: int) -> bytes:
     if width % 2 == 1:
         levels = np.append(levels, np.uint8(0))
     return bytes((levels[0::2].astype(np.uint8) << 4) | levels[1::2].astype(np.uint8))
+
+
+def dither_channel_4bpp_arr(
+    row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel | None = None
+) -> bytes:
+    """Like :func:`dither_channel_4bpp` but takes an ndarray instead of bytes."""
+    if channel is None:
+        channel = _ensure_defaults()["K"]
+
+    if channel.threshold_matrix is not None:
+        ink = (255 - row_arr).astype(np.int32)
+        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height].astype(np.int32)
+
+        base = (ink * 15) // 255
+        frac = (ink * 15) % 255
+        levels = np.minimum(15, base + (frac > thresholds).astype(np.int32))
+
+        return _nibble_pack(levels.astype(np.uint8), width)
+
+    return dither_channel_4bpp(row_arr.tobytes(), y, width, channel)
 
 
 def dither_channel_4bpp(row: bytes, y: int, width: int, channel: DitherChannel | None = None) -> bytes:

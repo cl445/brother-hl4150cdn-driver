@@ -12,8 +12,10 @@
 import numpy as np
 import numpy.typing as npt
 
-from color_lut import rgb_to_cmyk_lut
+from color_lut import rgb_to_cmyk_lut, rgb_to_cmyk_lut_arr
 from settings import ColorMatching
+
+_NDArrayU8 = npt.NDArray[np.uint8]
 
 
 def apply_vivid(rgb_row: bytes, width: int) -> bytes:
@@ -81,6 +83,19 @@ def apply_input_remap_rgb(
     return out.tobytes()
 
 
+def rgb_line_to_cmyk_intensities_arr(
+    rgb_row: bytes,
+    width: int,
+    color_matching: ColorMatching = ColorMatching.NORMAL,
+) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
+    """Like :func:`rgb_line_to_cmyk_intensities` but returns ndarrays directly."""
+    if color_matching == ColorMatching.NONE:
+        rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
+        k = np.full(width, 255, dtype=np.uint8)
+        return k, rgb[:, 0].copy(), rgb[:, 1].copy(), rgb[:, 2].copy()
+    return rgb_to_cmyk_lut_arr(rgb_row, width)
+
+
 def rgb_line_to_cmyk_intensities(
     rgb_row: bytes,
     width: int,
@@ -97,17 +112,6 @@ def rgb_line_to_cmyk_intensities(
         for :func:`dither.dither_channel_1bpp`.
     """
     if color_matching == ColorMatching.NONE:
-        # No colour management: simple CMY, no K
-        rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3).astype(np.int16)
-        c_val = 255 - rgb[:, 0]
-        m_val = 255 - rgb[:, 1]
-        y_val = 255 - rgb[:, 2]
-        k_val = np.zeros(width, dtype=np.int16)
-        return (
-            (255 - k_val).astype(np.uint8).tobytes(),
-            (255 - c_val).astype(np.uint8).tobytes(),
-            (255 - m_val).astype(np.uint8).tobytes(),
-            (255 - y_val).astype(np.uint8).tobytes(),
-        )
-
+        k, c, m, y = rgb_line_to_cmyk_intensities_arr(rgb_row, width, color_matching)
+        return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()
     return rgb_to_cmyk_lut(rgb_row, width)

@@ -205,6 +205,17 @@ def build_tone_curve(
     return adjusted.astype(np.uint8)
 
 
+def apply_tone_curve_arr(
+    k_arr: npt.NDArray[np.uint8],
+    c_arr: npt.NDArray[np.uint8],
+    m_arr: npt.NDArray[np.uint8],
+    y_arr: npt.NDArray[np.uint8],
+    curve: npt.NDArray[np.uint8],
+) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]]:
+    """Like :func:`apply_tone_curve` but takes/returns ndarrays directly."""
+    return np.take(curve, k_arr), np.take(curve, c_arr), np.take(curve, m_arr), np.take(curve, y_arr)
+
+
 def apply_tone_curve(
     k_arr: bytes,
     c_arr: bytes,
