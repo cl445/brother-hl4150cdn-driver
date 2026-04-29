@@ -131,37 +131,48 @@ def _render_page(
 
     row_bytes = width * 3
     blank_plane = bytes(bpl)
+    blank_planes = dict.fromkeys(range(4), blank_plane)
+    # apply_input_remap_rgb explicitly preserves (255,255,255); saturation
+    # and vivid leave the gray axis untouched; the LUT clamps white→0 ink.
+    # Only tone_curve can deposit ink on white, so skip the short-circuit
+    # when gamma_select is active.
+    white_row = b"\xff\xff\xff" * width if tone_lut is None else None
+
     for line_idx in range(paper_h):
         if line_idx < height:
             row_start = line_idx * row_bytes
             rgb_row = pixel_data[row_start : row_start + row_bytes]
-            # Saturation and vivid are per-pixel; brightness/contrast/RGB-keys
-            # go through the pre-LUT input remap.
-            if settings.saturation != 0:
-                rgb_row = adjust_saturation(rgb_row, width, settings.saturation)
-            elif settings.color_matching == ColorMatching.VIVID:
-                rgb_row = apply_vivid(rgb_row, width)
-            if input_remap is not None:
-                rgb_row = apply_input_remap_rgb(rgb_row, width, *input_remap)
-            intensities = dict(
-                zip(
-                    "KCMY",
-                    rgb_line_to_cmyk_intensities(rgb_row, width, color_matching=settings.color_matching),
-                    strict=True,
+            if rgb_row == white_row:
+                plane_data = blank_planes
+            else:
+                # Saturation and vivid are per-pixel; brightness/contrast/RGB-keys
+                # go through the pre-LUT input remap.
+                if settings.saturation != 0:
+                    rgb_row = adjust_saturation(rgb_row, width, settings.saturation)
+                elif settings.color_matching == ColorMatching.VIVID:
+                    rgb_row = apply_vivid(rgb_row, width)
+                if input_remap is not None:
+                    rgb_row = apply_input_remap_rgb(rgb_row, width, *input_remap)
+                intensities = dict(
+                    zip(
+                        "KCMY",
+                        rgb_line_to_cmyk_intensities(rgb_row, width, color_matching=settings.color_matching),
+                        strict=True,
+                    )
                 )
-            )
-            # Optional gamma path (kept for legacy gamma_select use).
-            if tone_lut is not None:
-                intensities["K"], intensities["C"], intensities["M"], intensities["Y"] = apply_tone_curve(
-                    intensities["K"], intensities["C"], intensities["M"], intensities["Y"], tone_lut
-                )
-            if pad:
-                intensities = {ch: arr + pad for ch, arr in intensities.items()}
+                # Optional gamma path (kept for legacy gamma_select use).
+                if tone_lut is not None:
+                    intensities["K"], intensities["C"], intensities["M"], intensities["Y"] = apply_tone_curve(
+                        intensities["K"], intensities["C"], intensities["M"], intensities["Y"], tone_lut
+                    )
+                if pad:
+                    intensities = {ch: arr + pad for ch, arr in intensities.items()}
 
-            plane_data = {_PLANE_IDS[ch]: dither_fn(arr, line_idx, sw, channels[ch]) for ch, arr in intensities.items()}
+                plane_data = {
+                    _PLANE_IDS[ch]: dither_fn(arr, line_idx, sw, channels[ch]) for ch, arr in intensities.items()
+                }
         else:
-            # Beyond input image: white (zeros = no ink for both modes).
-            plane_data = dict.fromkeys(range(4), blank_plane)
+            plane_data = blank_planes
 
         plane_comp = {pid: encoders[pid](data) for pid, data in plane_data.items()}
 
