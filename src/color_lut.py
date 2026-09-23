@@ -8,6 +8,7 @@ provides a higher-saturation alternative.
 
 import functools
 import logging
+from collections.abc import Buffer
 from pathlib import Path
 
 import numpy as np
@@ -151,7 +152,18 @@ def _load_inverse_lut() -> npt.NDArray[np.uint8] | None:
     if arr.shape != _INVERSE_LUT_SHAPE or arr.dtype != np.uint8:
         logger.warning("Inverse LUT %s has unexpected shape %s/%s, ignoring", path, arr.shape, arr.dtype)
         return None
-    return arr
+    # Plain ndarray view of the mapping: reshaping a np.memmap per scanline
+    # runs memmap.__array_finalize__ each time (~50 ms per page on a Pi 3).
+    return np.asarray(arr)
+
+
+def inverse_lut() -> npt.NDArray[np.uint8] | None:
+    """Return the installed inverse LUT (see `_load_inverse_lut`), or None.
+
+    Returns:
+        Array of shape (256, 256, 256, 4) uint8, or None when not installed.
+    """
+    return _load_inverse_lut()
 
 
 def precompute_inverse_lut() -> npt.NDArray[np.uint8]:
@@ -194,7 +206,7 @@ def write_inverse_lut(path: Path | None = None) -> Path:
 _NDArrayU8 = npt.NDArray[np.uint8]
 
 
-def rgb_to_cmyk_lut_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
+def rgb_to_cmyk_lut_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Like :func:`rgb_to_cmyk_lut` but returns ndarrays directly.
 
     Lets callers in the hot path avoid a bytes→ndarray roundtrip.
@@ -226,7 +238,7 @@ def _warn_interp_fallback() -> None:
     )
 
 
-def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
+def rgb_to_cmyk_lut(rgb_row: Buffer, width: int) -> tuple[bytes, bytes, bytes, bytes]:
     """Convert one RGB scanline to CMYK using the driver's 3D LUT.
 
     Uses the precomputed inverse LUT when present; otherwise falls back
@@ -245,7 +257,7 @@ def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, by
     return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()
 
 
-def _rgb_to_cmyk_interp_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
+def _rgb_to_cmyk_interp_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
 
     Returns:
@@ -297,7 +309,7 @@ def _rgb_to_cmyk_interp_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _ND
     return result[:, 3], result[:, 0], result[:, 1], result[:, 2]
 
 
-def _rgb_to_cmyk_interp(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
+def _rgb_to_cmyk_interp(rgb_row: Buffer, width: int) -> tuple[bytes, bytes, bytes, bytes]:
     """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
 
     Returns:

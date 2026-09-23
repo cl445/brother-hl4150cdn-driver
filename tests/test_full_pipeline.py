@@ -605,3 +605,34 @@ def test_reverse_long_edge_requires_page_count():
     settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE, reverse=True)
     with pytest.raises(ValueError, match="page_count"):
         filter_duplex_pages(iter(_duplex_test_pages()), settings, io.BytesIO())
+
+
+def _as_row_blocks(pixel_data: bytes, width: int, height: int, block_rows: int):
+    import numpy as np
+
+    rows = np.frombuffer(pixel_data, dtype=np.uint8).reshape(height, width * 3)
+    return (rows[i : i + block_rows] for i in range(0, height, block_rows))
+
+
+@pytest.mark.parametrize(
+    ("duplex", "gamma_select", "n_pages"),
+    [
+        ("None", None, 2),
+        ("DuplexNoTumble", None, 2),  # page 2 is a mirrored back side
+        ("None", 1, 1),  # tone curve: no white-row short cut
+    ],
+)
+def test_streamed_row_blocks_match_whole_pages(duplex, gamma_select, n_pages):
+    """Pages given as row blocks (as page_stream delivers them) render identically."""
+    from pipeline import filter_duplex_pages
+    from settings import DuplexMode
+
+    settings = PrintSettings(duplex=DuplexMode(duplex), gamma_select=gamma_select)
+    pages = _duplex_test_pages()[:n_pages]
+    expected = io.BytesIO()
+    filter_duplex_pages(pages, settings, expected)
+
+    streamed = [(w, h, _as_row_blocks(data, w, h, 333)) for w, h, data in pages]
+    out = io.BytesIO()
+    filter_duplex_pages(streamed, settings, out)
+    assert out.getvalue() == expected.getvalue()

@@ -21,12 +21,18 @@ setup(
                 extra_compile_args=["-O3", "-fno-strict-aliasing"],
             ),
             Extension(
+                "_band_fast",
+                sources=["src/_band_fast.pyx"],
+                extra_compile_args=["-O3", "-fno-strict-aliasing"],
+            ),
+            Extension(
                 "_color_fast",
                 sources=["src/_color_fast.pyx"],
                 extra_compile_args=["-O3", "-fno-strict-aliasing"],
             ),
         ],
         compiler_directives={"language_level": "3"},
+        include_path=["src"],
     ),
     package_dir={"": "src"},
     zip_safe=False,

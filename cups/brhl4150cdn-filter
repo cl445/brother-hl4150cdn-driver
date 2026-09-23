@@ -18,8 +18,6 @@ import subprocess
 import sys
 import tempfile
 
-import numpy as np
-
 # When installed, all modules live alongside this script in /usr/local/lib/brhl4150cdn/
 # Add that directory to sys.path so imports work.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,14 +31,14 @@ else:
     if os.path.isdir(_SRC_DIR):
         sys.path.insert(0, _SRC_DIR)
 
-from brfilter import (  # noqa: E402
-    DuplexMode,
-    PrintSettings,
-    filter_duplex_pages,
-    read_ppm,
-)
-from pipeline import is_blank_page  # noqa: E402
+from page_stream import iter_ppm_pages  # noqa: E402
+from pipeline import collect_rows, filter_duplex_pages, is_blank_page  # noqa: E402
+from settings import DuplexMode, PrintSettings  # noqa: E402
 from xl2hb import PAPER_SIZES  # noqa: E402
+
+# The printable area starts 100 px (at 600 dpi) from the physical page edge;
+# corresponds to SetPageOrigin(100, 100).
+PRINTABLE_OFFSET = (100, 100)
 
 # Ghostscript paper name mapping
 GS_PAPER_MAP = {
@@ -160,58 +158,28 @@ def count_ps_pages(input_path: str) -> int:
     return result.stdout.count(b"%%BRPAGE%%")
 
 
-def crop_page(pixel_data: bytes, src_width: int, src_height: int, page_size: str) -> tuple[int, int, np.ndarray]:
-    """Crop a full-page GS render to the printable area.
+def iter_printable_pages(stream, page_size: str):
+    """Yield (width, height, row_blocks) per GS page, cut to the printable area.
 
-    The printer's printable area starts at offset (100, 100) pixels from
-    the physical page edge. The printable dimensions come from PAPER_SIZES.
-
-    Returns a (height, width, 3) uint8 array. When the render covers the
-    whole printable area (the normal case) this is a view into
-    `pixel_data`, so no page-sized copy is made; otherwise the window is
-    copied into a white target-sized page.
+    Pages are read on a background thread in blocks of scanlines (see
+    page_stream), so Ghostscript keeps rasterising while a page renders
+    and no page-sized buffer is allocated.
     """
     target_w, target_h = PAPER_SIZES.get(page_size, PAPER_SIZES["A4"])
-
-    # Offset in pixels at 600 dpi (corresponds to SetPageOrigin(100,100))
-    x_off = 100
-    y_off = 100
-
-    # Clamp to available source dimensions
-    crop_w = min(target_w, src_width - x_off)
-    crop_h = min(target_h, src_height - y_off)
-
-    if crop_w <= 0 or crop_h <= 0:
-        # Page too small for any printable area
-        return target_w, target_h, np.full((target_h, target_w, 3), 255, dtype=np.uint8)
-
-    src = np.frombuffer(pixel_data, dtype=np.uint8, count=src_width * src_height * 3)
-    window = src.reshape(src_height, src_width, 3)[y_off : y_off + crop_h, x_off : x_off + crop_w]
-    if crop_w == target_w and crop_h == target_h:
-        return target_w, target_h, window
-
-    # Render smaller than the printable area: pad with white.
-    out = np.full((target_h, target_w, 3), 255, dtype=np.uint8)
-    out[:crop_h, :crop_w] = window
-    return target_w, target_h, out
+    window = (*PRINTABLE_OFFSET, target_w, target_h)
+    for page_num, (src_w, src_h, blocks) in enumerate(iter_ppm_pages(stream, window), start=1):
+        logger.info("page %d: %dx%d pixels from GS, printable %dx%d", page_num, src_w, src_h, target_w, target_h)
+        yield target_w, target_h, blocks
 
 
-def iter_cropped_pages(stream, page_size: str):
-    """Yield (width, height, pixel_data) per GS page, cropped to the printable area."""
-    page_num = 0
-    while True:
-        result = read_ppm(stream)
-        if result is None:
-            return
-        width, height, _maxval, pixel_data = result
-        page_num += 1
-        logger.info("page %d: %dx%d pixels from GS", page_num, width, height)
-        crop_w, crop_h, cropped_data = crop_page(pixel_data, width, height, page_size)
-        # cropped_data is usually a view that keeps the render alive; drop
-        # our own references so it is freed together with the view.
-        del pixel_data, result
-        logger.info("page %d: cropped to %dx%d", page_num, crop_w, crop_h)
-        yield crop_w, crop_h, cropped_data
+def drop_blank_pages(pages):
+    """Collect each page into one buffer and skip the pure-white ones."""
+    for width, height, data in pages:
+        rows = collect_rows(data, width, height)
+        if is_blank_page(rows):
+            logger.info("skipping blank page")
+            continue
+        yield width, height, rows
 
 
 def find_lut_dir() -> str | None:
@@ -253,9 +221,15 @@ def main() -> None:
     logger.info("settings: page_size=%s duplex=%s resolution=%s mono=%s",
                 settings.page_size, settings.duplex, settings.resolution, settings.mono_color)
 
-    # If reading from stdin, save to temp file (GS needs a file)
+    # Reversed long-edge duplex needs the page count up front: a page's
+    # position in the reversed job decides whether it is a back side.
+    needs_page_count = settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE
+
+    # Ghostscript reads the job straight from stdin, so it starts
+    # rasterising while pdftops is still producing PostScript. Only
+    # counting pages needs the whole job in a file first.
     tmp_input = None
-    if input_file is None:
+    if input_file is None and needs_page_count:
         tmp_input = tempfile.NamedTemporaryFile(suffix=".ps", delete=False)
         try:
             while True:
@@ -271,8 +245,13 @@ def main() -> None:
             raise
 
     try:
-        # Run Ghostscript: PS -> PPM stream
-        gs_cmd = build_gs_command(input_file, settings.page_size)
+        expected_pages = None
+        if needs_page_count:
+            expected_pages = count_ps_pages(input_file)
+            logger.info("reverse long-edge duplex: %d pages", expected_pages)
+
+        # Run Ghostscript: PS -> PPM stream ("-" reads the inherited stdin)
+        gs_cmd = build_gs_command(input_file or "-", settings.page_size)
         logger.info("running: %s", ' '.join(gs_cmd))
 
         gs_proc = subprocess.Popen(
@@ -294,15 +273,9 @@ def main() -> None:
                 logger.info("rendering page %d", page_count)
                 yield page
 
-        pages = counted(iter_cropped_pages(gs_proc.stdout, settings.page_size))
-        # Reversed long-edge duplex needs the page count up front: a page's
-        # position in the reversed job decides whether it is a back side.
-        expected_pages = None
-        if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE:
-            expected_pages = count_ps_pages(input_file)
-            logger.info("reverse long-edge duplex: %d pages", expected_pages)
+        pages = counted(iter_printable_pages(gs_proc.stdout, settings.page_size))
         if settings.skip_blank and settings.duplex == DuplexMode.NONE:
-            pages = (p for p in pages if not is_blank_page(p[2]))
+            pages = drop_blank_pages(pages)
 
         first = next(pages, None)
         if first is not None:

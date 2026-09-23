@@ -6,6 +6,7 @@ interpolation, and gray/black/white pixel skipping.
 """
 
 import logging
+from collections.abc import Buffer
 
 import numpy as np
 import numpy.typing as npt
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 _SCALE_FACTOR = 50.0
 
 
-def adjust_saturation(rgb_row: bytes, width: int, sat_mode: int) -> bytes:
+def adjust_saturation(rgb_row: Buffer, width: int, sat_mode: int) -> bytes:
     """Adjust saturation of an RGB pixel row.
 
     Args:
@@ -31,11 +32,12 @@ def adjust_saturation(rgb_row: bytes, width: int, sat_mode: int) -> bytes:
     Raises:
         ValueError: If `rgb_row` is shorter than `width * 3` bytes.
     """
-    if len(rgb_row) < width * 3:
-        msg = f"rgb_row too short: {len(rgb_row)} < {width * 3}"
+    size = memoryview(rgb_row).nbytes
+    if size < width * 3:
+        msg = f"rgb_row too short: {size} < {width * 3}"
         raise ValueError(msg)
     if sat_mode == 0:
-        return rgb_row
+        return bytes(rgb_row)
     rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3).copy()
     _adjust_saturation_inplace(rgb, sat_mode)
     return rgb.tobytes()

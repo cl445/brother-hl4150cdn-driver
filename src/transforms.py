@@ -9,6 +9,8 @@
   (3D-LUT lookup, or simple GCR when colour-matching is disabled).
 """
 
+from collections.abc import Buffer
+
 import numpy as np
 import numpy.typing as npt
 
@@ -18,7 +20,7 @@ from settings import ColorMatching
 _NDArrayU8 = npt.NDArray[np.uint8]
 
 
-def apply_vivid(rgb_row: bytes, width: int) -> bytes:
+def apply_vivid(rgb_row: Buffer, width: int) -> bytes:
     """Boost saturation by expanding distance from per-pixel gray axis.
 
     Returns:
@@ -59,7 +61,7 @@ def build_input_remap_lut(brightness: int, contrast: int, channel: int) -> npt.N
 
 
 def apply_input_remap_rgb(
-    rgb_row: bytes,
+    rgb_row: Buffer,
     width: int,
     lut_r: npt.NDArray[np.uint8],
     lut_g: npt.NDArray[np.uint8],
@@ -84,7 +86,7 @@ def apply_input_remap_rgb(
 
 
 def rgb_line_to_cmyk_intensities_arr(
-    rgb_row: bytes,
+    rgb_row: Buffer,
     width: int,
     color_matching: ColorMatching = ColorMatching.NORMAL,
 ) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
@@ -101,7 +103,7 @@ def rgb_line_to_cmyk_intensities_arr(
 
 
 def rgb_line_to_cmyk_intensities(
-    rgb_row: bytes,
+    rgb_row: Buffer,
     width: int,
     color_matching: ColorMatching = ColorMatching.NORMAL,
 ) -> tuple[bytes, bytes, bytes, bytes]:

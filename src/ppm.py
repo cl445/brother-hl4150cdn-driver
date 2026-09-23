@@ -7,15 +7,14 @@ into the same stdout, so a CUPS pipeline can iterate page-by-page.
 from typing import BinaryIO
 
 
-def read_ppm(stream: BinaryIO) -> tuple[int, int, int, bytes] | None:
-    """Read a PPM file (P6, binary) from a stream.
+def read_ppm_header(stream: BinaryIO) -> tuple[int, int, int] | None:
+    """Read a P6 PPM header, leaving `stream` at the first pixel byte.
 
     Returns:
-        Tuple `(width, height, maxval, pixel_data)`, or None at EOF.
+        Tuple `(width, height, maxval)`, or None at EOF.
 
     Raises:
-        ValueError: If the magic bytes are not "P6", maxval is not 255,
-            or the payload is shorter than the header indicates.
+        ValueError: If the magic bytes are not "P6" or maxval is not 255.
     """
     magic = stream.readline()
     if not magic or not magic.strip():
@@ -40,6 +39,23 @@ def read_ppm(stream: BinaryIO) -> tuple[int, int, int, bytes] | None:
     if maxval != 255:
         msg = f"Only 8-bit PPM (maxval=255) supported, got maxval={maxval}"
         raise ValueError(msg)
+    return width, height, maxval
+
+
+def read_ppm(stream: BinaryIO) -> tuple[int, int, int, bytes] | None:
+    """Read a PPM file (P6, binary) from a stream.
+
+    Returns:
+        Tuple `(width, height, maxval, pixel_data)`, or None at EOF.
+
+    Raises:
+        ValueError: If the magic bytes are not "P6", maxval is not 255,
+            or the payload is shorter than the header indicates.
+    """
+    header = read_ppm_header(stream)
+    if header is None:
+        return None
+    width, height, maxval = header
 
     expected = width * height * 3
     data = stream.read(expected)

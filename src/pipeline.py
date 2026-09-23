@@ -5,16 +5,21 @@ shares one XL2HB session across multiple pages so duplex jobs come out
 as a single print job.
 """
 
+import functools
 import logging
+import os
 import tempfile
-from collections.abc import Callable, Iterable
+from collections import deque
+from collections.abc import Buffer, Callable, Iterable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 
+import color_lut
 from brother_encode import encode_c_plane, encode_fine_plane, encode_m_plane_10, encode_plane
 from dither import DitherChannel, dither_channel_1bpp_arr, dither_channel_4bpp_arr, load_dither_tables
 from saturation import adjust_saturation
@@ -47,6 +52,13 @@ from xl2hb import (
     get_image_dimensions_fine,
 )
 
+try:
+    from _band_fast import render_band  # type: ignore[import-not-found]
+
+    HAS_BAND_KERNEL = True
+except ImportError:
+    HAS_BAND_KERNEL = False
+
 logger = logging.getLogger(__name__)
 
 # Per-mode dither dispatcher (intensity ndarray, line_idx, sw, channel) -> packed bytes.
@@ -65,15 +77,23 @@ _PLANE_ENCODERS: dict[bool, dict[int, _PlaneEncoder]] = {
 }
 
 
-PageData = bytes | npt.NDArray[np.uint8]
-"""RGB page as packed bytes or as a (height, width, 3) uint8 array.
+PageBuffer = bytes | npt.NDArray[np.uint8]
+"""A whole RGB page as packed bytes or as a (height, width, 3) uint8 array.
 
 The array may be a strided view (e.g. the printable window of a larger
 render) as long as each row is contiguous.
 """
 
+RowBlocks = Iterable[npt.NDArray[np.uint8]]
+"""A page streamed as (rows, width * 3) uint8 blocks with contiguous rows.
 
-def _page_rows(pixel_data: PageData, width: int, height: int) -> npt.NDArray[np.uint8]:
+Consumed once, top to bottom (see `page_stream.iter_ppm_pages`).
+"""
+
+PageData = PageBuffer | RowBlocks
+
+
+def _page_rows(pixel_data: Buffer, width: int, height: int) -> npt.NDArray[np.uint8]:
     """View an RGB page as (height, width * 3) rows without copying.
 
     Returns:
@@ -84,7 +104,56 @@ def _page_rows(pixel_data: PageData, width: int, height: int) -> npt.NDArray[np.
     return np.frombuffer(pixel_data, dtype=np.uint8, count=width * height * 3).reshape(height, width * 3)
 
 
-def is_blank_page(pixel_data: PageData) -> bool:
+_BUFFER_TYPES = (bytes, bytearray, memoryview, np.ndarray)
+
+
+def collect_rows(pixel_data: PageData, width: int, height: int) -> npt.NDArray[np.uint8]:
+    """Return the page as one (height, width * 3) array.
+
+    A view for packed bytes and arrays; streamed row blocks are copied into
+    a single page-sized buffer. Only needed where the whole page must be
+    seen at once (long-edge back pages, skip-blank).
+
+    Returns:
+        uint8 array whose rows are contiguous RGB scanlines.
+
+    Raises:
+        ValueError: If streamed blocks do not add up to `height` rows.
+    """
+    if isinstance(pixel_data, _BUFFER_TYPES):
+        return _page_rows(pixel_data, width, height)
+    page = np.empty((height, width * 3), dtype=np.uint8)
+    filled = 0
+    for block in pixel_data:
+        rows = min(block.shape[0], height - filled)
+        page[filled : filled + rows] = block[:rows]
+        filled += rows
+    if filled != height:
+        msg = f"page has {filled} rows, expected {height}"
+        raise ValueError(msg)
+    return page
+
+
+def _iter_rows(blocks: RowBlocks, *, check_white: bool) -> Iterator[tuple[npt.NDArray[np.uint8], bool]]:
+    """Yield (scanline, is_pure_white) for every row of every block.
+
+    The white test runs vectorised per block; without `check_white` every
+    row is reported as not white.
+
+    Yields:
+        Contiguous RGB scanline view and whether all its bytes are 255.
+    """
+    for block in blocks:
+        if not check_white:
+            white = [False] * block.shape[0]
+        elif block.shape[1]:
+            white = (block.min(axis=1) == 255).tolist()
+        else:
+            white = [True] * block.shape[0]
+        yield from zip(block, white, strict=True)
+
+
+def is_blank_page(pixel_data: PageBuffer) -> bool:
     """Return True if every byte of the page is 255 (pure white).
 
     Works on packed bytes and on strided array views without copying.
@@ -111,6 +180,216 @@ def _flip_vertical(rows: npt.NDArray[np.uint8], paper_h: int) -> npt.NDArray[np.
     return page[::-1]
 
 
+LineCodes = tuple[bytes, bytes, bytes, bytes]
+"""Encoded K, C, M, Y data of one scanline; b"" for a plane without ink."""
+
+_BLANK_LINE: LineCodes = (b"", b"", b"", b"")
+_EMPTY_TABLE = np.empty(0, dtype=np.uint8)
+
+# Scanlines per band handed to the native kernel; also the unit of work
+# for the render threads.
+_BAND_ROWS = 128
+
+
+class _ColourSetup(NamedTuple):
+    """Per-page colour settings shared by the scanline encoders."""
+
+    settings: PrintSettings
+    input_remap: tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]] | None
+    tone_lut: npt.NDArray[np.uint8] | None
+    check_white: bool
+
+    @property
+    def adjusts_rgb(self) -> bool:
+        """Whether `_adjust_rgb` changes pixels before the colour lookup."""
+        return (
+            self.settings.saturation != 0
+            or self.settings.color_matching == ColorMatching.VIVID
+            or self.input_remap is not None
+        )
+
+
+def _adjust_rgb(rgb: Buffer, pixels: int, colour: _ColourSetup) -> Buffer:
+    """Apply saturation or vivid, then the input remap, to `pixels` RGB pixels.
+
+    Every step is per pixel, so a whole band can go through in one call.
+
+    Returns:
+        The adjusted pixels, or `rgb` itself when nothing applies.
+    """
+    settings = colour.settings
+    # Saturation and vivid are per-pixel; brightness/contrast/RGB-keys
+    # go through the pre-LUT input remap.
+    if settings.saturation != 0:
+        rgb = adjust_saturation(rgb, pixels, settings.saturation)
+    elif settings.color_matching == ColorMatching.VIVID:
+        rgb = apply_vivid(rgb, pixels)
+    if colour.input_remap is not None:
+        rgb = apply_input_remap_rgb(rgb, pixels, *colour.input_remap)
+    return rgb
+
+
+def _encode_lines(
+    blocks: RowBlocks,
+    width: int,
+    sw: int,
+    colour: _ColourSetup,
+    channels: dict[str, DitherChannel],
+    *,
+    is_fine: bool,
+) -> Iterator[LineCodes]:
+    """Colour-convert, dither and encode the page one scanline at a time.
+
+    Reference path for Fine mode and for installs without the native band
+    kernel or the inverse LUT.
+
+    Yields:
+        Encoded planes of each input row, top to bottom.
+    """
+    dither_fn = _DITHER_FNS[is_fine]
+    encoders = _PLANE_ENCODERS[is_fine]
+    pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
+    color_matching = colour.settings.color_matching
+
+    for line_idx, (row, is_white) in enumerate(_iter_rows(blocks, check_white=colour.check_white)):
+        if is_white:
+            yield _BLANK_LINE
+            continue
+        rgb_row = _adjust_rgb(row, width, colour)
+        k_arr, c_arr, m_arr, y_arr = rgb_line_to_cmyk_intensities_arr(rgb_row, width, color_matching=color_matching)
+        if colour.tone_lut is not None:
+            k_arr, c_arr, m_arr, y_arr = apply_tone_curve_arr(k_arr, c_arr, m_arr, y_arr, colour.tone_lut)
+        if pad_arr is not None:
+            k_arr = np.concatenate((k_arr, pad_arr))
+            c_arr = np.concatenate((c_arr, pad_arr))
+            m_arr = np.concatenate((m_arr, pad_arr))
+            y_arr = np.concatenate((y_arr, pad_arr))
+        yield (
+            encoders[0](dither_fn(k_arr, line_idx, sw, channels["K"])),
+            encoders[1](dither_fn(c_arr, line_idx, sw, channels["C"])),
+            encoders[2](dither_fn(m_arr, line_idx, sw, channels["M"])),
+            encoders[3](dither_fn(y_arr, line_idx, sw, channels["Y"])),
+        )
+
+
+def _band_kernel_lut(
+    settings: PrintSettings, channels: dict[str, DitherChannel], *, is_fine: bool
+) -> npt.NDArray[np.uint8] | None:
+    """Return the colour table for `render_band`, or None if it cannot render the page.
+
+    The kernel covers Normal mode with threshold-matrix dither channels; it
+    needs the native module and, unless colour matching is off, the
+    installed inverse LUT.
+
+    Returns:
+        The flat inverse LUT, an empty table for no colour matching, or None.
+    """
+    if not HAS_BAND_KERNEL or is_fine:
+        return None
+    if any(channel.threshold_matrix is None for channel in channels.values()):
+        return None
+    if settings.color_matching == ColorMatching.NONE:
+        return _EMPTY_TABLE
+    inverse = color_lut.inverse_lut()
+    return None if inverse is None else inverse.reshape(-1)
+
+
+def _render_threads() -> int:
+    """Number of band render threads.
+
+    `BRHL4150CDN_RENDER_THREADS` overrides the default of one thread per
+    spare core, at most three; 0 renders on the calling thread.
+
+    Returns:
+        Thread count, >= 0.
+    """
+    configured = os.environ.get("BRHL4150CDN_RENDER_THREADS")
+    if configured is not None:
+        return max(0, int(configured))
+    return max(1, min(3, (os.cpu_count() or 1) - 1))
+
+
+@functools.cache
+def _band_executor(workers: int) -> ThreadPoolExecutor:
+    """Return the process-wide pool of `workers` render threads."""
+    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="brhl4150cdn-band")
+
+
+def _split_bands(blocks: RowBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], int]]:
+    """Cut row blocks into bands of at most `_BAND_ROWS` rows.
+
+    Yields:
+        (band, page line index of its first row).
+    """
+    first_line = 0
+    for block in blocks:
+        for lo in range(0, block.shape[0], _BAND_ROWS):
+            band = block[lo : lo + _BAND_ROWS]
+            yield band, first_line
+            first_line += band.shape[0]
+
+
+def _encode_lines_banded(
+    blocks: RowBlocks,
+    width: int,
+    sw: int,
+    colour: _ColourSetup,
+    channels: dict[str, DitherChannel],
+    lut: npt.NDArray[np.uint8],
+) -> Iterator[LineCodes]:
+    """Like `_encode_lines`, but whole bands at a time in the native kernel.
+
+    The kernel releases the GIL, so bands render in parallel on the
+    render threads; results are yielded strictly in page order. `lut` comes
+    from `_band_kernel_lut`.
+
+    Yields:
+        Encoded planes of each input row, top to bottom.
+    """
+    tone = _EMPTY_TABLE if colour.tone_lut is None else colour.tone_lut
+    # Tile the thresholds up front; the render threads only read them.
+    thresholds = tuple(channels[c].tiled_thresholds(sw) for c in "KCMY")
+
+    def encode(band: npt.NDArray[np.uint8], first_line: int) -> list[LineCodes]:
+        n = band.shape[0]
+        if not colour.check_white:
+            skip = np.zeros(n, dtype=np.uint8)
+        elif band.shape[1]:
+            skip = (band.min(axis=1) == 255).view(np.uint8)
+        else:
+            skip = np.ones(n, dtype=np.uint8)
+        rgb = band
+        if colour.adjusts_rgb:
+            rgb = _page_rows(_adjust_rgb(np.ascontiguousarray(band), n * width, colour), width, n)
+        lengths = np.empty((n, 4), dtype=np.int32)
+        data = render_band(rgb, skip, width, first_line, sw, lut, tone, *thresholds, lengths)
+        codes: list[LineCodes] = []
+        pos = 0
+        for k_len, c_len, m_len, y_len in lengths.tolist():
+            c_pos = pos + k_len
+            m_pos = c_pos + c_len
+            y_pos = m_pos + m_len
+            end = y_pos + y_len
+            codes.append((data[pos:c_pos], data[c_pos:m_pos], data[m_pos:y_pos], data[y_pos:end]))
+            pos = end
+        return codes
+
+    workers = _render_threads()
+    if workers == 0:
+        for band, first_line in _split_bands(blocks):
+            yield from encode(band, first_line)
+        return
+
+    executor = _band_executor(workers)
+    pending: deque[Future[list[LineCodes]]] = deque()
+    for band, first_line in _split_bands(blocks):
+        pending.append(executor.submit(encode, band, first_line))
+        if len(pending) > 2 * workers:
+            yield from pending.popleft().result()
+    while pending:
+        yield from pending.popleft().result()
+
+
 def _render_page(
     w: XL2HBWriter,
     width: int,
@@ -126,7 +405,11 @@ def _render_page(
 
     Handles: BeginPage -> scanline loop -> flush -> EndPage. `back_side`
     marks the second page of a duplex sheet. Scanlines are read as views
-    into `pixel_data`; the page is never copied.
+    into `pixel_data`, which may also be a stream of row blocks; only
+    long-edge back pages are collected into one buffer to be mirrored.
+
+    Raises:
+        ValueError: If `pixel_data` has fewer than `height` rows.
     """
     is_fine = settings.resolution == Resolution.FINE
 
@@ -141,10 +424,13 @@ def _render_page(
 
     # Long-edge back pages are marked and sent mirrored top-to-bottom.
     flip_back = back_side and settings.duplex == DuplexMode.NO_TUMBLE
-    rows = _page_rows(pixel_data, width, height)
     if flip_back:
-        rows = _flip_vertical(rows, paper_h)
+        blocks: RowBlocks = (_flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
         height = paper_h
+    elif isinstance(pixel_data, _BUFFER_TYPES):
+        blocks = (_page_rows(pixel_data, width, height),)
+    else:
+        blocks = pixel_data
 
     w.write_begin_page(
         media_size=page_size,
@@ -166,8 +452,6 @@ def _render_page(
             w.write_read_image(start, count, pid, blob)
         pb.reset(next_line)
 
-    pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
-
     # Pre-build LUTs (constant per page).
     tone_lut = None
     input_remap = None
@@ -186,60 +470,26 @@ def _render_page(
             build_input_remap_lut(settings.brightness, settings.contrast, settings.blue),
         )
 
-    dither_fn = _DITHER_FNS[is_fine]
-    encoders = _PLANE_ENCODERS[is_fine]
-
-    blank_plane = bytes(bpl)
-    blank_planes = dict.fromkeys(range(4), blank_plane)
-    blank_plane_comp = dict.fromkeys(range(4), b"")
     # apply_input_remap_rgb explicitly preserves (255,255,255); saturation
     # and vivid leave the gray axis untouched; the LUT clamps white→0 ink.
     # Only tone_curve can deposit ink on white, so skip the short-circuit
-    # when gamma_select is active. One vectorised pass over the page is
-    # cheaper than comparing each row on its own.
-    if tone_lut is None:
-        white_rows = (rows[:paper_h].min(axis=1) == 255).tolist() if width else [True] * min(height, paper_h)
+    # when gamma_select is active.
+    colour = _ColourSetup(settings, input_remap, tone_lut, check_white=tone_lut is None)
+    kernel_lut = _band_kernel_lut(settings, channels, is_fine=is_fine)
+    if kernel_lut is not None:
+        lines = _encode_lines_banded(blocks, width, sw, colour, channels, kernel_lut)
     else:
-        white_rows = [False] * min(height, paper_h)
+        lines = _encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
 
     for line_idx in range(paper_h):
         if line_idx < height:
-            rgb_row = rows[line_idx]
-            if white_rows[line_idx]:
-                plane_data = blank_planes
-            else:
-                # Saturation and vivid are per-pixel; brightness/contrast/RGB-keys
-                # go through the pre-LUT input remap.
-                if settings.saturation != 0:
-                    rgb_row = adjust_saturation(rgb_row, width, settings.saturation)
-                elif settings.color_matching == ColorMatching.VIVID:
-                    rgb_row = apply_vivid(rgb_row, width)
-                if input_remap is not None:
-                    rgb_row = apply_input_remap_rgb(rgb_row, width, *input_remap)
-                k_arr, c_arr, m_arr, y_arr = rgb_line_to_cmyk_intensities_arr(
-                    rgb_row, width, color_matching=settings.color_matching
-                )
-                if tone_lut is not None:
-                    k_arr, c_arr, m_arr, y_arr = apply_tone_curve_arr(k_arr, c_arr, m_arr, y_arr, tone_lut)
-                if pad_arr is not None:
-                    k_arr = np.concatenate((k_arr, pad_arr))
-                    c_arr = np.concatenate((c_arr, pad_arr))
-                    m_arr = np.concatenate((m_arr, pad_arr))
-                    y_arr = np.concatenate((y_arr, pad_arr))
-
-                plane_data = {
-                    0: dither_fn(k_arr, line_idx, sw, channels["K"]),
-                    1: dither_fn(c_arr, line_idx, sw, channels["C"]),
-                    2: dither_fn(m_arr, line_idx, sw, channels["M"]),
-                    3: dither_fn(y_arr, line_idx, sw, channels["Y"]),
-                }
+            line = next(lines, None)
+            if line is None:
+                msg = f"page ended after {line_idx} rows, expected {height}"
+                raise ValueError(msg)
+            plane_comp = line
         else:
-            plane_data = blank_planes
-
-        if plane_data is blank_planes:
-            plane_comp = blank_plane_comp
-        else:
-            plane_comp = {pid: encoders[pid](data) for pid, data in plane_data.items()}
+            plane_comp = _BLANK_LINE
 
         # Per-plane independent flush. Process planes in order C, M, Y, K.
         # Empty line + accumulated data → flush that plane. Non-empty line →
@@ -289,7 +539,7 @@ def _init_channels(settings: PrintSettings, lut_dir: str | None = None) -> dict[
 def filter_page(
     width: int,
     height: int,
-    pixel_data: PageData,
+    pixel_data: PageBuffer,
     settings: PrintSettings,
     output: BinaryIO,
     lut_dir: str | None = None,

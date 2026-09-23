@@ -1,6 +1,6 @@
 # Performance- und Speicherplan (CUPS-Filter)
 
-Stand: 2026-09-23 — gemessen auf dem Printserver; Maßnahmen 1 und 2 umgesetzt (noch nicht committet/installiert).
+Stand: 2026-09-23 — Maßnahmen 1–4 und Teile von 5 umgesetzt; Engpass ist jetzt gs plus der Pipe-Transport (~0,4 s/Seite), nicht mehr Python.
 
 ## Ausgangslage
 
@@ -131,7 +131,34 @@ Maßnahme 3 (Streaming).
       fehlgeschlagener Install-Schritt macht den Filter sonst still ~20×
       langsamer.
 
-### 3. Zeilen-Streaming + Reader-Thread (Speicher und Überlappung mit gs)
+### 3. Zeilen-Streaming + Reader-Thread (Speicher und Überlappung mit gs) — ✅ umgesetzt
+
+Ergebnis (Pi, `pdftops` per Pipe in den Filter wie unter CUPS, Ausgabe
+byte-identisch):
+
+| | vorher | nachher |
+|---|---|---|
+| 131 Seiten, erste Seite fertig | 9,3 s | 6,6 s |
+| 131 Seiten, gesamt | 284 s | 280 s |
+| 131 Seiten, Spitzen-RSS | 347 MB | **86 MB** |
+| 20 Seiten, gesamt / RSS | 34,3–34,8 s / 331 MB | 32,9–33,2 s / 68 MB |
+
+`src/page_stream.py` liest die gs-Ausgabe auf einem Thread in Blöcken zu
+128 Zeilen, schneidet dabei den Druckbereich aus und reicht die Blöcke über
+eine Queue (16 Blöcke ≈ 30 MB) weiter; `crop_page` entfällt. gs liest das
+PostScript direkt von stdin (Tempfile nur noch für Reverse + Long-Edge).
+
+**Erkenntnis:** Größere Queues (64 bzw. 128 Blöcke ≈ 1 bzw. 2 Seiten)
+bringen nichts (33,7 s bzw. 34,5 s für 20 Seiten), kosten aber 150 bzw.
+265 MB. Der Hauptthread wartet nicht mehr auf gs: Rendern kostet
+~1,7 s/Seite auf einem Kern, gs ~0,4 s/Seite parallel. Die Gesamtzeit
+hängt jetzt allein am Rendern → Maßnahme 4.
+
+Nebenfund: `np.memmap.reshape` pro Zeile kostete ~50 ms/Seite
+(`__array_finalize__`); `_load_inverse_lut` liefert jetzt einen normalen
+ndarray-View auf die Mapping.
+
+Ursprünglicher Plan:
 
 - [ ] `read_ppm` in Header-Parser + blockweisen Zeilenleser aufteilen
       (z. B. 256 Zeilen ≈ 3,8 MB pro Block).
@@ -155,34 +182,67 @@ Maßnahme 3 (Streaming).
     Seite erst nach dem Rendern verwerfen (gerenderte XL2HB-Seite puffern,
     Leerseite erkennen) statt vorab das Raster zu prüfen.
 
-### 4. Parallelisierung über Kerne (3 Kerne liegen brach)
+### 4. Parallelisierung über Kerne — ✅ umgesetzt (Variante B)
 
-Variante A — Seiten-Pipeline über Prozesse: gs, Farbe/Dither, Encode laufen
-bereits teilweise getrennt; mit Maßnahme 3 überlappen gs und Python. Das
-nutzt 2 Kerne.
+Ergebnis (Pi, `pdftops` per Pipe in den Filter wie unter CUPS, Ausgabe
+byte-identisch zum installierten Stand):
 
-Variante B — Bänder innerhalb einer Seite:
+| | vorher (installiert) | nachher |
+|---|---|---|
+| 131 Seiten, gesamt | 287 s | **133 s** |
+| 131 Seiten, erste Seite fertig | 10,8 s | 6,1 s |
+| 131 Seiten, Spitzen-RSS | 346 MB | 64 MB |
+| 20 Seiten, gesamt | 35,0 s | 17,6–19,5 s |
+| Rendern allein (ohne gs/Pipe), pro Seite | ~1,7 s | 0,25 s (1 Thread), **0,13 s** (3 Threads) |
 
-- [ ] Band-Kernel in Cython `render_band(rgb, first_line, n_lines, ...)`:
-      Farbe → Dither → RLE für z. B. 64 Zeilen in einem `nogil`-Aufruf.
-      Beseitigt nebenbei den Python-Overhead pro Zeile (1,3 s eigene Zeit von
-      `_render_page` für 5 Seiten).
-- [ ] Bänder per `ThreadPoolExecutor` rendern, Ergebnisse **in Reihenfolge**
-      an den `PlaneBuffer`-Flush (bleibt sequentiell).
-- Voraussetzungen: `DitherChannel._tiled_cache` vorwärmen; kein
-  zeilenübergreifender Zustand in Saturation/Vivid/Input-Remap/Tone-Curve
-  (prüfen); diese Schritte müssen in den Kernel oder bandweise davor.
-- Erwartung: Render-Anteil (≈ 0,76 s/Seite) auf ein Drittel bis Viertel.
-- Byte-Identität per `TestSettingVariants` absichern.
+Byte-identisch geprüft auf dem Pi: 131 Seiten, Long-Edge-Duplex (+ Reverse),
+Brightness + Saturation, Vivid, GammaSelect, ColorMatching None; lokal alle
+`TestSettingVariants`- und Duplex-Captures über den Kernel mit dem echten
+Inverse-LUT sowie Kernel gegen Zeilen-Pfad mit Zufalls-LUT
+(`tests/test_band_kernel.py`).
+
+Umsetzung:
+
+- [x] `src/_band_fast.pyx`: `render_band` macht Farbe (Inverse-LUT bzw.
+      „keine Farbanpassung“), Tonkurve, 1bpp-Dither und die RLE-Kodierung der
+      vier Ebenen für ein Band von bis zu 128 Zeilen in einem `nogil`-Aufruf.
+- [x] Der RLE-Kern in `_rle_fast.pyx` ist jetzt GIL-frei (`encode_line`,
+      über `_rle_fast.pxd` geteilt); `encode_sw_rle` bleibt als Wrapper.
+- [x] Saturation, Vivid und Input-Remap sind pixelweise und laufen bandweise
+      in numpy vor dem Kernel; die Weißzeilen-Prüfung auf den Originalzeilen.
+- [x] Bänder laufen auf einem `ThreadPoolExecutor` (Standard: ein Thread je
+      freiem Kern, max. 3; `BRHL4150CDN_RENDER_THREADS` überschreibt, 0 =
+      im Hauptthread); Ergebnisse gehen in Seitenreihenfolge an den
+      `PlaneBuffer`-Flush.
+- Fine-Modus, fehlendes Cython oder fehlendes Inverse-LUT nutzen weiter den
+  Zeilen-Pfad (`_encode_lines`).
+
+**Erkenntnis:** Mit dem Kernel ist Python nicht mehr der Engpass. Mehr als
+ein Render-Thread bringt im Gesamtfilter nur ~10 %, weil jetzt gs die Grenze
+setzt: gs allein 5,5 s für 20 Seiten, gs → `cat` 8,2 s (Pipe-Kopie von
+~100 MB/Seite kostet gs viel Systemzeit), gs → Reader-Thread 9,7 s, ganzer
+Filter 14,4 s (Datei-Eingabe). Größere Pipe (`F_SETPIPE_SZ` 1 MB) und
+kürzeres GIL-Switch-Intervall bringen nichts Messbares.
+
+Mögliche nächste Hebel (nicht umgesetzt):
+
+- Zwei gs-Prozesse mit `-sPageList=odd`/`even`, Ausgabe abwechselnd lesen.
+  Halbiert Rasterzeit und Pipe-Last pro Prozess, braucht aber das PostScript
+  zweimal (Tee aus stdin oder Tempfile) und mehr Speicher. Erwartung
+  ~0,5 statt ~0,7 s/Seite.
+- gs nur den Druckbereich rendern lassen (−7 % Daten), kleiner Gewinn.
 
 ### 5. Startzeit (jeder Job)
 
 - [ ] `python -X importtime` auswerten (heute 1,1 s); `fine_encoder`,
       `color_lut_gen` usw. nur bei Bedarf importieren.
-- [ ] `.pyc` bei der Installation vorkompilieren (`compileall`); prüfen, ob
-      `__pycache__` in `/usr/local/lib/brhl4150cdn/` für den CUPS-User aktuell
-      ist.
-- [ ] Tempfile vermeiden: gs liest PostScript direkt von stdin (`-`).
+- [x] `.pyc` bei der Installation vorkompilieren (`compileall` in
+      `install.sh`).
+- [x] Tempfile vermeiden: gs liest PostScript direkt von stdin (`-`).
+- [x] Filter importiert direkt aus `pipeline`/`settings`/`page_stream` statt
+      über `brfilter` (spart `cli`/`argparse`).
+- Gemessen: Start ≈ 0,85 s, davon numpy 0,4–0,6 s — nicht weiter reduzierbar,
+  solange numpy gebraucht wird.
 
 ### 6. Verworfen bzw. niedrige Priorität (nach Messung)
 
@@ -200,10 +260,12 @@ Variante B — Bänder innerhalb einer Seite:
 1. ~~`crop_page` entfernen (1) und LUT per mmap (2)~~ — erledigt:
    −30 bis −45 % Laufzeit, −236 MB RSS
 2. ~~`reverse` ohne Raster-Puffer~~ — erledigt, 131 Seiten mit 347 MB
-3. Streaming + Reader-Thread (3)
-4. Startzeit (5)
-5. Band-Kernel + Threads (4B), nur falls die Zeit bis zur ersten Seite danach
-   noch stört
+3. ~~Streaming + Reader-Thread (3)~~ — erledigt: RSS 347 → 86 MB,
+   erste Seite −2,7 s
+4. ~~Startzeit (5)~~ — erledigt, soweit ohne numpy-Ersatz möglich
+5. ~~Band-Kernel + Threads (4B)~~ — erledigt: 131 Seiten 287 → 133 s,
+   Rendern 1,7 → 0,13 s/Seite; Grenze ist jetzt gs + Pipe
+6. Optional: zwei gs-Prozesse (gerade/ungerade Seiten)
 
 Jede Stufe gegen `uv run pytest tests/ -q` und die Byte-Identitätstests
 (`TestSettingVariants`) absichern und auf dem Pi nachmessen (wall, user, sys,

@@ -121,13 +121,16 @@ if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" cli.py --pr
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
 fi
 
-# Optional Cython build of the RLE encoders and the colour-LUT gather. Needs a C compiler
-# and the Python headers (Debian: python3-dev); pure-Python fallback otherwise.
+# Optional Cython build of the RLE encoders, the colour-LUT gather and the band
+# renderer (colour + dither + RLE per band, renders a page on several cores).
+# Needs a C compiler and the Python headers (Debian: python3-dev); pure-Python
+# fallback otherwise.
 echo "Building Cython acceleration..."
 BUILD_DIR="$(mktemp -d)"
 mkdir -p "$BUILD_DIR/src"
 cp "$REPO_ROOT/setup_cython.py" "$BUILD_DIR/"
 cp "$REPO_ROOT/src/"_*_fast.pyx "$BUILD_DIR/src/"
+cp "$REPO_ROOT/src/"_*_fast.pxd "$BUILD_DIR/src/"
 if "$VENV_DIR/bin/pip" install --quiet cython setuptools \
     && (cd "$BUILD_DIR" && "$VENV_DIR/bin/python3" setup_cython.py build_ext --inplace >/dev/null) \
     && compgen -G "$BUILD_DIR/src/_*_fast*.so" >/dev/null; then
@@ -158,6 +161,10 @@ chmod 755 "$CUPS_FILTER_DIR/brhl4150cdn-filter"
 # Copy the actual filter script to the lib dir
 cp "$SCRIPT_DIR/brhl4150cdn-filter" "$LIB_DIR/brhl4150cdn-filter.py"
 chmod 644 "$LIB_DIR/brhl4150cdn-filter.py"
+
+# Precompile bytecode: the CUPS filter user cannot write __pycache__ here,
+# so without this every job recompiles all modules.
+"$VENV_DIR/bin/python3" -m compileall -q "$LIB_DIR"/*.py
 
 # Install PPD
 echo "Installing PPD to $CUPS_PPD_DIR..."
