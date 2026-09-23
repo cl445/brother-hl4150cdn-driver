@@ -186,15 +186,14 @@ def rgb_to_cmyk_lut_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArra
     """Like :func:`rgb_to_cmyk_lut` but returns ndarrays directly.
 
     Lets callers in the hot path avoid a bytes→ndarray roundtrip.
+
+    Returns:
+        (k, c, m, y) uint8 arrays of length `width`.
     """
     inv = _load_inverse_lut()
     if inv is not None:
         rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
-        idx = (
-            (rgb[:, 0].astype(np.uint32) << 16)
-            | (rgb[:, 1].astype(np.uint32) << 8)
-            | rgb[:, 2].astype(np.uint32)
-        )
+        idx = (rgb[:, 0].astype(np.uint32) << 16) | (rgb[:, 1].astype(np.uint32) << 8) | rgb[:, 2].astype(np.uint32)
         kcmy = np.ascontiguousarray(inv.reshape(-1, 4)[idx])
         return kcmy[:, 0], kcmy[:, 1], kcmy[:, 2], kcmy[:, 3]
     return _rgb_to_cmyk_interp_arr(rgb_row, width)
@@ -220,7 +219,11 @@ def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, by
 
 
 def _rgb_to_cmyk_interp_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
-    """Per-pixel tetrahedral interpolation through the 17×17×17 LUT grid."""
+    """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
+
+    Returns:
+        (k, c, m, y) in pixel-brightness convention (0=full ink, 255=no ink).
+    """
     lut, interp = _load_data()
 
     rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
@@ -268,6 +271,10 @@ def _rgb_to_cmyk_interp_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _ND
 
 
 def _rgb_to_cmyk_interp(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:
-    """Per-pixel tetrahedral interpolation through the 17×17×17 LUT grid."""
+    """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
+
+    Returns:
+        (k, c, m, y) in pixel-brightness convention (0=full ink, 255=no ink).
+    """
     k, c, m, y = _rgb_to_cmyk_interp_arr(rgb_row, width)
     return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()

@@ -212,7 +212,11 @@ def apply_tone_curve_arr(
     y_arr: npt.NDArray[np.uint8],
     curve: npt.NDArray[np.uint8],
 ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]]:
-    """Like :func:`apply_tone_curve` but takes/returns ndarrays directly."""
+    """Like :func:`apply_tone_curve` but takes/returns ndarrays directly.
+
+    Returns:
+        (k, c, m, y) arrays mapped through `curve`.
+    """
     return np.take(curve, k_arr), np.take(curve, c_arr), np.take(curve, m_arr), np.take(curve, y_arr)
 
 

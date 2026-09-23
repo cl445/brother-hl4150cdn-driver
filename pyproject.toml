@@ -98,6 +98,7 @@ ignore = [
     "PLR2004", # magic values are fine for binary protocol analysis
     "PLR0912", # too many branches - common in protocol parsing
     "PLR0913", # too many arguments - common in low-level APIs
+    "PLR0917", # too many positional arguments - same rationale as PLR0913
     "PLR0915", # too many statements
     "COM812",  # trailing comma - conflicts with formatter
 ]

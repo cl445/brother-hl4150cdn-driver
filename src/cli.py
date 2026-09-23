@@ -30,10 +30,7 @@ def main() -> None:
         const=str(INVERSE_LUT_PATH),
         default=None,
         metavar="PATH",
-        help=(
-            "Precompute the RGB→KCMY inverse LUT and exit. "
-            f"Default target: {INVERSE_LUT_PATH}."
-        ),
+        help=(f"Precompute the RGB→KCMY inverse LUT and exit. Default target: {INVERSE_LUT_PATH}."),
     )
 
     args = parser.parse_args()

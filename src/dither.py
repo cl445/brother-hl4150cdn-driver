@@ -38,22 +38,30 @@ class DitherChannel:
     # Threshold matrix tiled to the target page width, keyed by width.
     _tiled_cache: dict[int, npt.NDArray[np.uint8]] = field(default_factory=dict, init=False, repr=False)
 
+    def tiled_thresholds(self, width: int) -> npt.NDArray[np.uint8]:
+        """Return the threshold matrix tiled to `width`, cached per width.
+
+        Returns:
+            Array of shape (height, width) with the repeated threshold matrix.
+
+        Raises:
+            ValueError: If the channel has no threshold matrix.
+        """
+        cached = self._tiled_cache.get(width)
+        if cached is not None:
+            return cached
+        tm = self.threshold_matrix
+        if tm is None:
+            msg = "channel has no threshold matrix"
+            raise ValueError(msg)
+        repeats = (width + self.width - 1) // self.width
+        tiled = np.tile(tm, (1, repeats))[:, :width].copy()  # (height, width)
+        self._tiled_cache[width] = tiled
+        return tiled
+
 
 # Module-level cache for default channels (lazily initialized)
 _cache: dict[str, dict[str, DitherChannel]] = {}
-
-
-def _get_tiled_thresholds(channel: DitherChannel, width: int) -> npt.NDArray[np.uint8]:
-    """Return the channel's threshold matrix tiled to `width`, cached on the channel."""
-    cached = channel._tiled_cache.get(width)
-    if cached is not None:
-        return cached
-    tm = channel.threshold_matrix
-    assert tm is not None
-    repeats = (width + channel.width - 1) // channel.width
-    tiled = np.tile(tm, (1, repeats))[:, :width].copy()  # (height, width)
-    channel._tiled_cache[width] = tiled
-    return tiled
 
 
 def _bayer_matrix(n: int) -> list[list[int]]:
@@ -290,7 +298,11 @@ def _ensure_defaults() -> dict[str, DitherChannel]:
 def dither_channel_1bpp_arr(
     row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel | None = None
 ) -> bytes:
-    """Like :func:`dither_channel_1bpp` but takes an ndarray instead of bytes."""
+    """Like :func:`dither_channel_1bpp` but takes an ndarray instead of bytes.
+
+    Returns:
+        Packed 1bpp scanline bytes.
+    """
     if channel is None:
         channel = _ensure_defaults()["K"]
 
@@ -298,7 +310,7 @@ def dither_channel_1bpp_arr(
 
     if channel.threshold_matrix is not None:
         ink = 255 - row_arr
-        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height]
+        thresholds = channel.tiled_thresholds(width)[y % channel.height]
         dots = ink > thresholds
         packed = np.packbits(dots)
         return bytes(packed[:bpl])
@@ -326,7 +338,7 @@ def dither_channel_1bpp(row: bytes, y: int, width: int, channel: DitherChannel |
     if channel.threshold_matrix is not None:
         # Numpy fast-path: vectorized threshold comparison
         ink = 255 - np.frombuffer(row, dtype=np.uint8, count=width)
-        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height]
+        thresholds = channel.tiled_thresholds(width)[y % channel.height]
         dots = ink > thresholds
         packed = np.packbits(dots)
         return bytes(packed[:bpl])
@@ -400,7 +412,7 @@ def dither_cmyk_1bpp(
 
         results = []
         for ink_arr, ch in ((k_ink, k_ch), (c_ink, c_ch), (m_ink, m_ch), (y_ink, y_ch)):
-            thresholds = _get_tiled_thresholds(ch, width)[y % ch.height]
+            thresholds = ch.tiled_thresholds(width)[y % ch.height]
             dots = ink_arr > thresholds
             packed = np.packbits(dots)
             results.append(bytes(packed[:bpl]))
@@ -466,13 +478,17 @@ def _nibble_pack(levels: npt.NDArray[np.uint8], width: int) -> bytes:
 def dither_channel_4bpp_arr(
     row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel | None = None
 ) -> bytes:
-    """Like :func:`dither_channel_4bpp` but takes an ndarray instead of bytes."""
+    """Like :func:`dither_channel_4bpp` but takes an ndarray instead of bytes.
+
+    Returns:
+        Packed 4bpp scanline bytes.
+    """
     if channel is None:
         channel = _ensure_defaults()["K"]
 
     if channel.threshold_matrix is not None:
         ink = (255 - row_arr).astype(np.int32)
-        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height].astype(np.int32)
+        thresholds = channel.tiled_thresholds(width)[y % channel.height].astype(np.int32)
 
         base = (ink * 15) // 255
         frac = (ink * 15) % 255
@@ -506,7 +522,7 @@ def dither_channel_4bpp(row: bytes, y: int, width: int, channel: DitherChannel |
         pixels = np.frombuffer(row, dtype=np.uint8, count=width)
         ink = (255 - pixels).astype(np.int32)
 
-        thresholds = _get_tiled_thresholds(channel, width)[y % channel.height].astype(np.int32)
+        thresholds = channel.tiled_thresholds(width)[y % channel.height].astype(np.int32)
 
         base = (ink * 15) // 255
         frac = (ink * 15) % 255
@@ -582,7 +598,7 @@ def dither_cmyk_4bpp(
 
         results = []
         for ink_arr, ch in ((k_ink, k_ch), (c_ink, c_ch), (m_ink, m_ch), (y_ink, y_ch)):
-            thresholds = _get_tiled_thresholds(ch, width)[y % ch.height].astype(np.int32)
+            thresholds = ch.tiled_thresholds(width)[y % ch.height].astype(np.int32)
 
             base = (ink_arr * 15) // 255
             frac = (ink_arr * 15) % 255

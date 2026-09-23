@@ -88,7 +88,11 @@ def rgb_line_to_cmyk_intensities_arr(
     width: int,
     color_matching: ColorMatching = ColorMatching.NORMAL,
 ) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
-    """Like :func:`rgb_line_to_cmyk_intensities` but returns ndarrays directly."""
+    """Like :func:`rgb_line_to_cmyk_intensities` but returns ndarrays directly.
+
+    Returns:
+        (k, c, m, y) uint8 intensity arrays of length `width`.
+    """
     if color_matching == ColorMatching.NONE:
         rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
         k = np.full(width, 255, dtype=np.uint8)
