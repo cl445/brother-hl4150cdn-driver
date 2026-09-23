@@ -25,6 +25,9 @@ comparison against captures from the manufacturer's filter.
 - Python 3.13+ and [`uv`](https://docs.astral.sh/uv/)
 - Ghostscript (the CUPS pipeline rasterizes PostScript to PPM)
 - CUPS
+- Optional, for speed: a C compiler and the Python headers (Debian:
+  `sudo apt install build-essential python3-dev`). `install.sh` then
+  builds the Cython RLE helpers; without them it falls back to pure Python.
 - A copy of the official Brother HL-4150CDN LPR driver `.deb`
   (`scripts/extract_blobs.sh` downloads and verifies it; the printer's
   calibration tables are extracted into `src/lut/` and `src/color_data/`

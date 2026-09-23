@@ -525,3 +525,17 @@ class TestSkipBlank:
         settings = PrintSettings(skip_blank=False)
         out = _run_pipeline(1, 1, b"\xff\xff\xff", settings)
         assert len(out) > 0
+
+
+def test_filter_page_accepts_ppm_wider_than_printable_area():
+    """cli.py feeds the uncropped GS render (4958 px) into an A4 page (4768 px)."""
+    import io
+
+    from pipeline import filter_page
+    from settings import PrintSettings
+
+    width, height = 4958, 16
+    pixel_data = bytes(range(256)) * (width * height * 3 // 256) + bytes(width * height * 3 % 256)
+    out = io.BytesIO()
+    filter_page(width, height, pixel_data, PrintSettings(), out)
+    assert out.getvalue()

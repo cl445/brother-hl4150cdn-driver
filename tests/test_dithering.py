@@ -608,3 +608,26 @@ class TestFineBRCDTables:
         row = bytes([128] * width)  # 50% gray
         result = dither_channel_4bpp(row, y=0, width=width, channel=channels["K"])
         assert len(result) == (width + 1) // 2  # 2480 bytes
+
+
+# ---------------------------------------------------------------------------
+# ndarray variants (hot path)
+# ---------------------------------------------------------------------------
+
+
+class TestArrVariants:
+    """The *_arr variants must match the bytes API, including over-wide rows."""
+
+    @pytest.mark.parametrize("fn_name", ["dither_channel_1bpp", "dither_channel_4bpp"])
+    def test_wider_row_truncated_to_width(self, fn_name):
+        """A row longer than `width` (uncropped PPM) is cut like the bytes API does."""
+        import numpy as np
+
+        import dither
+
+        width = 4768
+        row = np.arange(4958, dtype=np.uint32).astype(np.uint8)
+        arr_fn = getattr(dither, f"{fn_name}_arr")
+        bytes_fn = getattr(dither, fn_name)
+        for y in range(3):
+            assert arr_fn(row, y, width) == bytes_fn(row.tobytes(), y, width)

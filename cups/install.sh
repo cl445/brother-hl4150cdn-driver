@@ -114,6 +114,30 @@ echo "Creating virtual environment at $VENV_DIR..."
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --quiet numpy
 
+# Precompute the RGB→KCMY inverse LUT (64 MiB). Replaces per-pixel
+# tetrahedral interpolation; roughly 4x faster per page on a Pi 3.
+echo "Precomputing inverse color LUT (takes about a minute on a Pi 3)..."
+if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" cli.py --precompute-lut); then
+    echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
+fi
+
+# Optional Cython build of the RLE bit-packing helpers. Needs a C compiler
+# and the Python headers (Debian: python3-dev); pure-Python fallback otherwise.
+echo "Building Cython RLE acceleration..."
+BUILD_DIR="$(mktemp -d)"
+mkdir -p "$BUILD_DIR/src"
+cp "$REPO_ROOT/setup_cython.py" "$BUILD_DIR/"
+cp "$REPO_ROOT/src/_rle_fast.pyx" "$BUILD_DIR/src/"
+if "$VENV_DIR/bin/pip" install --quiet cython setuptools \
+    && (cd "$BUILD_DIR" && "$VENV_DIR/bin/python3" setup_cython.py build_ext --inplace >/dev/null) \
+    && compgen -G "$BUILD_DIR/src/_rle_fast*.so" >/dev/null; then
+    cp "$BUILD_DIR/src/"_rle_fast*.so "$LIB_DIR/"
+    echo "  Cython extension installed."
+else
+    echo "Warning: Cython build failed (missing compiler or python3-dev?); using pure-Python RLE."
+fi
+rm -rf "$BUILD_DIR"
+
 # Install CUPS filter
 echo "Installing CUPS filter to $CUPS_FILTER_DIR..."
 mkdir -p "$CUPS_FILTER_DIR"

@@ -309,7 +309,7 @@ def dither_channel_1bpp_arr(
     bpl = (width + 7) // 8
 
     if channel.threshold_matrix is not None:
-        ink = 255 - row_arr
+        ink = 255 - row_arr[:width]
         thresholds = channel.tiled_thresholds(width)[y % channel.height]
         dots = ink > thresholds
         packed = np.packbits(dots)
@@ -487,7 +487,7 @@ def dither_channel_4bpp_arr(
         channel = _ensure_defaults()["K"]
 
     if channel.threshold_matrix is not None:
-        ink = (255 - row_arr).astype(np.int32)
+        ink = (255 - row_arr[:width]).astype(np.int32)
         thresholds = channel.tiled_thresholds(width)[y % channel.height].astype(np.int32)
 
         base = (ink * 15) // 255
