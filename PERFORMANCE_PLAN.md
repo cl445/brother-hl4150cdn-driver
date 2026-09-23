@@ -145,10 +145,12 @@ Maßnahme 3 (Streaming).
 - Ausnahmen, die weiter die ganze Seite brauchen:
   - Long-Edge-Duplex-Rückseiten (`_flip_vertical`): Seite puffern, aber ohne
     `np.full` + `[::-1].tobytes()` — Zeilen rückwärts aus dem Puffer lesen.
-  - `settings.reverse`: Seiten nicht im RAM halten. Entweder gerenderte
-    XL2HB-Seiten (≈ 0,25 MB/Seite statt 100 MB Raster) sammeln und rückwärts
-    ausgeben, oder gs die Seiten rückwärts rastern lassen (`-sPageList`).
-    **Dringend**, da heute OOM-gefährdet.
+  - ~~`settings.reverse`~~ — ✅ umgesetzt: Seiten werden vorwärts gerendert,
+    fertige XL2HB-Seiten in eine temporäre Datei geschrieben und rückwärts
+    ausgegeben. Long-Edge-Duplex braucht die Seitenzahl vorab
+    (`count_ps_pages`: DSC `%%Pages:` sofort, sonst gs-`nullpage`-Zählung,
+    ~16 s für 131 Seiten). Pi, 131 Seiten, Reverse + Long-Edge: 280 s,
+    347 MB RSS (vorher OOM); byte-identisch zum alten In-RAM-Umdrehen.
   - `skip_blank` (heute unkritisch, prüft je eine Seite): beim Streaming die
     Seite erst nach dem Rendern verwerfen (gerenderte XL2HB-Seite puffern,
     Leerseite erkennen) statt vorab das Raster zu prüfen.
@@ -197,7 +199,7 @@ Variante B — Bänder innerhalb einer Seite:
 
 1. ~~`crop_page` entfernen (1) und LUT per mmap (2)~~ — erledigt:
    −30 bis −45 % Laufzeit, −236 MB RSS
-2. `reverse` ohne Raster-Puffer (Teil von 3) — OOM-Risiko
+2. ~~`reverse` ohne Raster-Puffer~~ — erledigt, 131 Seiten mit 347 MB
 3. Streaming + Reader-Thread (3)
 4. Startzeit (5)
 5. Band-Kernel + Threads (4B), nur falls die Zeit bis zur ersten Seite danach

@@ -6,6 +6,7 @@ as a single print job.
 """
 
 import logging
+import tempfile
 from collections.abc import Callable, Iterable
 from functools import partial
 from pathlib import Path
@@ -297,10 +298,56 @@ def filter_page(
     if settings.skip_blank and is_blank_page(pixel_data):
         return
 
-    filter_duplex_pages([(width, height, pixel_data)], settings, output, lut_dir=lut_dir)
+    filter_duplex_pages([(width, height, pixel_data)], settings, output, lut_dir=lut_dir, page_count=1)
 
     _, paper_h = PAPER_SIZES.get(settings.page_size, PAPER_SIZES["A4"])
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
+
+
+def _render_pages_reversed(
+    pages: Iterable[tuple[int, int, PageData]],
+    settings: PrintSettings,
+    channels: dict[str, DitherChannel],
+    output: BinaryIO,
+    page_count: int | None,
+) -> None:
+    """Render pages in input order and write them to `output` last page first.
+
+    Each rendered page (BeginPage..EndPage) goes to a temporary file, so
+    only one raster page is in memory at a time. Page `i` of `n` ends up at
+    position `n - 1 - i`, which decides its duplex side exactly as if the
+    rasters had been reversed before rendering.
+    """
+    duplex = settings.duplex != DuplexMode.NONE
+    spans: list[tuple[int, int]] = []
+    with tempfile.TemporaryFile(prefix="brhl4150cdn-reverse-") as spool:
+        for index, (width, height, pixel_data) in enumerate(pages):
+            # Without page_count the side is unknown; that is only allowed
+            # when it does not change the output (simplex, short-edge duplex).
+            back_side = duplex and page_count is not None and (page_count - 1 - index) % 2 == 1
+            start = spool.tell()
+            _render_page(
+                XL2HBWriter(spool),
+                width,
+                height,
+                pixel_data,
+                settings,
+                channels,
+                settings.page_size,
+                back_side=back_side,
+            )
+            spans.append((start, spool.tell() - start))
+
+        if page_count is not None and len(spans) != page_count:
+            logger.error(
+                "Expected %d pages but rendered %d; duplex sides of the reversed job may be wrong",
+                page_count,
+                len(spans),
+            )
+
+        for start, length in reversed(spans):
+            spool.seek(start)
+            output.write(spool.read(length))
 
 
 def filter_duplex_pages(
@@ -308,17 +355,30 @@ def filter_duplex_pages(
     settings: PrintSettings,
     output: BinaryIO,
     lut_dir: str | None = None,
+    page_count: int | None = None,
 ) -> None:
     """Render multiple pages inside a single XL2HB session.
 
     Pages are consumed lazily; with duplex, every second page is a back side.
+    With `settings.reverse` the pages are still rendered one at a time in
+    input order, spooled to a temporary file and emitted last page first,
+    so memory use does not grow with the job.
 
     Args:
         pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings (should have duplex != "None" for actual duplex)
         output: writable binary stream
         lut_dir: optional path to BRCD LUT directory
+        page_count: number of pages in `pages`. Required for reverse order
+            with long-edge duplex, where a page's position in the reversed
+            job decides whether it is a mirrored back side.
+
+    Raises:
+        ValueError: If reverse long-edge duplex is requested without `page_count`.
     """
+    if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE and page_count is None:
+        msg = "page_count is required for reverse order with long-edge duplex"
+        raise ValueError(msg)
     page_size = settings.page_size
 
     # PJL header always reports 600 dpi; Fine mode differs only in dithering.
@@ -347,8 +407,13 @@ def filter_duplex_pages(
     channels = _init_channels(settings, lut_dir=lut_dir)
 
     duplex = settings.duplex != DuplexMode.NONE
-    for index, (width, height, pixel_data) in enumerate(pages):
-        _render_page(w, width, height, pixel_data, settings, channels, page_size, back_side=duplex and index % 2 == 1)
+    if settings.reverse:
+        _render_pages_reversed(pages, settings, channels, output, page_count)
+    else:
+        for index, (width, height, pixel_data) in enumerate(pages):
+            _render_page(
+                w, width, height, pixel_data, settings, channels, page_size, back_side=duplex and index % 2 == 1
+            )
 
     w.write_close_data_source()
     w.write_end_session()

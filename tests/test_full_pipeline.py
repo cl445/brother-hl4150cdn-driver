@@ -579,3 +579,29 @@ def test_duplex_job_matches_brother_capture(fixture, duplex):
     out = io.BytesIO()
     filter_duplex_pages(_duplex_test_pages(), PrintSettings(duplex=DuplexMode(duplex)), out)
     assert out.getvalue() == expected
+
+
+@pytest.mark.parametrize("duplex", ["None", "DuplexNoTumble", "DuplexTumble"])
+@pytest.mark.parametrize("n_pages", [3, 4])
+def test_reverse_matches_reversed_input(duplex, n_pages):
+    """Reverse order renders forward and spools, but must equal rendering the reversed pages."""
+    from pipeline import filter_duplex_pages
+    from settings import DuplexMode
+
+    pages = _duplex_test_pages()[:n_pages]
+    expected = io.BytesIO()
+    filter_duplex_pages(pages[::-1], PrintSettings(duplex=DuplexMode(duplex)), expected)
+
+    out = io.BytesIO()
+    settings = PrintSettings(duplex=DuplexMode(duplex), reverse=True)
+    filter_duplex_pages(iter(pages), settings, out, page_count=n_pages)
+    assert out.getvalue() == expected.getvalue()
+
+
+def test_reverse_long_edge_requires_page_count():
+    from pipeline import filter_duplex_pages
+    from settings import DuplexMode
+
+    settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE, reverse=True)
+    with pytest.raises(ValueError, match="page_count"):
+        filter_duplex_pages(iter(_duplex_test_pages()), settings, io.BytesIO())

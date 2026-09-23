@@ -12,6 +12,7 @@ Usage (called by CUPS):
 import itertools
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -77,8 +78,12 @@ logging.basicConfig(
 logger = logging.getLogger("brhl4150cdn-filter")
 
 
-def build_gs_command(input_path: str, page_size: str) -> list[str]:
-    """Build the Ghostscript command for rasterizing PS to PPM."""
+def find_gs() -> str:
+    """Locate the Ghostscript binary or exit.
+
+    Returns:
+        Path to the gs executable.
+    """
     gs = shutil.which("gs")
     if gs is None:
         # macOS might have it as gsnd or in a different location
@@ -89,9 +94,13 @@ def build_gs_command(input_path: str, page_size: str) -> list[str]:
     if gs is None:
         logger.error("Ghostscript (gs) not found in PATH")
         sys.exit(1)
+    return gs
 
+
+def build_gs_command(input_path: str, page_size: str) -> list[str]:
+    """Build the Ghostscript command for rasterizing PS to PPM."""
     cmd = [
-        gs,
+        find_gs(),
         "-sDEVICE=ppmraw",
         "-r600",
         "-dBATCH",
@@ -113,6 +122,42 @@ def build_gs_command(input_path: str, page_size: str) -> list[str]:
 
     cmd.append(input_path)
     return cmd
+
+
+_DSC_PAGES = re.compile(rb"^%%Pages:[ \t]*(\d+)", re.MULTILINE)
+
+
+def count_ps_pages(input_path: str) -> int:
+    """Count the pages of a PostScript job.
+
+    Uses the DSC ``%%Pages:`` comment when present (pdftops writes it in
+    the trailer, so this is instant); otherwise lets Ghostscript interpret
+    the job on the null device and counts EndPage calls, which takes
+    ~15 s for 130 pages on a Pi 3.
+
+    Returns:
+        Number of pages the job produces.
+    """
+    with open(input_path, "rb") as f:
+        head = f.read(65536)
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - 65536))
+        tail = f.read()
+    # A header value wins unless it says (atend); the trailer's last one otherwise.
+    for chunk, pick in ((head, 0), (tail, -1)):
+        found = _DSC_PAGES.findall(chunk)
+        if found:
+            return int(found[pick])
+
+    logger.info("no DSC page count, counting pages with Ghostscript")
+    cmd = [
+        find_gs(),
+        "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=nullpage", "-r72",
+        "-c", "<< /EndPage { exch pop 2 ne dup { (%%BRPAGE%%\\n) print flush } if } >> setpagedevice",
+        "-f", input_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, check=True)
+    return result.stdout.count(b"%%BRPAGE%%")
 
 
 def crop_page(pixel_data: bytes, src_width: int, src_height: int, page_size: str) -> tuple[int, int, np.ndarray]:
@@ -238,7 +283,8 @@ def main() -> None:
 
         # Stream pages from GS into one XL2HB session, like Brother's filter:
         # each page is rendered and sent as soon as it is read, so only the
-        # current page is held in RAM. Reverse order needs the whole job.
+        # current page is held in RAM. Reverse order spools rendered pages
+        # to disk instead (see filter_duplex_pages).
         page_count = 0
 
         def counted(it):
@@ -249,15 +295,25 @@ def main() -> None:
                 yield page
 
         pages = counted(iter_cropped_pages(gs_proc.stdout, settings.page_size))
-        if settings.reverse:
-            pages = iter(list(pages)[::-1])
+        # Reversed long-edge duplex needs the page count up front: a page's
+        # position in the reversed job decides whether it is a back side.
+        expected_pages = None
+        if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE:
+            expected_pages = count_ps_pages(input_file)
+            logger.info("reverse long-edge duplex: %d pages", expected_pages)
         if settings.skip_blank and settings.duplex == DuplexMode.NONE:
             pages = (p for p in pages if not is_blank_page(p[2]))
 
         first = next(pages, None)
         if first is not None:
             output = sys.stdout.buffer
-            filter_duplex_pages(itertools.chain([first], pages), settings, output, lut_dir=find_lut_dir())
+            filter_duplex_pages(
+                itertools.chain([first], pages),
+                settings,
+                output,
+                lut_dir=find_lut_dir(),
+                page_count=expected_pages,
+            )
             output.flush()
 
         gs_proc.wait()
