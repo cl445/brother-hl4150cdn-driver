@@ -1,4 +1,4 @@
-"""Build script for the Cython acceleration module.
+"""Build script for the Cython acceleration modules.
 
     uv run --with cython,setuptools python setup_cython.py build_ext --inplace
 """
@@ -13,6 +13,16 @@ setup(
             Extension(
                 "_rle_fast",
                 sources=["src/_rle_fast.pyx"],
+                extra_compile_args=["-O3", "-fno-strict-aliasing"],
+            ),
+            Extension(
+                "_dither_fast",
+                sources=["src/_dither_fast.pyx"],
+                extra_compile_args=["-O3", "-fno-strict-aliasing"],
+            ),
+            Extension(
+                "_color_fast",
+                sources=["src/_color_fast.pyx"],
                 extra_compile_args=["-O3", "-fno-strict-aliasing"],
             ),
         ],

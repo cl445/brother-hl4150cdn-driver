@@ -631,3 +631,24 @@ class TestArrVariants:
         bytes_fn = getattr(dither, fn_name)
         for y in range(3):
             assert arr_fn(row, y, width) == bytes_fn(row.tobytes(), y, width)
+
+
+def test_native_1bpp_dither_matches_numpy(monkeypatch):
+    """_dither_fast.dither_row_1bpp agrees with the numpy threshold path."""
+    import numpy as np
+
+    import dither
+
+    if not dither.HAS_CYTHON_DITHER:
+        pytest.skip("_dither_fast extension not built")
+    rng = np.random.default_rng(1)
+    channels = dither.load_dither_tables()
+    for width in (4768, 4761, 5):
+        row = rng.integers(0, 256, width + 190, dtype=np.uint8)
+        strided = np.repeat(row, 2)[::2]  # non-contiguous view, as from a KCMY column
+        for y in (0, 17, 31):
+            native = dither.dither_channel_1bpp_arr(strided, y, width, channels["C"])
+            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER", False)
+            reference = dither.dither_channel_1bpp_arr(strided, y, width, channels["C"])
+            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER", True)
+            assert native == reference

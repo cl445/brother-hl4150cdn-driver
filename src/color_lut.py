@@ -13,6 +13,13 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
+try:
+    from _color_fast import gather_kcmy  # type: ignore[import-not-found]
+
+    HAS_CYTHON_COLOR = True
+except ImportError:
+    HAS_CYTHON_COLOR = False
+
 logger = logging.getLogger(__name__)
 
 # Data directory containing extracted binary tables
@@ -191,6 +198,10 @@ def rgb_to_cmyk_lut_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArra
         (k, c, m, y) uint8 arrays of length `width`.
     """
     inv = _load_inverse_lut()
+    if inv is not None and HAS_CYTHON_COLOR:
+        planes = np.empty((4, width), dtype=np.uint8)
+        gather_kcmy(rgb_row, width, inv.reshape(-1), planes[0], planes[1], planes[2], planes[3])
+        return planes[0], planes[1], planes[2], planes[3]
     if inv is not None:
         rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
         idx = (rgb[:, 0].astype(np.uint32) << 16) | (rgb[:, 1].astype(np.uint32) << 8) | rgb[:, 2].astype(np.uint32)

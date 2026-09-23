@@ -24,6 +24,13 @@ from rle import (
     sw_rle_encode,
 )
 
+try:
+    from _rle_fast import encode_sw_rle  # type: ignore[import-not-found]
+
+    HAS_CYTHON_SW_RLE = True
+except ImportError:
+    HAS_CYTHON_SW_RLE = False
+
 # Per-plane parameters: (read_group_size, encode_group_size).
 _PLANE_GROUP_SIZES = {
     "K": (12, 12),
@@ -71,6 +78,8 @@ def encode_plane(data: bytes, plane: str = "K") -> bytes:
         msg = f"Unknown plane {plane!r}, expected one of {set(_PLANE_GROUP_SIZES)}"
         raise ValueError(msg)
     read_group, encode_group = _PLANE_GROUP_SIZES[plane]
+    if HAS_CYTHON_SW_RLE:
+        return encode_sw_rle(data, read_group, encode_group, 12)
     groups = data_to_encode_groups(data, read_group, encode_group)
     return _encode_via_sw_rle(groups, data, CONFIG_12BIT, encode_group)
 
@@ -84,6 +93,8 @@ def encode_c_plane(data: bytes) -> bytes:
     Returns:
         Compressed bytes, empty if the line is all-zero.
     """
+    if HAS_CYTHON_SW_RLE:
+        return encode_sw_rle(data, 1, 20, 20)
     return _encode_via_sw_rle(group_bits(data, 20), data, CONFIG_20BIT, 20)
 
 
@@ -96,6 +107,8 @@ def encode_m_plane_10(data: bytes) -> bytes:
     Returns:
         Compressed bytes, empty if the line is all-zero.
     """
+    if HAS_CYTHON_SW_RLE:
+        return encode_sw_rle(data, 1, 10, 10)
     return _encode_via_sw_rle(group_bits(data, 10), data, CONFIG_10BIT, 10)
 
 

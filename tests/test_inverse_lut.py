@@ -67,3 +67,19 @@ def test_special_values_match(tmp_path, monkeypatch, rgb) -> None:
     assert rgb_to_cmyk_lut(pixel, 1) == _rgb_to_cmyk_interp(pixel, 1)
 
     _load_inverse_lut.cache_clear()
+
+
+def test_native_gather_matches_numpy_path(monkeypatch) -> None:
+    """The Cython gather and the numpy fancy-index path agree, incl. over-long rows."""
+    if not color_lut.HAS_CYTHON_COLOR:
+        pytest.skip("_color_fast extension not built")
+    rng = np.random.default_rng(3)
+    lut = rng.integers(0, 256, color_lut._INVERSE_LUT_SHAPE, dtype=np.uint8)
+    monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda: lut)
+
+    sample = _sample_rgb(seed=11, width=5000)
+    native = color_lut.rgb_to_cmyk_lut_arr(sample, 4768)
+    monkeypatch.setattr(color_lut, "HAS_CYTHON_COLOR", False)
+    reference = color_lut.rgb_to_cmyk_lut_arr(sample, 4768)
+    for got, want in zip(native, reference, strict=True):
+        np.testing.assert_array_equal(got, want)

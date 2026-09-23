@@ -121,20 +121,20 @@ if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" cli.py --pr
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
 fi
 
-# Optional Cython build of the RLE bit-packing helpers. Needs a C compiler
+# Optional Cython build of the RLE encoders and the colour-LUT gather. Needs a C compiler
 # and the Python headers (Debian: python3-dev); pure-Python fallback otherwise.
-echo "Building Cython RLE acceleration..."
+echo "Building Cython acceleration..."
 BUILD_DIR="$(mktemp -d)"
 mkdir -p "$BUILD_DIR/src"
 cp "$REPO_ROOT/setup_cython.py" "$BUILD_DIR/"
-cp "$REPO_ROOT/src/_rle_fast.pyx" "$BUILD_DIR/src/"
+cp "$REPO_ROOT/src/"_*_fast.pyx "$BUILD_DIR/src/"
 if "$VENV_DIR/bin/pip" install --quiet cython setuptools \
     && (cd "$BUILD_DIR" && "$VENV_DIR/bin/python3" setup_cython.py build_ext --inplace >/dev/null) \
-    && compgen -G "$BUILD_DIR/src/_rle_fast*.so" >/dev/null; then
-    cp "$BUILD_DIR/src/"_rle_fast*.so "$LIB_DIR/"
-    echo "  Cython extension installed."
+    && compgen -G "$BUILD_DIR/src/_*_fast*.so" >/dev/null; then
+    cp "$BUILD_DIR/src/"_*_fast*.so "$LIB_DIR/"
+    echo "  Cython extensions installed."
 else
-    echo "Warning: Cython build failed (missing compiler or python3-dev?); using pure-Python RLE."
+    echo "Warning: Cython build failed (missing compiler or python3-dev?); using pure-Python fallbacks."
 fi
 rm -rf "$BUILD_DIR"
 

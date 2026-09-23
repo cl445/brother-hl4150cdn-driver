@@ -19,6 +19,13 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
+try:
+    from _dither_fast import dither_row_1bpp  # type: ignore[import-not-found]
+
+    HAS_CYTHON_DITHER = True
+except ImportError:
+    HAS_CYTHON_DITHER = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -309,8 +316,10 @@ def dither_channel_1bpp_arr(
     bpl = (width + 7) // 8
 
     if channel.threshold_matrix is not None:
-        ink = 255 - row_arr[:width]
         thresholds = channel.tiled_thresholds(width)[y % channel.height]
+        if HAS_CYTHON_DITHER:
+            return dither_row_1bpp(row_arr, thresholds, width)
+        ink = 255 - row_arr[:width]
         dots = ink > thresholds
         packed = np.packbits(dots)
         return bytes(packed[:bpl])

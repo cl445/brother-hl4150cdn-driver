@@ -4,7 +4,7 @@ dist/
 *.egg-info/
 
 # Cython-generated outputs (the .pyx is the source of truth)
-src/_rle_fast.c
+src/_*_fast.c
 src/*.so
 
 # Python
