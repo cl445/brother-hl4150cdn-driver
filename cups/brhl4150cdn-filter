@@ -9,12 +9,15 @@ Usage (called by CUPS):
     brhl4150cdn-filter job-id user title copies options [filename]
 """
 
+import itertools
 import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+
+import numpy as np
 
 # When installed, all modules live alongside this script in /usr/local/lib/brhl4150cdn/
 # Add that directory to sys.path so imports work.
@@ -33,7 +36,6 @@ from brfilter import (  # noqa: E402
     DuplexMode,
     PrintSettings,
     filter_duplex_pages,
-    filter_page,
     read_ppm,
 )
 from xl2hb import PAPER_SIZES  # noqa: E402
@@ -132,27 +134,28 @@ def crop_page(pixel_data: bytes, src_width: int, src_height: int, page_size: str
         # Page too small for any printable area
         return target_w, target_h, b"\xff" * (target_w * target_h * 3)
 
-    # Extract the cropped region row by row
-    rows = []
-    src_bpr = src_width * 3
-    for y in range(crop_h):
-        src_y = y + y_off
-        if src_y >= src_height:
-            break
-        row_start = src_y * src_bpr + x_off * 3
-        row_end = row_start + crop_w * 3
-        row = pixel_data[row_start:row_end]
-        # Pad row to target width if needed
-        if crop_w < target_w:
-            row += b"\xff" * ((target_w - crop_w) * 3)
-        rows.append(row)
+    # Copy the printable window into a white target-sized page.
+    src = np.frombuffer(pixel_data, dtype=np.uint8, count=src_width * src_height * 3)
+    src = src.reshape(src_height, src_width, 3)
+    out = np.full((target_h, target_w, 3), 255, dtype=np.uint8)
+    out[:crop_h, :crop_w] = src[y_off : y_off + crop_h, x_off : x_off + crop_w]
+    return target_w, target_h, out.tobytes()
 
-    # Pad remaining rows with white
-    white_row = b"\xff" * (target_w * 3)
-    while len(rows) < target_h:
-        rows.append(white_row)
 
-    return target_w, target_h, b"".join(rows)
+def iter_cropped_pages(stream, page_size: str):
+    """Yield (width, height, pixel_data) per GS page, cropped to the printable area."""
+    page_num = 0
+    while True:
+        result = read_ppm(stream)
+        if result is None:
+            return
+        width, height, _maxval, pixel_data = result
+        page_num += 1
+        logger.info("page %d: %dx%d pixels from GS", page_num, width, height)
+        crop_w, crop_h, cropped_data = crop_page(pixel_data, width, height, page_size)
+        del pixel_data, result  # free the uncropped render before the next page
+        logger.info("page %d: cropped to %dx%d", page_num, crop_w, crop_h)
+        yield crop_w, crop_h, cropped_data
 
 
 def find_lut_dir() -> str | None:
@@ -222,24 +225,29 @@ def main() -> None:
             stderr=subprocess.PIPE,
         )
 
-        # Read PPM pages from GS stdout
-        pages: list[tuple[int, int, bytes]] = []
-        page_num = 0
+        # Stream pages from GS into one XL2HB session, like Brother's filter:
+        # each page is rendered and sent as soon as it is read, so only the
+        # current page is held in RAM. Reverse order needs the whole job.
+        page_count = 0
 
-        while True:
-            result = read_ppm(gs_proc.stdout)
-            if result is None:
-                break
-            width, height, _maxval, pixel_data = result
-            page_num += 1
-            logger.info("page %d: %dx%d pixels from GS", page_num, width, height)
+        def counted(it):
+            nonlocal page_count
+            for page in it:
+                page_count += 1
+                logger.info("rendering page %d", page_count)
+                yield page
 
-            # Crop to printable area
-            crop_w, crop_h, cropped_data = crop_page(
-                pixel_data, width, height, settings.page_size
-            )
-            logger.info("page %d: cropped to %dx%d", page_num, crop_w, crop_h)
-            pages.append((crop_w, crop_h, cropped_data))
+        pages = counted(iter_cropped_pages(gs_proc.stdout, settings.page_size))
+        if settings.reverse:
+            pages = iter(list(pages)[::-1])
+        if settings.skip_blank and settings.duplex == DuplexMode.NONE:
+            pages = (p for p in pages if p[2].count(255) != len(p[2]))
+
+        first = next(pages, None)
+        if first is not None:
+            output = sys.stdout.buffer
+            filter_duplex_pages(itertools.chain([first], pages), settings, output, lut_dir=find_lut_dir())
+            output.flush()
 
         gs_proc.wait()
         gs_stderr = gs_proc.stderr.read().decode("utf-8", errors="replace").strip()
@@ -249,33 +257,11 @@ def main() -> None:
             logger.error("Ghostscript exited with code %d", gs_proc.returncode)
             sys.exit(1)
 
-        if not pages:
+        if page_count == 0:
             logger.error("No pages produced by Ghostscript")
             sys.exit(1)
 
-        logger.info("total pages: %d", len(pages))
-
-        # Handle reverse printing
-        if settings.reverse:
-            pages.reverse()
-
-        # Find LUT directory
-        lut_dir = find_lut_dir()
-
-        # Output XL2HB to stdout
-        output = sys.stdout.buffer
-
-        if settings.duplex != DuplexMode.NONE:
-            # Duplex: process pages in pairs
-            for i in range(0, len(pages), 2):
-                pair = pages[i:i + 2]
-                filter_duplex_pages(pair, settings, output, lut_dir=lut_dir)
-        else:
-            # Simplex: one page at a time
-            for i, (w, h, data) in enumerate(pages):
-                logger.info("rendering page %d/%d", i + 1, len(pages))
-                filter_page(w, h, data, settings, output, lut_dir=lut_dir)
-
+        logger.info("total pages: %d", page_count)
         logger.info("done")
 
     finally:

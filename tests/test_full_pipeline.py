@@ -539,3 +539,43 @@ def test_filter_page_accepts_ppm_wider_than_printable_area():
     out = io.BytesIO()
     filter_page(width, height, pixel_data, PrintSettings(), out)
     assert out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Duplex: byte-exact against brhl4150cdnfilter (4 asymmetric pages, one session)
+# ---------------------------------------------------------------------------
+
+
+def _duplex_test_pages() -> list[tuple[int, int, bytes]]:
+    """Four A4 pages whose content is asymmetric in x and y, so flips show up."""
+    import numpy as np
+
+    colours = [(0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 0, 0)]
+    pages = []
+    for i in range(4):
+        page = np.full((_A4_H, _A4_W, 3), 255, np.uint8)
+        page[300 + i * 100 : 420 + i * 100, 200:1400] = (0, 0, 0)
+        page[4000:4150, 2600 + i * 200 : 4500] = colours[i]
+        pages.append((_A4_W, _A4_H, page.tobytes()))
+    return pages
+
+
+@pytest.mark.parametrize(
+    ("fixture", "duplex"),
+    [
+        ("duplex4_none", "None"),
+        ("duplex4_long_edge", "DuplexNoTumble"),
+        ("duplex4_short_edge", "DuplexTumble"),
+    ],
+)
+def test_duplex_job_matches_brother_capture(fixture, duplex):
+    """Whole 4-page job in one session, incl. the flipped long-edge back pages."""
+    from pipeline import filter_duplex_pages
+    from settings import DuplexMode
+
+    expected = read_fixture(f"{fixture}.xl2hb")
+    if expected is None:
+        pytest.skip(f"{fixture}.xl2hb not available")
+    out = io.BytesIO()
+    filter_duplex_pages(_duplex_test_pages(), PrintSettings(duplex=DuplexMode(duplex)), out)
+    assert out.getvalue() == expected

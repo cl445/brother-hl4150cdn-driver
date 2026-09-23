@@ -164,7 +164,7 @@ class PrintSettings:
         """Parse a CUPS option string into PrintSettings.
 
         CUPS passes options as space-separated Key=Value pairs, e.g.:
-        ``"PageSize=A4 BRDuplex=DuplexNoTumble BRBrightness=5"``.
+        ``"PageSize=A4 Duplex=DuplexNoTumble BRBrightness=5"``.
 
         Returns:
             Populated settings instance with the parsed values.
@@ -181,7 +181,8 @@ class PrintSettings:
         # Enum options
         enum_map: dict[str, tuple[str, type]] = {
             "PageSize": ("page_size", PageSize),
-            "BRDuplex": ("duplex", DuplexMode),
+            "BRDuplex": ("duplex", DuplexMode),  # pre-2026-09 PPD name
+            "Duplex": ("duplex", DuplexMode),
             "BRInputSlot": ("input_slot", InputSlot),
             "BRMonoColor": ("mono_color", MonoColor),
             "BRMediaType": ("media_type", MediaType),
@@ -194,6 +195,14 @@ class PrintSettings:
                     setattr(settings, attr, enum_cls(opts[cups_key]))
                 except ValueError:
                     logger.warning("Unknown %s value %r, keeping default", cups_key, opts[cups_key])
+
+        # IPP "sides" when no PPD duplex option came through.
+        if "Duplex" not in opts and "BRDuplex" not in opts and "sides" in opts:
+            sides = _SIDES_TO_DUPLEX.get(opts["sides"])
+            if sides is None:
+                logger.warning("Unknown sides value %r, keeping default", opts["sides"])
+            else:
+                settings.duplex = sides
 
         # Resolution: "600x2400dpi" -> Fine, else Normal
         if "BRResolution" in opts:
@@ -238,10 +247,17 @@ class PrintSettings:
         return settings
 
 
-DUPLEX_MAP = {
-    DuplexMode.NONE: 0,
-    DuplexMode.NO_TUMBLE: 1,
-    DuplexMode.TUMBLE: 2,
+_SIDES_TO_DUPLEX = {
+    "one-sided": DuplexMode.NONE,
+    "two-sided-long-edge": DuplexMode.NO_TUMBLE,
+    "two-sided-short-edge": DuplexMode.TUMBLE,
+}
+
+# XL2HB DuplexPageMode values as written by Brother's filter; None = simplex.
+DUPLEX_MAP: dict[DuplexMode, int | None] = {
+    DuplexMode.NONE: None,
+    DuplexMode.NO_TUMBLE: 0x00,
+    DuplexMode.TUMBLE: 0x81,
 }
 
 _TRAY_MAP = {"Tray1": "TRAY1", "Tray2": "TRAY2"}

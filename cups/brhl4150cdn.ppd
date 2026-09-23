@@ -99,13 +99,14 @@
 
 
 *%=== Duplex ================================
-*OpenUI *BRDuplex/Two-Sided Printing: PickOne
-*OrderDependency: 25 AnySetup *BRDuplex
-*DefaultBRDuplex: None
-*BRDuplex DuplexTumble/Short-Edge Binding: "          "
-*BRDuplex DuplexNoTumble/Long-Edge Binding: "          "
-*BRDuplex None/Off: "          "
-*CloseUI: *BRDuplex
+*% Standard keyword so CUPS maps IPP "sides" (and print dialogs) onto it.
+*OpenUI *Duplex/Two-Sided Printing: PickOne
+*OrderDependency: 25 AnySetup *Duplex
+*DefaultDuplex: None
+*Duplex DuplexTumble/Short-Edge Binding: "          "
+*Duplex DuplexNoTumble/Long-Edge Binding: "          "
+*Duplex None/Off: "          "
+*CloseUI: *Duplex
 
 *%=== Paper Feed================================
 *OpenUI *BRInputSlot/Paper Source: PickOne

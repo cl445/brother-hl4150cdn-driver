@@ -276,17 +276,21 @@ class TestDuplex:
         filter_page(1, 1, pixel_data, settings, buf)
         return buf.getvalue()
 
+    def test_simplex_sets_simplex_page_mode(self):
+        """Simplex writes SimplexPageMode (attr 0x34) = 0, like Brother's filter."""
+        data = self._make_tiny_page(DuplexMode.NONE)
+        assert b"\xc0\x00\xf8\x34\x43" in data
+        assert b"\xf8\x35\x43" not in data
+
     def test_duplex_long_edge_sets_mode(self):
-        """DuplexNoTumble should set duplex_mode=1 in BeginPage."""
+        """DuplexNoTumble writes DuplexPageMode (attr 0x35) = 0x00."""
         data = self._make_tiny_page(DuplexMode.NO_TUMBLE)
-        # attr 0x34 (duplex_mode) with ubyte value 1: c0 01 f8 34
-        assert b"\xc0\x01\xf8\x34" in data
+        assert b"\xc0\x00\xf8\x35\x43" in data
 
     def test_duplex_short_edge_sets_mode(self):
-        """DuplexTumble should set duplex_mode=2 in BeginPage."""
+        """DuplexTumble writes DuplexPageMode (attr 0x35) = 0x81."""
         data = self._make_tiny_page(DuplexMode.TUMBLE)
-        # attr 0x34 (duplex_mode) with ubyte value 2: c0 02 f8 34
-        assert b"\xc0\x02\xf8\x34" in data
+        assert b"\xc0\x81\xf8\x35\x43" in data
 
     def test_duplex_sends_two_pages(self):
         """Duplex mode should produce front and back in one session."""
@@ -305,12 +309,10 @@ class TestDuplex:
         # EndSession: standalone 0x42 byte after CloseDataSource (0x49)
         assert b"\x49\x42" in data, "Expected EndSession after CloseDataSource"
 
-        # Verify two BeginPage opcodes (duplex_mode attr + 0x43)
-        # Each BeginPage is preceded by the duplex mode attribute
-        assert data.count(b"\xf8\x34\x43") >= 2, "Expected 2 BeginPage opcodes"
-
-        # Verify duplex mode attribute is present in both pages (long-edge: value 1)
-        assert data.count(b"\xc0\x01\xf8\x34") >= 2, "Expected duplex_mode=1 in both pages"
+        # Two BeginPage opcodes, each preceded by DuplexPageMode=0x00
+        assert data.count(b"\xc0\x00\xf8\x35\x43") == 2, "Expected 2 duplex BeginPage opcodes"
+        # Only the back page carries the long-edge back-side marker
+        assert data.count(b"\xc0\x10\xf8\x81\xc0\x00\xf8\x28") == 1
 
 
 # ---------------------------------------------------------------------------

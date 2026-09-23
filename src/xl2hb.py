@@ -40,7 +40,11 @@ ATTR_ORIENTATION = 0x28
 ATTR_MEDIA_SOURCE = 0x26
 ATTR_MEDIA_SIZE = 0x25
 ATTR_MEDIA_TYPE = 0x27
-ATTR_DUPLEX_PAGE_MODE = 0x34
+ATTR_SIMPLEX_PAGE_MODE = 0x34
+ATTR_DUPLEX_PAGE_MODE = 0x35
+# Brother emits attr 0x81 = 0x10 ahead of every long-edge duplex back page.
+ATTR_DUPLEX_BACK_SIDE = 0x81
+DUPLEX_BACK_SIDE_MARKER = 0x10
 ATTR_PAGE_ORIGIN = 0x2A
 
 # BeginImage
@@ -515,9 +519,17 @@ class XL2HBWriter:
         media_source: int = 1,
         orientation: int = 0,
         media_type: str = "Plain",
-        duplex_mode: int = 0,
+        duplex_mode: int | None = None,
+        back_side_marker: bool = False,
     ) -> None:
-        """Emit BeginPage with media size, source, type, and duplex mode."""
+        """Emit BeginPage with media size, source, type, and simplex/duplex mode.
+
+        `duplex_mode` None writes SimplexPageMode=0; otherwise DuplexPageMode
+        carries the value (0x00 long edge, 0x81 short edge, as Brother's filter).
+        `back_side_marker` prefixes the long-edge back-page marker attribute.
+        """
+        if back_side_marker:
+            emit_ubyte_attr(self.buf, DUPLEX_BACK_SIDE_MARKER, ATTR_DUPLEX_BACK_SIDE)
         emit_ubyte_attr(self.buf, orientation, ATTR_ORIENTATION)
         emit_ubyte_attr(self.buf, media_source, ATTR_MEDIA_SOURCE)
         size_enum = MEDIA_SIZE.get(media_size)
@@ -530,7 +542,10 @@ class XL2HBWriter:
             logger.warning("Unknown media type %r, defaulting to Regular", media_type)
             type_str = b"dRegular"
         emit_ubyte_array_attr(self.buf, type_str, ATTR_MEDIA_TYPE)
-        emit_ubyte_attr(self.buf, duplex_mode, ATTR_DUPLEX_PAGE_MODE)
+        if duplex_mode is None:
+            emit_ubyte_attr(self.buf, 0, ATTR_SIMPLEX_PAGE_MODE)
+        else:
+            emit_ubyte_attr(self.buf, duplex_mode, ATTR_DUPLEX_PAGE_MODE)
         emit_opcode(self.buf, OP_BEGIN_PAGE)
         self._flush()
 

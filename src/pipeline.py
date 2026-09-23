@@ -6,7 +6,7 @@ as a single print job.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import partial
 from pathlib import Path
 from typing import BinaryIO
@@ -19,6 +19,7 @@ from saturation import adjust_saturation
 from settings import (
     DUPLEX_MAP,
     ColorMatching,
+    DuplexMode,
     ImproveOutput,
     MonoColor,
     PageSize,
@@ -62,6 +63,21 @@ _PLANE_ENCODERS: dict[bool, dict[int, _PlaneEncoder]] = {
 }
 
 
+def _flip_vertical(width: int, height: int, pixel_data: bytes, paper_h: int) -> tuple[int, int, bytes]:
+    """Mirror an RGB page top-to-bottom over the full paper height.
+
+    Brother's filter sends long-edge duplex back pages this way (verified
+    byte-for-byte against captures of brhl4150cdnfilter).
+
+    Returns:
+        (width, paper_h, pixel_data) of the flipped page.
+    """
+    src = np.frombuffer(pixel_data, dtype=np.uint8, count=width * height * 3).reshape(height, width, 3)
+    page = np.full((paper_h, width, 3), 255, dtype=np.uint8)
+    page[: min(height, paper_h)] = src[:paper_h]
+    return width, paper_h, page[::-1].tobytes()
+
+
 def _render_page(
     w: XL2HBWriter,
     width: int,
@@ -70,10 +86,13 @@ def _render_page(
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
     page_size: PageSize,
+    *,
+    back_side: bool = False,
 ) -> None:
     """Render one page within an already-open session.
 
-    Handles: BeginPage -> scanline loop -> flush -> EndPage.
+    Handles: BeginPage -> scanline loop -> flush -> EndPage. `back_side`
+    marks the second page of a duplex sheet.
     """
     is_fine = settings.resolution == Resolution.FINE
 
@@ -86,11 +105,17 @@ def _render_page(
         sw, sh = get_image_dimensions(page_size)
         bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
 
+    # Long-edge back pages are marked and sent mirrored top-to-bottom.
+    flip_back = back_side and settings.duplex == DuplexMode.NO_TUMBLE
+    if flip_back:
+        width, height, pixel_data = _flip_vertical(width, height, pixel_data, paper_h)
+
     w.write_begin_page(
         media_size=page_size,
         media_source=1,
         media_type=settings.media_type,
-        duplex_mode=DUPLEX_MAP.get(settings.duplex, 0),
+        duplex_mode=DUPLEX_MAP.get(settings.duplex),
+        back_side_marker=flip_back,
     )
     w.write_set_page_origin()
     w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine)
@@ -242,15 +267,17 @@ def filter_page(
 
 
 def filter_duplex_pages(
-    pages: list[tuple[int, int, bytes]],
+    pages: Iterable[tuple[int, int, bytes]],
     settings: PrintSettings,
     output: BinaryIO,
     lut_dir: str | None = None,
 ) -> None:
-    """Render multiple pages inside a single XL2HB session (for duplex).
+    """Render multiple pages inside a single XL2HB session.
+
+    Pages are consumed lazily; with duplex, every second page is a back side.
 
     Args:
-        pages: list of (width, height, pixel_data) tuples
+        pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings (should have duplex != "None" for actual duplex)
         output: writable binary stream
         lut_dir: optional path to BRCD LUT directory
@@ -282,8 +309,9 @@ def filter_duplex_pages(
 
     channels = _init_channels(settings, lut_dir=lut_dir)
 
-    for width, height, pixel_data in pages:
-        _render_page(w, width, height, pixel_data, settings, channels, page_size)
+    duplex = settings.duplex != DuplexMode.NONE
+    for index, (width, height, pixel_data) in enumerate(pages):
+        _render_page(w, width, height, pixel_data, settings, channels, page_size, back_side=duplex and index % 2 == 1)
 
     w.write_close_data_source()
     w.write_end_session()

@@ -56,6 +56,13 @@ class TestCupsOptionsEnums:
             ("BRDuplex=None", DuplexMode.NONE),
             ("BRDuplex=DuplexNoTumble", DuplexMode.NO_TUMBLE),
             ("BRDuplex=DuplexTumble", DuplexMode.TUMBLE),
+            ("Duplex=None", DuplexMode.NONE),
+            ("Duplex=DuplexNoTumble", DuplexMode.NO_TUMBLE),
+            ("Duplex=DuplexTumble", DuplexMode.TUMBLE),
+            ("sides=two-sided-long-edge", DuplexMode.NO_TUMBLE),
+            ("sides=two-sided-short-edge", DuplexMode.TUMBLE),
+            ("sides=one-sided", DuplexMode.NONE),
+            ("sides=two-sided-long-edge Duplex=None", DuplexMode.NONE),  # PPD option wins
         ],
     )
     def test_duplex(self, option, expected):
