@@ -129,7 +129,12 @@ def _load_data() -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8]]:
 
 @functools.lru_cache(maxsize=1)
 def _load_inverse_lut() -> npt.NDArray[np.uint8] | None:
-    """Load the precomputed RGB→KCMY inverse LUT into RAM, or None if absent.
+    """Memory-map the precomputed RGB→KCMY inverse LUT, or None if absent.
+
+    Mapped read-only instead of loaded: each CUPS job is a fresh process,
+    and reading all 64 MiB up front costs 1-3 s on a Pi. With the mapping
+    only the pages for colours actually on the page are read, and the OS
+    page cache shares them between jobs.
 
     Returns:
         Array of shape (256, 256, 256, 4) uint8, or None when the cache
@@ -139,7 +144,7 @@ def _load_inverse_lut() -> npt.NDArray[np.uint8] | None:
     if not path.exists():
         return None
     try:
-        arr = np.load(path, allow_pickle=False)
+        arr = np.load(path, mmap_mode="r", allow_pickle=False)
     except (ValueError, OSError) as exc:
         logger.warning("Failed to load inverse LUT %s: %s", path, exc)
         return None
@@ -207,7 +212,18 @@ def rgb_to_cmyk_lut_arr(rgb_row: bytes, width: int) -> tuple[_NDArrayU8, _NDArra
         idx = (rgb[:, 0].astype(np.uint32) << 16) | (rgb[:, 1].astype(np.uint32) << 8) | rgb[:, 2].astype(np.uint32)
         kcmy = np.ascontiguousarray(inv.reshape(-1, 4)[idx])
         return kcmy[:, 0], kcmy[:, 1], kcmy[:, 2], kcmy[:, 3]
+    _warn_interp_fallback()
     return _rgb_to_cmyk_interp_arr(rgb_row, width)
+
+
+@functools.cache
+def _warn_interp_fallback() -> None:
+    """Log once per process that the ~20x slower interpolation path is in use."""
+    logger.warning(
+        "Inverse LUT %s missing; using per-pixel interpolation (much slower). "
+        "Precompute it with color_lut.write_inverse_lut().",
+        INVERSE_LUT_PATH,
+    )
 
 
 def rgb_to_cmyk_lut(rgb_row: bytes, width: int) -> tuple[bytes, bytes, bytes, bytes]:

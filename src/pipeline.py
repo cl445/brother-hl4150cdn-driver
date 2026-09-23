@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 import numpy as np
+import numpy.typing as npt
 
 from brother_encode import encode_c_plane, encode_fine_plane, encode_m_plane_10, encode_plane
 from dither import DitherChannel, dither_channel_1bpp_arr, dither_channel_4bpp_arr, load_dither_tables
@@ -63,26 +64,57 @@ _PLANE_ENCODERS: dict[bool, dict[int, _PlaneEncoder]] = {
 }
 
 
-def _flip_vertical(width: int, height: int, pixel_data: bytes, paper_h: int) -> tuple[int, int, bytes]:
-    """Mirror an RGB page top-to-bottom over the full paper height.
+PageData = bytes | npt.NDArray[np.uint8]
+"""RGB page as packed bytes or as a (height, width, 3) uint8 array.
 
-    Brother's filter sends long-edge duplex back pages this way (verified
-    byte-for-byte against captures of brhl4150cdnfilter).
+The array may be a strided view (e.g. the printable window of a larger
+render) as long as each row is contiguous.
+"""
+
+
+def _page_rows(pixel_data: PageData, width: int, height: int) -> npt.NDArray[np.uint8]:
+    """View an RGB page as (height, width * 3) rows without copying.
 
     Returns:
-        (width, paper_h, pixel_data) of the flipped page.
+        uint8 array whose rows are contiguous RGB scanlines.
     """
-    src = np.frombuffer(pixel_data, dtype=np.uint8, count=width * height * 3).reshape(height, width, 3)
-    page = np.full((paper_h, width, 3), 255, dtype=np.uint8)
-    page[: min(height, paper_h)] = src[:paper_h]
-    return width, paper_h, page[::-1].tobytes()
+    if isinstance(pixel_data, np.ndarray):
+        return pixel_data.reshape(height, width * 3)
+    return np.frombuffer(pixel_data, dtype=np.uint8, count=width * height * 3).reshape(height, width * 3)
+
+
+def is_blank_page(pixel_data: PageData) -> bool:
+    """Return True if every byte of the page is 255 (pure white).
+
+    Works on packed bytes and on strided array views without copying.
+    """
+    arr = pixel_data if isinstance(pixel_data, np.ndarray) else np.frombuffer(pixel_data, dtype=np.uint8)
+    return arr.size == 0 or int(arr.min()) == 255
+
+
+def _flip_vertical(rows: npt.NDArray[np.uint8], paper_h: int) -> npt.NDArray[np.uint8]:
+    """Mirror page rows top-to-bottom over the full paper height.
+
+    Brother's filter sends long-edge duplex back pages this way (verified
+    byte-for-byte against captures of brhl4150cdnfilter). Rows missing below
+    a short page become white rows at the top of the flipped page.
+
+    Returns:
+        (paper_h, row_bytes) array; a reversed view when the page covers the
+        full paper height, otherwise a white-padded copy.
+    """
+    if rows.shape[0] >= paper_h:
+        return rows[:paper_h][::-1]
+    page = np.full((paper_h, rows.shape[1]), 255, dtype=np.uint8)
+    page[: rows.shape[0]] = rows
+    return page[::-1]
 
 
 def _render_page(
     w: XL2HBWriter,
     width: int,
     height: int,
-    pixel_data: bytes,
+    pixel_data: PageData,
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
     page_size: PageSize,
@@ -92,7 +124,8 @@ def _render_page(
     """Render one page within an already-open session.
 
     Handles: BeginPage -> scanline loop -> flush -> EndPage. `back_side`
-    marks the second page of a duplex sheet.
+    marks the second page of a duplex sheet. Scanlines are read as views
+    into `pixel_data`; the page is never copied.
     """
     is_fine = settings.resolution == Resolution.FINE
 
@@ -107,8 +140,10 @@ def _render_page(
 
     # Long-edge back pages are marked and sent mirrored top-to-bottom.
     flip_back = back_side and settings.duplex == DuplexMode.NO_TUMBLE
+    rows = _page_rows(pixel_data, width, height)
     if flip_back:
-        width, height, pixel_data = _flip_vertical(width, height, pixel_data, paper_h)
+        rows = _flip_vertical(rows, paper_h)
+        height = paper_h
 
     w.write_begin_page(
         media_size=page_size,
@@ -153,21 +188,23 @@ def _render_page(
     dither_fn = _DITHER_FNS[is_fine]
     encoders = _PLANE_ENCODERS[is_fine]
 
-    row_bytes = width * 3
     blank_plane = bytes(bpl)
     blank_planes = dict.fromkeys(range(4), blank_plane)
     blank_plane_comp = dict.fromkeys(range(4), b"")
     # apply_input_remap_rgb explicitly preserves (255,255,255); saturation
     # and vivid leave the gray axis untouched; the LUT clamps white→0 ink.
     # Only tone_curve can deposit ink on white, so skip the short-circuit
-    # when gamma_select is active.
-    white_row = b"\xff\xff\xff" * width if tone_lut is None else None
+    # when gamma_select is active. One vectorised pass over the page is
+    # cheaper than comparing each row on its own.
+    if tone_lut is None:
+        white_rows = (rows[:paper_h].min(axis=1) == 255).tolist() if width else [True] * min(height, paper_h)
+    else:
+        white_rows = [False] * min(height, paper_h)
 
     for line_idx in range(paper_h):
         if line_idx < height:
-            row_start = line_idx * row_bytes
-            rgb_row = pixel_data[row_start : row_start + row_bytes]
-            if rgb_row == white_row:
+            rgb_row = rows[line_idx]
+            if white_rows[line_idx]:
                 plane_data = blank_planes
             else:
                 # Saturation and vivid are per-pixel; brightness/contrast/RGB-keys
@@ -251,13 +288,13 @@ def _init_channels(settings: PrintSettings, lut_dir: str | None = None) -> dict[
 def filter_page(
     width: int,
     height: int,
-    pixel_data: bytes,
+    pixel_data: PageData,
     settings: PrintSettings,
     output: BinaryIO,
     lut_dir: str | None = None,
 ) -> None:
     """Convert PPM pixel data to XL2HB and write to output."""
-    if settings.skip_blank and pixel_data == b"\xff" * len(pixel_data):
+    if settings.skip_blank and is_blank_page(pixel_data):
         return
 
     filter_duplex_pages([(width, height, pixel_data)], settings, output, lut_dir=lut_dir)
@@ -267,7 +304,7 @@ def filter_page(
 
 
 def filter_duplex_pages(
-    pages: Iterable[tuple[int, int, bytes]],
+    pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
     output: BinaryIO,
     lut_dir: str | None = None,

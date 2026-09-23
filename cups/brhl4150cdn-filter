@@ -38,6 +38,7 @@ from brfilter import (  # noqa: E402
     filter_duplex_pages,
     read_ppm,
 )
+from pipeline import is_blank_page  # noqa: E402
 from xl2hb import PAPER_SIZES  # noqa: E402
 
 # Ghostscript paper name mapping
@@ -114,11 +115,16 @@ def build_gs_command(input_path: str, page_size: str) -> list[str]:
     return cmd
 
 
-def crop_page(pixel_data: bytes, src_width: int, src_height: int, page_size: str) -> tuple[int, int, bytes]:
+def crop_page(pixel_data: bytes, src_width: int, src_height: int, page_size: str) -> tuple[int, int, np.ndarray]:
     """Crop a full-page GS render to the printable area.
 
     The printer's printable area starts at offset (100, 100) pixels from
     the physical page edge. The printable dimensions come from PAPER_SIZES.
+
+    Returns a (height, width, 3) uint8 array. When the render covers the
+    whole printable area (the normal case) this is a view into
+    `pixel_data`, so no page-sized copy is made; otherwise the window is
+    copied into a white target-sized page.
     """
     target_w, target_h = PAPER_SIZES.get(page_size, PAPER_SIZES["A4"])
 
@@ -132,14 +138,17 @@ def crop_page(pixel_data: bytes, src_width: int, src_height: int, page_size: str
 
     if crop_w <= 0 or crop_h <= 0:
         # Page too small for any printable area
-        return target_w, target_h, b"\xff" * (target_w * target_h * 3)
+        return target_w, target_h, np.full((target_h, target_w, 3), 255, dtype=np.uint8)
 
-    # Copy the printable window into a white target-sized page.
     src = np.frombuffer(pixel_data, dtype=np.uint8, count=src_width * src_height * 3)
-    src = src.reshape(src_height, src_width, 3)
+    window = src.reshape(src_height, src_width, 3)[y_off : y_off + crop_h, x_off : x_off + crop_w]
+    if crop_w == target_w and crop_h == target_h:
+        return target_w, target_h, window
+
+    # Render smaller than the printable area: pad with white.
     out = np.full((target_h, target_w, 3), 255, dtype=np.uint8)
-    out[:crop_h, :crop_w] = src[y_off : y_off + crop_h, x_off : x_off + crop_w]
-    return target_w, target_h, out.tobytes()
+    out[:crop_h, :crop_w] = window
+    return target_w, target_h, out
 
 
 def iter_cropped_pages(stream, page_size: str):
@@ -153,7 +162,9 @@ def iter_cropped_pages(stream, page_size: str):
         page_num += 1
         logger.info("page %d: %dx%d pixels from GS", page_num, width, height)
         crop_w, crop_h, cropped_data = crop_page(pixel_data, width, height, page_size)
-        del pixel_data, result  # free the uncropped render before the next page
+        # cropped_data is usually a view that keeps the render alive; drop
+        # our own references so it is freed together with the view.
+        del pixel_data, result
         logger.info("page %d: cropped to %dx%d", page_num, crop_w, crop_h)
         yield crop_w, crop_h, cropped_data
 
@@ -241,7 +252,7 @@ def main() -> None:
         if settings.reverse:
             pages = iter(list(pages)[::-1])
         if settings.skip_blank and settings.duplex == DuplexMode.NONE:
-            pages = (p for p in pages if p[2].count(255) != len(p[2]))
+            pages = (p for p in pages if not is_blank_page(p[2]))
 
         first = next(pages, None)
         if first is not None:

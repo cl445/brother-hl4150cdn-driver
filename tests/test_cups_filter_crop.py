@@ -47,4 +47,13 @@ def test_crop_matches_reference(cups_filter, src_width, src_height):
     pixel_data = rng.integers(0, 256, src_width * src_height * 3, dtype=np.uint8).tobytes()
     w, h, data = cups_filter.crop_page(pixel_data, src_width, src_height, "A4")
     assert (w, h) == (target_w, target_h)
-    assert data == _reference_crop(pixel_data, src_width, src_height, target_w, target_h)
+    assert data.shape == (target_h, target_w, 3)
+    assert data.tobytes() == _reference_crop(pixel_data, src_width, src_height, target_w, target_h)
+
+
+def test_crop_is_a_view_when_render_covers_printable_area(cups_filter):
+    target_w, target_h = cups_filter.PAPER_SIZES["A4"]
+    src_width, src_height = target_w + 200, target_h + 200
+    pixel_data = bytes(src_width * src_height * 3)
+    _, _, data = cups_filter.crop_page(pixel_data, src_width, src_height, "A4")
+    assert np.shares_memory(data, np.frombuffer(pixel_data, dtype=np.uint8))
