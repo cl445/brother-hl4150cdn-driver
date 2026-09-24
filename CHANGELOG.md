@@ -9,8 +9,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [1.1.0] — 2026-09-24
 
 Output now matches the manufacturer's filter byte for byte for every RC
-setting, grayscale, all 21 paper sizes and duplex. On a Raspberry Pi 3B+ a
-page takes about a second instead of close to three minutes.
+setting, grayscale and duplex, and on the paper sizes checked against
+captures (Letter, A5, DL, 3x5, Envelope #4); all 21 sizes carry the
+original's page header values. On a Raspberry Pi 3B+ a page takes about a
+second instead of close to three minutes.
 
 ### Upgrading
 - Re-run `scripts/extract_blobs.sh` (16 new colour grids) and
