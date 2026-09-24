@@ -114,9 +114,10 @@ echo "Creating virtual environment at $VENV_DIR..."
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --quiet numpy
 
-# Precompute the RGB→KCMY inverse LUT (64 MiB). Replaces per-pixel
-# tetrahedral interpolation; roughly 4x faster per page on a Pi 3.
-echo "Precomputing inverse color LUT (takes about a minute on a Pi 3)..."
+# Precompute the RGB→KCMY inverse LUTs (64 MiB each: Normal and Vivid colour
+# matching). Replaces per-pixel tetrahedral interpolation; roughly 4x faster
+# per page on a Pi 3.
+echo "Precomputing inverse color LUTs (takes about two minutes on a Pi 3)..."
 if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" cli.py --precompute-lut); then
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
 fi

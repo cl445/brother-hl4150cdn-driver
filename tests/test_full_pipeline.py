@@ -6,10 +6,12 @@ Tests end-to-end output against original driver captures.
 
 import io
 
+import numpy as np
 import pytest
 
-from brfilter import MonoColor, PageSize, PrintSettings, Resolution, filter_page, read_ppm
+from brfilter import InputSlot, MediaType, MonoColor, PageSize, PrintSettings, Resolution, filter_page, read_ppm
 from fixture_utils import read_fixture
+from xl2hb import PAPER_SIZES
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -257,8 +259,8 @@ class TestColorPages:
 # Setting variants on cyan_100 PPM (cyan band y=3000..3100 on white A4)
 #
 # Captures from akator-ws02 with brhl4150cdnfilter, varying single RC settings.
-# These exercise the color-correction LUT bake (brightness/contrast/RGB-keys
-# fold into the 3D RGB cube; saturation+vivid stay per-pixel in the C driver).
+# Brightness/contrast/RGB-keys and saturation are per-pixel adjustments before
+# the 3D LUT; Vivid selects the sRGB LUT instead of the default one.
 # ---------------------------------------------------------------------------
 
 
@@ -276,19 +278,8 @@ _SETTING_VARIANTS_PASS = [
     ("red_p20", PrintSettings(red=20)),
     ("combined", PrintSettings(brightness=10, contrast=10, saturation=10)),
     ("toner_save", PrintSettings(toner_save=True)),
-]
-
-_SETTING_VARIANTS_XFAIL = [
-    # 88 byte diffs in image payload — Python's color separation/dither for non-pure
-    # input colors like (25,230,230) deviates from Brother. Independent of the input remap.
     ("contrast_n20", PrintSettings(contrast=-20)),
-    # The major saturation off-by-one (R=51 vs Brother's 50) was fixed by switching
-    # to truncate-toward-zero (matches the FPU chop mode the binary sets at
-    # 0x0804f88b). Residual 21-byte RLE drift in 2 clusters — same color-pipeline
-    # divergence class as contrast_n20.
     ("saturation_n20", PrintSettings(saturation=-20)),
-    # Vivid takes a separate code path in compress_separate_dispatch
-    # (Brother selects mono_cm vs cmyk_cm differently when ColorMatching=Vivid).
     ("vivid", PrintSettings(color_matching=ColorMatching.VIVID)),
 ]
 
@@ -321,35 +312,203 @@ class TestSettingVariants:
     def test_setting_variant_matches(self, name, settings):
         _run_settings_variant(name, settings)
 
-    @pytest.mark.xfail(
-        reason=(
-            "saturation_n20: 21-byte residual after the FPU-truncate fix (deeper "
-            "color-pipeline drift). vivid/contrast_n20: separate code paths still diverge."
-        ),
-    )
-    @pytest.mark.parametrize(
-        ("name", "settings"),
-        _SETTING_VARIANTS_XFAIL,
-        ids=[v[0] for v in _SETTING_VARIANTS_XFAIL],
-    )
-    def test_setting_variant_matches_xfail(self, name, settings):
-        _run_settings_variant(name, settings)
-
 
 # ---------------------------------------------------------------------------
 # Pipeline settings tests
 # ---------------------------------------------------------------------------
 
 
-class TestPipelineSettings:
-    def test_mono_mode_only_k_plane(self):
-        """In mono mode, only K plane should have data."""
+# ---------------------------------------------------------------------------
+# Paper sizes other than A4 (captures from brhl4150cdnfilter under i386 emulation)
+# ---------------------------------------------------------------------------
+
+
+def _make_ppm_edges(page_size: str) -> bytes:
+    """Full-size page with hash noise at the top, a ramp at the bottom and a bar on the right edge."""
+    w, h = PAPER_SIZES[page_size]
+    page = np.full((h, w, 3), 255, np.uint8)
+    y, x = np.mgrid[0:60, 0:w].astype(np.uint32)
+    for ch in range(3):
+        page[20:80, :, ch] = ((x * 2654435761 + y * 40503 + ch * 97 + 1) >> 13) & 255
+    page[h - 60 :] = ((np.arange(w) * 7 + 1) & 255).astype(np.uint8)[None, :, None]
+    page[:, w - 30 :] = (0, 90, 200)
+    return f"P6\n{w} {h}\n255\n".encode("ascii") + page.tobytes()
+
+
+_PAPER_SIZE_CAPTURES = ["Letter", "A5", "EnvDL", "Br3x5", "EnvYou4"]
+
+
+class TestPaperSizes:
+    @pytest.mark.parametrize("name", _PAPER_SIZE_CAPTURES)
+    def test_matches_capture(self, name):
+        out = _pipeline_from_ppm(_make_ppm_edges(name), PrintSettings(page_size=PageSize(name)))
+        _assert_matches_capture(f"size_{name}", out)
+
+
+# ---------------------------------------------------------------------------
+# Grayscale mode: BRMonoColor=Mono
+#
+# Captures from brhl4150cdnfilter (run under i386 emulation, verified to
+# reproduce the akator-ws02 captures byte for byte) with BRMonoColor=Mono.
+# ---------------------------------------------------------------------------
+
+
+def _make_ppm_ramps() -> bytes:
+    """A4 PPM: gray ramp rows 500..1500, colour ramp rows 2000..2600, white elsewhere."""
+    header = f"P6\n{_A4_W} {_A4_H}\n255\n".encode("ascii")
+    x = np.arange(_A4_W) * 256 // _A4_W
+    gray = np.repeat(x, 3).astype(np.uint8).tobytes()
+    colour = np.stack([x, 255 - x, (np.arange(_A4_W) * 7) & 255], axis=1).astype(np.uint8).tobytes()
+    white = b"\xff" * (_A4_W * 3)
+    rows = [gray if 500 <= y < 1500 else colour if 2000 <= y < 2600 else white for y in range(_A4_H)]
+    return header + b"".join(rows)
+
+
+_MONO_BANDS = [
+    ("gray50", 1000, 2000, 128, 128, 128),
+    ("red", 3000, 3100, 255, 0, 0),
+    ("mixed", 2000, 2100, 30, 200, 90),
+]
+
+_MONO_RAMP_VARIANTS = [
+    ("ramp", {}),
+    ("ramp_bright", {"brightness": 20}),
+    ("ramp_contrast", {"contrast": -20}),
+    ("ramp_ts", {"toner_save": True}),
+]
+
+
+def _assert_matches_capture(name: str, out: bytes) -> None:
+    expected = read_fixture(f"{name}.xl2hb")
+    if expected is None:
+        pytest.skip(f"{name}.xl2hb not available")
+    if out != expected:
+        first = next((i for i in range(min(len(out), len(expected))) if out[i] != expected[i]), None)
+        pytest.fail(f"{name}: first diff at byte {first}. Output {len(out)}B vs expected {len(expected)}B")
+
+
+# Colour pixels on which the binary's 80-bit trunc((new_range / old_range) * (mid - min))
+# in compress_adjust_saturation differs from exact floor division, at saturation +20 or +7.
+_X87_SATURATION_PIXELS = [
+    (59, 30, 1), (4, 164, 124), (181, 6, 216), (231, 9, 83), (90, 156, 13), (16, 107, 120), (228, 193, 18),
+    (22, 250, 136), (118, 28, 208), (237, 37, 187), (95, 238, 51), (73, 127, 241), (242, 110, 99), (135, 245, 223),
+    (30, 1, 59), (204, 6, 171), (127, 242, 12), (19, 65, 157), (209, 117, 25), (32, 170, 124), (132, 40, 224),
+    (249, 49, 149), (151, 197, 59), (73, 96, 165), (192, 139, 86), (100, 208, 154), (140, 117, 209), (245, 139, 192),
+]  # fmt: skip
+
+
+def _make_ppm_mixed() -> bytes:
+    """Deterministic A4 page: hash noise, sparse two-tone pixels, per-row colours, ramps, patches, black.
+
+    Busy content that exercises literal/run/context-skip transitions in all
+    four plane encoders and the per-pixel colour adjustments.
+    """
+    page = np.full((_A4_H, _A4_W, 3), 255, np.uint8)
+    y, x = np.mgrid[0:64, 0:_A4_W].astype(np.uint32)
+    for ch in range(3):
+        page[100:164, :, ch] = ((x * 2654435761 + y * 40503 + ch * 97) >> 13) & 255
+    page[200:264] = np.where((((x * 7919 + y * 104729) >> 5) & 1)[..., None] == 1, 230, 30).astype(np.uint8)
+    rows = np.arange(64, dtype=np.uint32)
+    row_colours = np.stack([(rows * 37) & 255, (rows * 91 + 50) & 255, (rows * 53 + 120) & 255], axis=1)
+    page[300:364] = row_colours[:, None, :].astype(np.uint8)
+    ramp = (np.arange(_A4_W) * 256 // _A4_W).astype(np.uint8)
+    page[400:464, :, 0] = ramp
+    page[400:464, :, 1] = 255 - ramp
+    page[400:464, :, 2] = 128
+    for j, x0 in enumerate(range(0, _A4_W, 170)):
+        page[500:564, x0 : x0 + 85] = ((j * 67) & 255, (j * 151 + 30) & 255, (j * 23 + 200) & 255)
+        page[600:664, x0 : x0 + 170] = _X87_SATURATION_PIXELS[j]
+    page[700:764, : _A4_W // 2] = 0  # pure black: K only, or rich black with BREnhanceBlkPrt
+    page[700:764, _A4_W // 2 :] = (0, 0, 1)
+    return f"P6\n{_A4_W} {_A4_H}\n255\n".encode("ascii") + page.tobytes()
+
+
+_MIXED_VARIANTS = [
+    ("baseline", PrintSettings()),
+    ("saturation_p20", PrintSettings(saturation=20)),
+    ("saturation_p7", PrintSettings(saturation=7)),
+    ("saturation_n20", PrintSettings(saturation=-20)),
+    ("contrast_n20", PrintSettings(contrast=-20)),
+    ("brightness_p15", PrintSettings(brightness=15)),
+    ("vivid", PrintSettings(color_matching=ColorMatching.VIVID)),
+    ("toner_save", PrintSettings(toner_save=True)),
+    ("cm_none", PrintSettings(color_matching=ColorMatching.NONE)),
+    ("cm_none_adjusted", PrintSettings(color_matching=ColorMatching.NONE, brightness=15, saturation=-20, red=10)),
+    ("improve_gray", PrintSettings(improve_gray=True)),
+    ("enhance_black", PrintSettings(enhance_black=True)),
+    ("glossy", PrintSettings(media_type=MediaType.GLOSSY)),
+    ("vivid_toner_save_gray", PrintSettings(color_matching=ColorMatching.VIVID, toner_save=True, improve_gray=True)),
+]
+
+
+class TestMixedPage:
+    """Busy page against brhl4150cdnfilter captures (run under i386 emulation)."""
+
+    @pytest.mark.parametrize(("name", "settings"), _MIXED_VARIANTS, ids=[v[0] for v in _MIXED_VARIANTS])
+    def test_matches_capture(self, name, settings):
+        _assert_matches_capture(f"mixed_{name}", _pipeline_from_ppm(_make_ppm_mixed(), settings))
+
+
+class TestMonoMode:
+    @pytest.mark.parametrize(("name", "y0", "y1", "r", "g", "b"), _MONO_BANDS, ids=[m[0] for m in _MONO_BANDS])
+    def test_band_matches_capture(self, name, y0, y1, r, g, b):
+        ppm = _make_ppm_band(_A4_W, _A4_H, y0, y1, r, g, b)
+        out = _pipeline_from_ppm(ppm, PrintSettings(mono_color=MonoColor.MONO))
+        _assert_matches_capture(f"mono_{name}", out)
+
+    @pytest.mark.parametrize(("name", "kwargs"), _MONO_RAMP_VARIANTS, ids=[v[0] for v in _MONO_RAMP_VARIANTS])
+    def test_ramp_matches_capture(self, name, kwargs):
+        out = _pipeline_from_ppm(_make_ppm_ramps(), PrintSettings(mono_color=MonoColor.MONO, **kwargs))
+        _assert_matches_capture(f"mono_{name}", out)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"saturation": 20}, {"color_matching": ColorMatching.VIVID}, {"improve_gray": True}],
+        ids=["saturation", "vivid", "improve_gray"],
+    )
+    def test_colour_only_settings_are_ignored(self, kwargs):
+        """The original driver's output for these equals plain mono."""
+        out = _pipeline_from_ppm(_make_ppm_ramps(), PrintSettings(mono_color=MonoColor.MONO, **kwargs))
+        _assert_matches_capture("mono_ramp", out)
+
+    def test_only_k_plane(self):
         ppm = _make_ppm_bytes(4760, 10, 128, 0, 0)
-        settings = PrintSettings(mono_color=MonoColor.MONO)
-        out = _pipeline_from_ppm(ppm, settings)
-        # Verify it produces valid output with PJL GRAYSCALE
-        assert b"\x1b%-12345X" in out
+        out = _pipeline_from_ppm(ppm, PrintSettings(mono_color=MonoColor.MONO))
         assert b"RENDERMODE=GRAYSCALE" in out
+        # ReadImage colour-treatment attribute (plane id) for C/M/Y never appears.
+        for plane_id in (1, 2, 3):
+            assert bytes([0xC1, plane_id, 0x00, 0xF8, 0x81]) not in out
+        assert bytes([0xC1, 0x00, 0x00, 0xF8, 0x81]) in out
+
+
+class TestPipelineSettings:
+    @pytest.mark.parametrize(
+        ("slot", "attr"),
+        [
+            (InputSlot.AUTO, b"\xc0\x01\xf8\x26"),
+            (InputSlot.TRAY1, b"\xc1\xe9\x03\xf8\x26"),
+            (InputSlot.TRAY2, b"\xc1\xed\x03\xf8\x26"),
+            (InputSlot.MP_TRAY, b"\xc1\xec\x03\xf8\x26"),
+            (InputSlot.MANUAL, b"\xc0\x02\xf8\x26"),
+        ],
+    )
+    def test_input_slot_goes_into_media_source(self, slot, attr):
+        """BeginPage MediaSource as brhl4150cdnfilter writes it; no PJL SOURCETRAY."""
+        out = _pipeline_from_ppm(_make_ppm_bytes(4760, 10, 0, 0, 0), PrintSettings(input_slot=slot))
+        assert attr in out
+        assert b"SOURCETRAY" not in out
+
+    @pytest.mark.parametrize(
+        ("mono_color", "line"),
+        [
+            (MonoColor.AUTO, b"COLORADAPT=ON"),
+            (MonoColor.FULL_COLOR, b"COLORADAPT=OFF"),
+            (MonoColor.MONO, b"COLORADAPT=OFF"),
+        ],
+    )
+    def test_color_adapt_only_for_auto(self, mono_color, line):
+        out = _pipeline_from_ppm(_make_ppm_bytes(4760, 10, 0, 0, 0), PrintSettings(mono_color=mono_color))
+        assert line in out
 
     def test_toner_save_keeps_economode_off(self):
         """Toner save uses the -TS dither tables; ECONOMODE stays OFF (matches original driver, pjl.c:58)."""

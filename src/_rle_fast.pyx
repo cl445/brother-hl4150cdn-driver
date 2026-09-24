@@ -235,7 +235,7 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
     """
     cdef int ctx_size = 5 if bits == 10 else 3
     cdef Py_ssize_t lit_overflow = 0xFFF if bits == 10 else 0x7FF
-    cdef bint run_break_to_ctx = bits == 10
+    cdef bint skip_counts_current = bits == 10
     cdef unsigned int ctx[5]
     cdef Py_ssize_t wi = 0, match_count = 0, run_len = 0, lit_n, k
     cdef Py_ssize_t wlen = 0
@@ -276,7 +276,8 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                 state = 1
                 continue
             if match_count == 2:
-                _emit_run(o, cur, 1, bits)
+                if not skip_counts_current:
+                    _emit_run(o, cur, 1, bits)
                 state = 3
                 continue
             wbuf[1] = w
@@ -306,9 +307,6 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
             cur = w
             if match_count != 0:
                 match_count = 1
-                if run_break_to_ctx:
-                    state = 3
-                    continue
             state = 0
             continue
 
@@ -336,7 +334,8 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                         _emit_literal(o, wbuf, lit_n, bits)
                     state = 3
                     continue
-                _emit_run(o, wbuf[0], 1, bits)
+                if not skip_counts_current:
+                    _emit_run(o, wbuf[0], 1, bits)
                 state = 3
                 continue
 
@@ -402,7 +401,7 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                 _emit_run(o, wbuf[0], 1, bits)
             else:
                 _emit_literal(o, wbuf, lit_n, bits)
-        else:
+        elif not skip_counts_current:
             _emit_run(o, wbuf[0], 1, bits)
         if match_count > 0:
             _emit_context_skip(o, match_count)

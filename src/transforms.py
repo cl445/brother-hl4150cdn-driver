@@ -1,12 +1,12 @@
 """Per-pixel and per-row colour transforms applied before the 3D-LUT lookup.
 
-* :func:`apply_vivid` boosts saturation by spreading each channel away from
-  the per-pixel grey axis.
 * :func:`build_input_remap_lut` / :func:`apply_input_remap_rgb` apply
   brightness, contrast, and per-channel RGB-key shifts as a single 256-entry
   per-channel input remap.
-* :func:`rgb_line_to_cmyk_intensities` performs the RGB→CMYK separation
-  (3D-LUT lookup, or simple GCR when colour-matching is disabled).
+* :func:`color_table` picks the colour grid the original driver would use
+  for the settings; :func:`rgb_line_to_cmyk_intensities` separates RGB into
+  CMYK through it. Colour matching, BRGray, toner save, glossy media and
+  BREnhanceBlkPrt only choose the grid; they do not touch the pixels.
 """
 
 from collections.abc import Buffer
@@ -14,23 +14,39 @@ from collections.abc import Buffer
 import numpy as np
 import numpy.typing as npt
 
-from color_lut import rgb_to_cmyk_lut, rgb_to_cmyk_lut_arr
-from settings import ColorMatching
+from color_lut import DEFAULT_TABLE, ColorTable, Profile, Variant, rgb_to_cmyk_lut, rgb_to_cmyk_lut_arr
+from settings import ColorMatching, MediaType, PrintSettings
 
 _NDArrayU8 = npt.NDArray[np.uint8]
 
+_PROFILES: dict[ColorMatching, Profile] = {
+    ColorMatching.NORMAL: "rgb",
+    ColorMatching.VIVID: "srgb",
+    ColorMatching.NONE: "cmyk",
+}
 
-def apply_vivid(rgb_row: Buffer, width: int) -> bytes:
-    """Boost saturation by expanding distance from per-pixel gray axis.
+
+def color_table(settings: PrintSettings) -> ColorTable:
+    """The colour grid `lookup_color_transform_table` selects for `settings`.
+
+    Toner save wins over glossy media, as in the original. Rich black
+    (BREnhanceBlkPrt) only exists for the rgb and srgb profiles.
 
     Returns:
-        RGB bytes (same length as input) with boosted saturation.
+        The table for the colour separation.
     """
-    rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3).astype(np.int16)
-    avg = rgb.sum(axis=1, keepdims=True) // 3
-    # Boost factor 1.4 -- shift each channel away from gray
-    boosted = avg + (rgb - avg) * 14 // 10
-    return np.clip(boosted, 0, 255).astype(np.uint8).tobytes()
+    profile = _PROFILES[settings.color_matching]
+    variant: Variant = "default"
+    if settings.toner_save:
+        variant = "density2"
+    elif settings.media_type == MediaType.GLOSSY:
+        variant = "glossy"
+    return ColorTable(
+        profile=profile,
+        improve_gray=settings.improve_gray,
+        variant=variant,
+        rich_black=settings.enhance_black and profile != "cmyk",
+    )
 
 
 def build_input_remap_lut(brightness: int, contrast: int, channel: int) -> npt.NDArray[np.uint8]:
@@ -88,36 +104,26 @@ def apply_input_remap_rgb(
 def rgb_line_to_cmyk_intensities_arr(
     rgb_row: Buffer,
     width: int,
-    color_matching: ColorMatching = ColorMatching.NORMAL,
+    table: ColorTable = DEFAULT_TABLE,
 ) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Like :func:`rgb_line_to_cmyk_intensities` but returns ndarrays directly.
 
     Returns:
         (k, c, m, y) uint8 intensity arrays of length `width`.
     """
-    if color_matching == ColorMatching.NONE:
-        rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
-        k = np.full(width, 255, dtype=np.uint8)
-        return k, rgb[:, 0].copy(), rgb[:, 1].copy(), rgb[:, 2].copy()
-    return rgb_to_cmyk_lut_arr(rgb_row, width)
+    return rgb_to_cmyk_lut_arr(rgb_row, width, table)
 
 
 def rgb_line_to_cmyk_intensities(
     rgb_row: Buffer,
     width: int,
-    color_matching: ColorMatching = ColorMatching.NORMAL,
+    table: ColorTable = DEFAULT_TABLE,
 ) -> tuple[bytes, bytes, bytes, bytes]:
-    """Convert one RGB scanline to per-channel CMYK intensity arrays.
-
-    Uses the 3D LUT for colour separation when ``color_matching`` is
-    ``NORMAL`` or ``VIVID``, and a simple GCR pass when it is ``NONE``.
+    """Convert one RGB scanline to per-channel CMYK intensity arrays through `table`.
 
     Returns:
         Tuple ``(k_arr, c_arr, m_arr, y_arr)`` each of ``width`` bytes in
         pixel-brightness convention (0 = full ink, 255 = no ink), ready
         for :func:`dither.dither_channel_1bpp`.
     """
-    if color_matching == ColorMatching.NONE:
-        k, c, m, y = rgb_line_to_cmyk_intensities_arr(rgb_row, width, color_matching)
-        return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()
-    return rgb_to_cmyk_lut(rgb_row, width)
+    return rgb_to_cmyk_lut(rgb_row, width, table)

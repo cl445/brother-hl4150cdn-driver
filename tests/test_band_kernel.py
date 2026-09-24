@@ -9,8 +9,9 @@ import color_lut
 import pipeline
 from fixture_utils import read_fixture
 from pipeline import filter_duplex_pages
-from settings import ColorMatching, DuplexMode, PrintSettings
+from settings import ColorMatching, DuplexMode, MediaType, PrintSettings
 from test_full_pipeline import _SETTING_VARIANTS_PASS, _duplex_test_pages, _run_settings_variant
+from transforms import color_table
 
 if not pipeline.HAS_BAND_KERNEL:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
@@ -27,13 +28,22 @@ def random_lut() -> np.ndarray:
 
 @pytest.fixture(autouse=True)
 def _use_random_lut(request, monkeypatch, random_lut) -> None:
-    if "real_lut" not in request.fixturenames:
-        monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda: random_lut)
+    if "real_lut" not in request.fixturenames and "no_inverse_lut" not in request.fixturenames:
+        monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda table=None: random_lut)
+
+
+@pytest.fixture
+def no_inverse_lut(monkeypatch) -> None:
+    """No inverse LUT installed: kernel and per-line path interpolate the grid."""
+    monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda table=None: None)
 
 
 @pytest.fixture(scope="module")
 def real_lut_path(tmp_path_factory):
-    return color_lut.write_inverse_lut(tmp_path_factory.mktemp("lut") / "inverse_lut.npy")
+    """Both inverse LUTs; the Vivid one sits next to the Normal one, as install.sh writes them."""
+    lut_dir = tmp_path_factory.mktemp("lut")
+    color_lut.write_inverse_lut(lut_dir / "inverse_lut_srgb.npy", color_lut.ColorTable("srgb"))
+    return color_lut.write_inverse_lut(lut_dir / "inverse_lut.npy")
 
 
 @pytest.fixture
@@ -77,6 +87,10 @@ _SETTINGS = {
     "gamma": PrintSettings(gamma_select=1),  # tone curve, no white-row short cut
     "gamma_brightness": PrintSettings(gamma_select=0, brightness=10, contrast=-5),
     "toner_save": PrintSettings(toner_save=True),
+    "improve_gray": PrintSettings(improve_gray=True),
+    "enhance_black": PrintSettings(enhance_black=True),
+    "glossy_vivid": PrintSettings(media_type=MediaType.GLOSSY, color_matching=ColorMatching.VIVID),
+    "cm_none_adjusted": PrintSettings(color_matching=ColorMatching.NONE, brightness=10, saturation=-10),
 }
 
 
@@ -86,6 +100,15 @@ def test_kernel_matches_per_line_path(name, monkeypatch):
     pages = [(_A4_W, 1700, _page(_A4_W, 1700, seed=1))]
     expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
     assert _render(pages, settings, kernel=True, threads=0, monkeypatch=monkeypatch) == expected
+    assert _render(pages, settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
+
+
+@pytest.mark.parametrize("name", list(_SETTINGS))
+def test_kernel_interpolation_matches_per_line_path(name, no_inverse_lut, monkeypatch):
+    """Without an inverse LUT the kernel interpolates natively; same bytes as the per-line path."""
+    settings = _SETTINGS[name]
+    pages = [(_A4_W, 1700, _page(_A4_W, 1700, seed=5))]
+    expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
     assert _render(pages, settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
 
 
@@ -132,8 +155,8 @@ def test_fine_mode_keeps_per_line_path(monkeypatch):
     from settings import Resolution
 
     channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
-    assert pipeline._band_kernel_lut(PrintSettings(), channels, is_fine=True) is None
-    assert pipeline._band_kernel_lut(PrintSettings(), channels, is_fine=False) is not None
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, channels, is_fine=True) is None
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, channels, is_fine=False) is not None
 
 
 def test_render_threads_from_environment(monkeypatch):
@@ -146,7 +169,8 @@ def test_render_threads_from_environment(monkeypatch):
 @pytest.mark.parametrize(("name", "settings"), _SETTING_VARIANTS_PASS)
 def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
     """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
-    assert pipeline._band_kernel_lut(settings, pipeline._init_channels(settings), is_fine=False) is not None
+    table = color_table(settings)
+    assert pipeline._band_kernel_colour(table, pipeline._init_channels(settings), is_fine=False) is not None
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "3")
     _run_settings_variant(name, settings)
 

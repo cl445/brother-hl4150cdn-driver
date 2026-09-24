@@ -8,8 +8,10 @@ for the full driver replacement (ordered dithering, proper GCR, etc.).
 import numpy as np
 import pytest
 
-from brfilter import ColorMatching, rgb_line_to_cmyk_intensities
+from brfilter import ColorMatching, MediaType, PrintSettings, rgb_line_to_cmyk_intensities
+from color_lut import ColorTable
 from dither import dither_channel_1bpp
+from transforms import color_table
 from xl2hb import BPL
 
 # ---------------------------------------------------------------------------
@@ -294,39 +296,50 @@ class TestOrderedDithering:
 # ---------------------------------------------------------------------------
 
 
-class TestColorMatching:
-    """The driver supports Normal, Vivid, and None color matching modes."""
+class TestColorTables:
+    """Colour grid selection as in `lookup_color_transform_table`."""
 
-    def test_vivid_mode_increases_saturation(self):
-        """Vivid mode should produce more saturated colors."""
-        from brfilter import apply_vivid
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [
+            (PrintSettings(), ColorTable("rgb")),
+            (PrintSettings(color_matching=ColorMatching.VIVID), ColorTable("srgb")),
+            (PrintSettings(color_matching=ColorMatching.NONE), ColorTable("cmyk")),
+            (PrintSettings(improve_gray=True), ColorTable("rgb", improve_gray=True)),
+            (PrintSettings(toner_save=True), ColorTable("rgb", variant="density2")),
+            (PrintSettings(media_type=MediaType.GLOSSY), ColorTable("rgb", variant="glossy")),
+            (PrintSettings(toner_save=True, media_type=MediaType.GLOSSY), ColorTable("rgb", variant="density2")),
+            (PrintSettings(enhance_black=True), ColorTable("rgb", rich_black=True)),
+            (PrintSettings(enhance_black=True, color_matching=ColorMatching.NONE), ColorTable("cmyk")),
+        ],
+    )
+    def test_table_for_settings(self, settings, expected):
+        assert color_table(settings) == expected
 
-        # Desaturated red: R=200, G=100, B=100
-        row = _make_rgb_row(200, 100, 100, width=1)
-        boosted = apply_vivid(row, 1)
-        # Vivid should push R higher and G/B lower
-        r_out, g_out, b_out = boosted[0], boosted[1], boosted[2]
-        # Saturation ratio: (max - min) / max
-        sat_in = (200 - 100) / 200
-        sat_out = (r_out - min(g_out, b_out)) / max(r_out, 1)
-        assert sat_out > sat_in, f"Vivid saturation {sat_out:.2f} should exceed {sat_in:.2f}"
+    @pytest.mark.parametrize(
+        ("table", "rgb", "expected"),
+        [
+            (ColorTable("srgb"), (0, 255, 255), (255, 20, 255, 255)),
+            (ColorTable("srgb"), (255, 0, 0), (255, 255, 30, 30)),
+            (ColorTable("srgb"), (25, 230, 230), (253, 35, 251, 235)),
+            (ColorTable("rgb", variant="density2"), (30, 200, 90), (248, 98, 253, 96)),
+            (ColorTable("rgb", variant="density2"), (250, 240, 10), (255, 253, 244, 16)),
+            (ColorTable("cmyk"), (30, 200, 90), (255, 35, 236, 113)),
+            (ColorTable("cmyk"), (200, 100, 50), (255, 235, 124, 60)),
+        ],
+    )
+    def test_separation_matches_original(self, table, rgb, expected):
+        """(K, C, M, Y) as recovered from brhl4150cdnfilter output for these solid colours."""
+        k, c, m, y = rgb_line_to_cmyk_intensities(_make_rgb_row(*rgb, width=1), 1, table)
+        assert (k[0], c[0], m[0], y[0]) == expected
 
-    def test_none_mode_passes_through(self):
-        """None mode should skip color management -- gray produces CMY but no K."""
-        # Gray pixel: R=G=B=128
-        k_norm, _c_norm, _m_norm, _y_norm = rgb_line_to_cmyk_intensities(
-            _make_rgb_row(128, 128, 128, width=1), 1, color_matching=ColorMatching.NORMAL
+    def test_rich_black_takes_grid_entry_zero(self):
+        k, c, m, y = rgb_line_to_cmyk_intensities(
+            _make_rgb_row(0, 0, 0, width=1), 1, ColorTable("rgb", rich_black=True)
         )
-        k_none, c_none, m_none, y_none = rgb_line_to_cmyk_intensities(
-            _make_rgb_row(128, 128, 128, width=1), 1, color_matching=ColorMatching.NONE
-        )
-        # Normal (LUT): K has some ink, CMY also have ink (LUT distributes across channels)
-        assert k_norm[0] < 255  # K has ink
-        # None: K has no ink (no GCR), CMY all have ink
-        assert k_none[0] == 255  # K has no ink
-        assert c_none[0] < 255  # C has ink
-        assert m_none[0] < 255  # M has ink
-        assert y_none[0] < 255  # Y has ink
+        assert (k[0], c[0], m[0], y[0]) == (0, 255 - 83, 255 - 55, 255 - 65)
+        k, c, m, y = rgb_line_to_cmyk_intensities(_make_rgb_row(0, 0, 0, width=1), 1, ColorTable("rgb"))
+        assert (k[0], c[0], m[0], y[0]) == (0, 255, 255, 255)
 
 
 # Brightness / contrast / RGB-key adjustments are covered byte-for-byte

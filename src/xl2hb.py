@@ -78,22 +78,35 @@ OP_END_IMAGE = 0xB2
 # ---------------------------------------------------------------------------
 # MediaSize enum
 # ---------------------------------------------------------------------------
-MEDIA_SIZE = {
+# BeginPage MediaSize as brhl4150cdnfilter writes it: a PCL XL media-size
+# enum, or for sizes without one a name string.
+MEDIA_SIZE: dict[str, int | bytes] = {
     "Letter": 0,
     "Legal": 1,
     "A4": 2,
     "Executive": 3,
-    "A5": 5,
-    "JISB5": 13,
-    "Postcard": 14,
-    "EnvDL": 6,
+    "Env10": 6,
+    "EnvMonarch": 7,
     "EnvC5": 8,
-    "Env10": 9,
-    "EnvMonarch": 10,
+    "EnvDL": 9,
+    "JISB5": 11,
+    "ISOB5": 12,
+    "Postcard": 14,
+    "A5": 16,
+    "A6": 17,
+    "PRA5Rotated": b"A5L",
+    "ISOB6": b"B6",
+    "JISB6": b"JISB6",
+    "Br3x5": b"3x5",
+    "FanFoldGermanLegal": b"Folio",
+    "EnvPRC5Rotated": b"DL Long Edge",
+    "EnvYou4": b"Envelope #4",
+    "EnvChou3": b"Envelope MAX",
 }
 
 # ---------------------------------------------------------------------------
-# Paper sizes (pixels at 600 DPI, from paperinfij2)
+# Paper sizes: pixels at 600 DPI from paperinfij2, and the printable height
+# in points (ury - lly) from Brother's ImagingArea file.
 # ---------------------------------------------------------------------------
 PAPER_SIZES = {
     "A4": (4760, 6812),
@@ -101,27 +114,64 @@ PAPER_SIZES = {
     "Legal": (4900, 8200),
     "Executive": (4148, 6100),
     "A5": (3296, 4760),
+    "PRA5Rotated": (4756, 3300),
+    "A6": (2272, 3300),
+    "ISOB5": (3956, 5708),
+    "ISOB6": (2748, 3956),
     "JISB5": (4100, 5872),
-    "Postcard": (2164, 3288),
+    "JISB6": (2824, 4100),
     "EnvDL": (2400, 4996),
     "EnvC5": (3624, 5208),
     "Env10": (2272, 5500),
     "EnvMonarch": (2124, 4300),
+    "Br3x5": (1600, 2800),
+    "FanFoldGermanLegal": (4900, 7600),
+    "EnvPRC5Rotated": (5000, 2400),
+    "Postcard": (2164, 3288),
+    "EnvYou4": (2280, 5348),
+    "EnvChou3": (2632, 5348),
+}
+
+IMAGING_HEIGHT_PT = {
+    "A4": 818,
+    "Letter": 768,
+    "Legal": 984,
+    "Executive": 732,
+    "A5": 571,
+    "PRA5Rotated": 396,
+    "A6": 396,
+    "ISOB5": 685,
+    "ISOB6": 475,
+    "JISB5": 705,
+    "JISB6": 492,
+    "EnvDL": 600,
+    "EnvC5": 625,
+    "Env10": 660,
+    "EnvMonarch": 516,
+    "Br3x5": 336,
+    "FanFoldGermanLegal": 912,
+    "EnvPRC5Rotated": 288,
+    "Postcard": 395,
+    "EnvYou4": 642,
+    "EnvChou3": 642,
 }
 
 # Fine mode uses the same paper sizes as Normal — only the dithering
 # depth, band config, and PJL APTMODE differ.
 
-# MediaType strings (each name is prefixed with 'd' on the wire).
+# MediaType strings (each name is prefixed with 'd' on the wire), as
+# brhl4150cdnfilter writes them; it sends Bond paper as Regular.
 MEDIA_TYPE_STRINGS = {
     "Plain": b"dRegular",
     "Thin": b"dThin",
     "Thick": b"dThick",
-    "Thicker": b"dThicker",
-    "Bond": b"dBond",
-    "Envelope": b"dEnvelope",
-    "EnvThick": b"dEnvThick",
+    "Thicker": b"dThick2",
+    "Bond": b"dRegular",
+    "Envelope": b"dEnvelopes",
+    "EnvThin": b"dEnvthin",
+    "EnvThick": b"dEnvthick",
     "Recycled": b"dRecycled",
+    "Postcard": b"dPostcard",
     "Label": b"dLabel",
     "Glossy": b"dGlossy",
 }
@@ -242,28 +292,41 @@ def emit_extended_data(buf: bytearray, data: bytes) -> None:
 # ---------------------------------------------------------------------------
 
 
+def image_height(page_size: str) -> int:
+    """Rows of the page image, as the original computes its band height.
+
+    The printable height in points, capped at the paper height in whole
+    points, converted to 600 dpi: `min(ury - lly, paper_h * 72 // 600) *
+    600 // 72`. Verified against brhl4150cdnfilter for every paper size
+    (A4 6812 -> 6808, Letter 6400 -> 6400, EnvDL 4996 -> 4991).
+
+    Returns:
+        Source height in rows.
+    """
+    _, ph = PAPER_SIZES[page_size]
+    points = min(IMAGING_HEIGHT_PT[page_size], ph * 72 // 600)
+    return points * 600 // 72
+
+
 def get_image_dimensions(page_size: str) -> tuple[int, int]:
     """Return (source_width, source_height) for BeginImage.
 
-    Width = paper_width rounded up to 32-pixel boundary.
-    Height = paper_height - 4 (confirmed from captures: A4 6812->6808).
+    Width = paper_width rounded up to 32-pixel boundary; height see
+    `image_height`.
     """
-    pw, ph = PAPER_SIZES[page_size]
-    # Round width up to next 32-pixel boundary
-    w = (pw + 31) & ~31
-    h = ph - 4
-    return w, h
+    pw, _ = PAPER_SIZES[page_size]
+    return (pw + 31) & ~31, image_height(page_size)
 
 
 def get_image_dimensions_fine(page_size: str) -> tuple[int, int]:
     """Return (source_width, source_height) for Fine mode BeginImage.
 
     Fine mode uses the raw paper width without 32-pixel rounding
-    (A4: 4760, not 4768). Height is the same as Normal (paper_h - 4).
+    (A4: 4760, not 4768). Height is the same as Normal.
     Verified from captures: Fine A4 = (4760, 6808).
     """
-    pw, ph = PAPER_SIZES[page_size]
-    return pw, ph - 4
+    pw, _ = PAPER_SIZES[page_size]
+    return pw, image_height(page_size)
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +334,11 @@ def get_image_dimensions_fine(page_size: str) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-def build_band_config() -> list[int]:
-    """Build the 23 x uint16 band config array for standard color mode.
+def build_band_config(*, color: bool = True) -> list[int]:
+    """Build the 23 x uint16 band config array for Normal mode.
 
-    Verified byte-for-byte against captures.
+    Verified byte-for-byte against captures. The third word is the colour
+    flag: 1 for colour, 0 for grayscale (only the K plane carries data).
 
     Returns:
         23 uint16 values describing the per-plane band configuration.
@@ -282,7 +346,7 @@ def build_band_config() -> list[int]:
     return [
         0x0000,
         0x0003,
-        0x0001,
+        int(color),
         0x0001,
         0x0005,
         0x0000,
@@ -306,11 +370,12 @@ def build_band_config() -> list[int]:
     ]
 
 
-def build_band_config_fine() -> list[int]:
+def build_band_config_fine(*, color: bool = True) -> list[int]:
     """Build the 23 x uint16 band config array for Fine mode.
 
     Verified byte-for-byte against captures. Each plane gets [0x000C, 0x0000]
-    instead of Normal's [0x0004, 0xTTCC] per-plane parameters.
+    instead of Normal's [0x0004, 0xTTCC] per-plane parameters. The third
+    word is the colour flag, as in `build_band_config`.
 
     Returns:
         23 uint16 values describing the Fine-mode band configuration.
@@ -318,7 +383,7 @@ def build_band_config_fine() -> list[int]:
     return [
         0x0000,
         0x0003,
-        0x0001,
+        int(color),
         0x0001,
         0x0005,
         0x0000,
@@ -531,12 +596,18 @@ class XL2HBWriter:
         if back_side_marker:
             emit_ubyte_attr(self.buf, DUPLEX_BACK_SIDE_MARKER, ATTR_DUPLEX_BACK_SIDE)
         emit_ubyte_attr(self.buf, orientation, ATTR_ORIENTATION)
-        emit_ubyte_attr(self.buf, media_source, ATTR_MEDIA_SOURCE)
-        size_enum = MEDIA_SIZE.get(media_size)
-        if size_enum is None:
+        if media_source > 0xFF:
+            emit_uint16_attr(self.buf, media_source, ATTR_MEDIA_SOURCE)
+        else:
+            emit_ubyte_attr(self.buf, media_source, ATTR_MEDIA_SOURCE)
+        size = MEDIA_SIZE.get(media_size)
+        if size is None:
             logger.warning("Unknown media size %r, defaulting to A4", media_size)
-            size_enum = 2
-        emit_ubyte_attr(self.buf, size_enum, ATTR_MEDIA_SIZE)
+            size = 2
+        if isinstance(size, bytes):
+            emit_ubyte_array_attr(self.buf, size, ATTR_MEDIA_SIZE)
+        else:
+            emit_ubyte_attr(self.buf, size, ATTR_MEDIA_SIZE)
         type_str = MEDIA_TYPE_STRINGS.get(media_type)
         if type_str is None:
             logger.warning("Unknown media type %r, defaulting to Regular", media_type)
@@ -563,12 +634,14 @@ class XL2HBWriter:
         dest_width: int | None = None,
         dest_height: int | None = None,
         fine: bool = False,
+        color: bool = True,
     ) -> None:
         """Emit BeginImage with dimensions, band config, and copy count.
 
         dest_width/dest_height override the physical output size (in session units).
         When None, they default to source dimensions (correct for 600 dpi).
         For Fine mode, uses build_band_config_fine() and Fine dimensions.
+        `color` False marks a grayscale (K-only) image.
         """
         emit_ubyte_attr(self.buf, 0, ATTR_COLOR_MAPPING)  # Direct
         color_depth = 1 if fine else 0  # Fine=1, Normal=0
@@ -578,7 +651,7 @@ class XL2HBWriter:
         dw = dest_width if dest_width is not None else source_width
         dh = dest_height if dest_height is not None else source_height
         emit_uint16_xy_attr(self.buf, dw, dh, ATTR_DESTINATION_SIZE)
-        band_config = build_band_config_fine() if fine else build_band_config()
+        band_config = build_band_config_fine(color=color) if fine else build_band_config(color=color)
         emit_uint16_array_attr(self.buf, band_config, ATTR_COLOR_TREATMENT)
         emit_uint16_attr(self.buf, copies, ATTR_PAGE_COPIES)
         emit_opcode(self.buf, OP_BEGIN_IMAGE)
@@ -624,6 +697,7 @@ class XL2HBWriter:
 def generate_pjl_header(
     resolution: int = 600,
     color: bool = True,
+    color_adapt: bool = True,
     economode: bool = False,
     less_paper_curl: bool = False,
     fix_intensity: bool = False,
@@ -647,7 +721,7 @@ def generate_pjl_header(
         "\x1b%-12345X@PJL \n",
         f"@PJL SET ECONOMODE={'ON' if economode else 'OFF'}\n",
         f"@PJL SET RENDERMODE={'COLOR' if color else 'GRAYSCALE'}\n",
-        f"@PJL SET COLORADAPT={'ON' if color else 'OFF'}\n",
+        f"@PJL SET COLORADAPT={'ON' if color and color_adapt else 'OFF'}\n",
         f"@PJL SET LESSPAPERCURL={'ON' if less_paper_curl else 'OFF'}\n",
         f"@PJL SET FIXINTENSITYUP={'ON' if fix_intensity else 'OFF'}\n",
     ]

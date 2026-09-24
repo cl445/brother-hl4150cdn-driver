@@ -31,12 +31,16 @@ try:
 except ImportError:
     HAS_CYTHON_SW_RLE = False
 
-# Per-plane parameters: (read_group_size, encode_group_size).
+# Per-plane parameters: (read_group_size, encode_group_size). K and Y read
+# every bit of the line: the last 12-bit word keeps the trailing bits and is
+# zero-padded, as read_word_16 does in the original. A read group of 12 would
+# drop them, which only shows when the line width is not a multiple of 12
+# bits and its last pixels carry ink (sizes without right padding, e.g. A5).
 _PLANE_GROUP_SIZES = {
-    "K": (12, 12),
+    "K": (1, 12),
     "C": (20, 12),
     "M": (12, 12),  # M plane has additional sub-blocks handled separately.
-    "Y": (12, 12),
+    "Y": (1, 12),
 }
 
 

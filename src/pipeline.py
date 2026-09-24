@@ -25,20 +25,19 @@ from dither import DitherChannel, dither_channel_1bpp_arr, dither_channel_4bpp_a
 from saturation import adjust_saturation
 from settings import (
     DUPLEX_MAP,
-    ColorMatching,
+    MEDIA_SOURCE,
     DuplexMode,
     ImproveOutput,
     MonoColor,
     PageSize,
     PrintSettings,
     Resolution,
-    input_slot_to_tray,
 )
 from tone_curve import apply_tone_curve_arr, build_tone_curve
 from transforms import (
     apply_input_remap_rgb,
-    apply_vivid,
     build_input_remap_lut,
+    color_table,
     rgb_line_to_cmyk_intensities_arr,
 )
 from xl2hb import (
@@ -195,35 +194,34 @@ class _ColourSetup(NamedTuple):
     """Per-page colour settings shared by the scanline encoders."""
 
     settings: PrintSettings
+    table: color_lut.ColorTable
     input_remap: tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]] | None
     tone_lut: npt.NDArray[np.uint8] | None
     check_white: bool
 
     @property
+    def saturation(self) -> int:
+        """Saturation to apply; the cmyk profile skips it (`cmyk_basic` in the original)."""
+        return 0 if self.table.profile == "cmyk" else self.settings.saturation
+
+    @property
     def adjusts_rgb(self) -> bool:
         """Whether `_adjust_rgb` changes pixels before the colour lookup."""
-        return (
-            self.settings.saturation != 0
-            or self.settings.color_matching == ColorMatching.VIVID
-            or self.input_remap is not None
-        )
+        return self.saturation != 0 or self.input_remap is not None
 
 
 def _adjust_rgb(rgb: Buffer, pixels: int, colour: _ColourSetup) -> Buffer:
-    """Apply saturation or vivid, then the input remap, to `pixels` RGB pixels.
+    """Apply saturation, then the input remap, to `pixels` RGB pixels.
 
     Every step is per pixel, so a whole band can go through in one call.
 
     Returns:
         The adjusted pixels, or `rgb` itself when nothing applies.
     """
-    settings = colour.settings
-    # Saturation and vivid are per-pixel; brightness/contrast/RGB-keys
-    # go through the pre-LUT input remap.
-    if settings.saturation != 0:
-        rgb = adjust_saturation(rgb, pixels, settings.saturation)
-    elif settings.color_matching == ColorMatching.VIVID:
-        rgb = apply_vivid(rgb, pixels)
+    # Saturation is per-pixel; brightness/contrast/RGB-keys go through the
+    # pre-LUT input remap.
+    if colour.saturation != 0:
+        rgb = adjust_saturation(rgb, pixels, colour.saturation)
     if colour.input_remap is not None:
         rgb = apply_input_remap_rgb(rgb, pixels, *colour.input_remap)
     return rgb
@@ -249,14 +247,13 @@ def _encode_lines(
     dither_fn = _DITHER_FNS[is_fine]
     encoders = _PLANE_ENCODERS[is_fine]
     pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
-    color_matching = colour.settings.color_matching
 
     for line_idx, (row, is_white) in enumerate(_iter_rows(blocks, check_white=colour.check_white)):
         if is_white:
             yield _BLANK_LINE
             continue
         rgb_row = _adjust_rgb(row, width, colour)
-        k_arr, c_arr, m_arr, y_arr = rgb_line_to_cmyk_intensities_arr(rgb_row, width, color_matching=color_matching)
+        k_arr, c_arr, m_arr, y_arr = rgb_line_to_cmyk_intensities_arr(rgb_row, width, colour.table)
         if colour.tone_lut is not None:
             k_arr, c_arr, m_arr, y_arr = apply_tone_curve_arr(k_arr, c_arr, m_arr, y_arr, colour.tone_lut)
         if pad_arr is not None:
@@ -272,26 +269,98 @@ def _encode_lines(
         )
 
 
-def _band_kernel_lut(
-    settings: PrintSettings, channels: dict[str, DitherChannel], *, is_fine: bool
-) -> npt.NDArray[np.uint8] | None:
-    """Return the colour table for `render_band`, or None if it cannot render the page.
-
-    The kernel covers Normal mode with threshold-matrix dither channels; it
-    needs the native module and, unless colour matching is off, the
-    installed inverse LUT.
+def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
+    """Rec. 601 luma of (rows, width * 3) RGB rows, rounded as the original driver does.
 
     Returns:
-        The flat inverse LUT, an empty table for no colour matching, or None.
+        (rows, width) uint8 array.
+    """
+    px = rgb.reshape(-1, width, 3).astype(np.uint32)
+    return ((px[..., 0] * 299 + px[..., 1] * 587 + px[..., 2] * 114 + 499) // 1000).astype(np.uint8)
+
+
+def _encode_lines_mono(
+    blocks: RowBlocks,
+    width: int,
+    sw: int,
+    colour: _ColourSetup,
+    channels: dict[str, DitherChannel],
+    *,
+    is_fine: bool,
+) -> Iterator[LineCodes]:
+    """Grayscale counterpart of `_encode_lines`: luma into the K plane only.
+
+    Mirrors `compress_separate_mono` in the original driver: K ink is
+    255 - luma through the mono profile, which is the identity table, and
+    C/M/Y stay empty. Saturation and vivid do not apply in this mode; the
+    brightness/contrast input remap does.
+
+    Yields:
+        Encoded planes of each input row, top to bottom.
+    """
+    dither_fn = _DITHER_FNS[is_fine]
+    encode_k = _PLANE_ENCODERS[is_fine][0]
+    pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
+    line_idx = 0
+
+    for block in blocks:
+        n = block.shape[0]
+        if not colour.check_white:
+            white = [False] * n
+        elif block.shape[1]:
+            white = (block.min(axis=1) == 255).tolist()
+        else:
+            white = [True] * n
+        rgb = block
+        if colour.input_remap is not None:
+            rgb = _page_rows(
+                apply_input_remap_rgb(np.ascontiguousarray(block), n * width, *colour.input_remap), width, n
+            )
+        luma = _luma(rgb, width)
+        if colour.tone_lut is not None:
+            luma = np.take(colour.tone_lut, luma)
+        if pad_arr is not None:
+            luma = np.concatenate((luma, np.broadcast_to(pad_arr, (n, pad_arr.size))), axis=1)
+        for row, is_white in zip(luma, white, strict=True):
+            if is_white:
+                yield _BLANK_LINE
+            else:
+                yield (encode_k(dither_fn(row, line_idx, sw, channels["K"])), b"", b"", b"")
+            line_idx += 1
+
+
+class _KernelColour(NamedTuple):
+    """Colour arguments of `render_band`: the inverse LUT, or the grid to interpolate."""
+
+    inverse: npt.NDArray[np.uint8]
+    grid: npt.NDArray[np.int32]
+    weights: npt.NDArray[np.uint8]
+    black: npt.NDArray[np.int32]
+
+
+_EMPTY_INT = np.empty(0, dtype=np.int32)
+
+
+def _band_kernel_colour(
+    table: color_lut.ColorTable, channels: dict[str, DitherChannel], *, is_fine: bool
+) -> _KernelColour | None:
+    """Return the colour arguments for `render_band`, or None if it cannot render the page.
+
+    The kernel covers Normal mode with threshold-matrix dither channels and
+    needs the native module. It gathers through the installed inverse LUT of
+    `table` when there is one and interpolates the grid otherwise.
+
+    Returns:
+        The kernel's colour arguments, or None for the per-line path.
     """
     if not HAS_BAND_KERNEL or is_fine:
         return None
     if any(channel.threshold_matrix is None for channel in channels.values()):
         return None
-    if settings.color_matching == ColorMatching.NONE:
-        return _EMPTY_TABLE
-    inverse = color_lut.inverse_lut()
-    return None if inverse is None else inverse.reshape(-1)
+    inverse = color_lut.inverse_lut(table)
+    if inverse is not None:
+        return _KernelColour(inverse.reshape(-1), _EMPTY_INT, _EMPTY_TABLE, _EMPTY_INT)
+    return _KernelColour(_EMPTY_TABLE, *color_lut.interp_arrays(table))
 
 
 def _render_threads() -> int:
@@ -335,13 +404,13 @@ def _encode_lines_banded(
     sw: int,
     colour: _ColourSetup,
     channels: dict[str, DitherChannel],
-    lut: npt.NDArray[np.uint8],
+    kernel_colour: _KernelColour,
 ) -> Iterator[LineCodes]:
     """Like `_encode_lines`, but whole bands at a time in the native kernel.
 
     The kernel releases the GIL, so bands render in parallel on the
-    render threads; results are yielded strictly in page order. `lut` comes
-    from `_band_kernel_lut`.
+    render threads; results are yielded strictly in page order.
+    `kernel_colour` comes from `_band_kernel_colour`.
 
     Yields:
         Encoded planes of each input row, top to bottom.
@@ -362,7 +431,7 @@ def _encode_lines_banded(
         if colour.adjusts_rgb:
             rgb = _page_rows(_adjust_rgb(np.ascontiguousarray(band), n * width, colour), width, n)
         lengths = np.empty((n, 4), dtype=np.int32)
-        data = render_band(rgb, skip, width, first_line, sw, lut, tone, *thresholds, lengths)
+        data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, tone, *thresholds, lengths)
         codes: list[LineCodes] = []
         pos = 0
         for k_len, c_len, m_len, y_len in lengths.tolist():
@@ -434,13 +503,14 @@ def _render_page(
 
     w.write_begin_page(
         media_size=page_size,
-        media_source=1,
+        media_source=MEDIA_SOURCE[settings.input_slot],
         media_type=settings.media_type,
         duplex_mode=DUPLEX_MAP.get(settings.duplex),
         back_side_marker=flip_back,
     )
     w.write_set_page_origin()
-    w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine)
+    mono = settings.mono_color == MonoColor.MONO
+    w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine, color=not mono)
 
     plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
 
@@ -452,12 +522,15 @@ def _render_page(
             w.write_read_image(start, count, pid, blob)
         pb.reset(next_line)
 
-    # Pre-build LUTs (constant per page).
+    # Pre-build LUTs (constant per page). The cmyk profile (colour matching
+    # None) takes no brightness/contrast/RGB-key remap: the original sends it
+    # through cmyk_basic, which skips compress_color_manage.
+    table = color_table(settings)
     tone_lut = None
     input_remap = None
     if settings.gamma_select is not None:
         tone_lut = build_tone_curve(settings.brightness, settings.contrast, settings.gamma_select)
-    elif (
+    elif table.profile != "cmyk" and (
         settings.brightness != 0
         or settings.contrast != 0
         or settings.red != 0
@@ -474,10 +547,12 @@ def _render_page(
     # and vivid leave the gray axis untouched; the LUT clamps white→0 ink.
     # Only tone_curve can deposit ink on white, so skip the short-circuit
     # when gamma_select is active.
-    colour = _ColourSetup(settings, input_remap, tone_lut, check_white=tone_lut is None)
-    kernel_lut = _band_kernel_lut(settings, channels, is_fine=is_fine)
-    if kernel_lut is not None:
-        lines = _encode_lines_banded(blocks, width, sw, colour, channels, kernel_lut)
+    colour = _ColourSetup(settings, table, input_remap, tone_lut, check_white=tone_lut is None)
+    kernel_colour = None if mono else _band_kernel_colour(colour.table, channels, is_fine=is_fine)
+    if mono:
+        lines = _encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
+    elif kernel_colour is not None:
+        lines = _encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour)
     else:
         lines = _encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
 
@@ -636,6 +711,8 @@ def filter_duplex_pages(
     pjl = generate_pjl_header(
         resolution=600,
         color=color,
+        # Only BRMonoColor=Auto sets the colour-adapt flag (printer_config_init).
+        color_adapt=settings.mono_color == MonoColor.AUTO,
         # ECONOMODE is always OFF; toner-save is implemented through the
         # -TS_cache09.bin dither tables instead.
         economode=False,
@@ -643,8 +720,7 @@ def filter_duplex_pages(
         fix_intensity=settings.improve_output == ImproveOutput.FIX_INTENSITY,
         apt_mode=(settings.resolution == Resolution.FINE),
         improve_gray=settings.improve_gray,
-        ucrgcr=settings.improve_gray,
-        source_tray=input_slot_to_tray(settings.input_slot),
+        ucrgcr=settings.enhance_black,
     )
     output.write(pjl)
 

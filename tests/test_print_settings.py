@@ -177,12 +177,36 @@ class TestPaperSizes:
         sw, _sh = get_image_dimensions(name)
         assert sw % 32 == 0, f"{name}: source_width {sw} not 32-aligned"
 
-    @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
-    def test_image_height_minus_4(self, name):
-        """Image height = paper height - 4."""
-        _, ph = PAPER_SIZES[name]
-        _, sh = get_image_dimensions(name)
-        assert sh == ph - 4
+    @pytest.mark.parametrize(
+        ("name", "height", "media_size"),
+        [
+            ("A4", 6808, 2),
+            ("Letter", 6400, 0),
+            ("Legal", 8200, 1),
+            ("Executive", 6100, 3),
+            ("A5", 4758, 16),
+            ("PRA5Rotated", 3300, b"A5L"),
+            ("A6", 3300, 17),
+            ("ISOB5", 5700, 12),
+            ("ISOB6", 3950, b"B6"),
+            ("JISB5", 5866, 11),
+            ("JISB6", 4100, b"JISB6"),
+            ("EnvDL", 4991, 9),
+            ("EnvC5", 5200, 8),
+            ("Env10", 5500, 6),
+            ("EnvMonarch", 4300, 7),
+            ("Br3x5", 2800, b"3x5"),
+            ("FanFoldGermanLegal", 7600, b"Folio"),
+            ("EnvPRC5Rotated", 2400, b"DL Long Edge"),
+            ("Postcard", 3283, 14),
+            ("EnvYou4", 5341, b"Envelope #4"),
+            ("EnvChou3", 5341, b"Envelope MAX"),
+        ],
+    )
+    def test_height_and_media_size_match_original(self, name, height, media_size):
+        """Source height and MediaSize as brhl4150cdnfilter writes them."""
+        assert get_image_dimensions(name)[1] == height
+        assert MEDIA_SIZE[name] == media_size
 
     @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
     def test_bpl_calculation(self, name):
@@ -199,17 +223,21 @@ class TestPaperSizes:
 
 
 class TestMediaTypes:
+    """Wire strings as brhl4150cdnfilter writes them for each RC MediaType."""
+
     @pytest.mark.parametrize(
         ("name", "expected_prefix"),
         [
             ("Plain", b"dRegular"),
             ("Thin", b"dThin"),
             ("Thick", b"dThick"),
-            ("Thicker", b"dThicker"),
-            ("Bond", b"dBond"),
-            ("Envelope", b"dEnvelope"),
-            ("EnvThick", b"dEnvThick"),
+            ("Thicker", b"dThick2"),
+            ("Bond", b"dRegular"),
+            ("Envelope", b"dEnvelopes"),
+            ("EnvThin", b"dEnvthin"),
+            ("EnvThick", b"dEnvthick"),
             ("Recycled", b"dRecycled"),
+            ("Postcard", b"dPostcard"),
             ("Label", b"dLabel"),
             ("Glossy", b"dGlossy"),
         ],

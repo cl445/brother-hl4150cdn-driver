@@ -75,7 +75,7 @@ def test_native_gather_matches_numpy_path(monkeypatch) -> None:
         pytest.skip("_color_fast extension not built")
     rng = np.random.default_rng(3)
     lut = rng.integers(0, 256, color_lut._INVERSE_LUT_SHAPE, dtype=np.uint8)
-    monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda: lut)
+    monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda profile="rgb": lut)
 
     sample = _sample_rgb(seed=11, width=5000)
     native = color_lut.rgb_to_cmyk_lut_arr(sample, 4768)

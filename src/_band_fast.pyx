@@ -4,7 +4,7 @@
 Colour lookup, ordered dither and sliding-window RLE for a whole band in
 one call without the GIL, so bands can render on several threads. Output
 is byte-identical to the per-line path in pipeline._render_page: colour
-through the inverse LUT (or the no-colour-matching split), optional tone
+through the inverse LUT (or interpolated in the colour grid), optional tone
 curve, 1bpp threshold dither, then encode_plane / encode_c_plane /
 encode_m_plane_10.
 """
@@ -12,11 +12,12 @@ encode_m_plane_10.
 from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.string cimport memset
 
+from _color_fast cimport interp_pixel
 from _rle_fast cimport OutBuf, encode_line, encode_scratch_words, free, malloc
 
 # Per plane (K, C, M, Y): read_group, encode_group and word size, as in
 # plane_encoders.encode_plane / encode_c_plane / encode_m_plane_10.
-cdef int[4] _READ_GROUP = [12, 1, 1, 12]
+cdef int[4] _READ_GROUP = [1, 1, 1, 1]
 cdef int[4] _ENCODE_GROUP = [12, 20, 10, 12]
 cdef int[4] _BITS = [12, 20, 10, 12]
 
@@ -30,6 +31,9 @@ def render_band(
     Py_ssize_t first_line,
     Py_ssize_t sw,
     const unsigned char[::1] lut,
+    const int[::1] grid,
+    const unsigned char[::1] weights,
+    const int[::1] black,
     const unsigned char[::1] tone,
     const unsigned char[:, ::1] thr_k,
     const unsigned char[:, ::1] thr_c,
@@ -46,8 +50,10 @@ def render_band(
         width: pixels per input row.
         first_line: page line index of rows[0]; selects the threshold rows.
         sw: image width in pixels; pixels past `width` count as white.
-        lut: flat (256*256*256*4) KCMY inverse LUT, or empty for the
-            no-colour-matching split (K = 255, C/M/Y = R/G/B).
+        lut: flat (256*256*256*4) KCMY inverse LUT, or empty to interpolate
+            `grid` instead.
+        grid, weights, black: colour grid, interpolation weights and black
+            ink from `color_lut.interp_arrays`; used when `lut` is empty.
         tone: 256-entry tone curve applied to all four channels, or empty.
         thr_k, thr_c, thr_m, thr_y: threshold matrices tiled to >= sw columns.
         lengths: (n, 4) output, encoded length per line and plane (K, C, M, Y);
@@ -64,6 +70,7 @@ def render_band(
     cdef Py_ssize_t i, j, line, pid, written
     cdef size_t off
     cdef unsigned char kv, cv, mv, yv, bit
+    cdef unsigned char kcmy[4]
     cdef const unsigned char *row
     cdef const unsigned char *tk
     cdef const unsigned char *tc
@@ -85,6 +92,8 @@ def render_band(
         raise ValueError("rows must be contiguous scanlines")
     if has_lut and lut.shape[0] != _LUT_SIZE:
         raise ValueError("lut must be the flat 256*256*256*4 inverse LUT")
+    if not has_lut and (grid.shape[0] != 4913 * 4 or weights.shape[0] != 17 * 289 * 9 or black.shape[0] != 4):
+        raise ValueError("without an inverse LUT, grid, weights and black ink are required")
     if has_tone and tone.shape[0] != 256:
         raise ValueError("tone curve must have 256 entries")
     if (
@@ -130,10 +139,11 @@ def render_band(
                         mv = lut[off + 2]
                         yv = lut[off + 3]
                     else:
-                        kv = 255
-                        cv = row[3 * j]
-                        mv = row[3 * j + 1]
-                        yv = row[3 * j + 2]
+                        interp_pixel(&grid[0], &weights[0], &black[0], row[3 * j], row[3 * j + 1], row[3 * j + 2], kcmy)
+                        kv = kcmy[0]
+                        cv = kcmy[1]
+                        mv = kcmy[2]
+                        yv = kcmy[3]
                     if has_tone:
                         kv = tone[kv]
                         cv = tone[cv]

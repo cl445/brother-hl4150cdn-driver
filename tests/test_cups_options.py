@@ -101,6 +101,11 @@ class TestCupsOptionsEnums:
             ("BRMediaType=Thick", MediaType.THICK),
             ("BRMediaType=Envelope", MediaType.ENVELOPE),
             ("BRMediaType=Glossy", MediaType.GLOSSY),
+            ("BRMediaType=EnvThin", MediaType.ENV_THIN),
+            # Brother's own PPD/RC spellings
+            ("BRMediaType=BOND", MediaType.BOND),
+            ("BRMediaType=Env", MediaType.ENVELOPE),
+            ("BRMediaType=PostCard", MediaType.POSTCARD),
         ],
     )
     def test_media_type(self, option, expected):

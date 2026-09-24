@@ -65,6 +65,16 @@ PAPER_POINTS = {
     "EnvC5": (459, 649),
     "Env10": (297, 684),
     "EnvMonarch": (279, 540),
+    "PRA5Rotated": (595, 420),
+    "A6": (297, 420),
+    "ISOB5": (499, 709),
+    "ISOB6": (354, 499),
+    "JISB6": (363, 516),
+    "Br3x5": (216, 360),
+    "FanFoldGermanLegal": (612, 936),
+    "EnvPRC5Rotated": (624, 312),
+    "EnvYou4": (298, 666),
+    "EnvChou3": (340, 666),
 }
 
 

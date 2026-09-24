@@ -69,13 +69,17 @@ Pass them as `-o key=value` to `lp` / `lpr` for scripting.
 
 | Option | Values | Notes |
 |---|---|---|
-| `PageSize` | A4, Letter, Legal, Executive, A5, JISB5, Postcard, DL, C5, Com-10, Monarch | |
-| `MediaType` | Plain, Thin, Thick, Thicker, Bond, Envelope, Recycled, Label, Glossy, … | 10 entries |
+| `PageSize` | A4, Letter, Legal, Executive, A5, A5 long edge, A6, ISO B5/B6, JIS B5/B6, Postcard, DL, DL long edge, C5, Com-10, Monarch, 3x5, Folio, Envelope #4/MAX | |
+| `MediaType` | Plain, Thin, Thick, Thicker, Bond, Envelope, EnvThin, EnvThick, Recycled, Postcard, Label, Glossy | Glossy uses the glossy colour tables |
 | `BRResolution` | Normal, Fine | Fine mode is incomplete (see Status) |
 | `BRMonoColor` | Auto, FullColor, Mono | |
 | `Duplex` | None, DuplexTumble, DuplexNoTumble | Tumble = short edge |
-| `BRColorMatching` | Normal, Vivid, None | Vivid not byte-identical yet |
-| `TonerSaveMode` | OFF, ON | Uses the toner-save dither tables |
+| `BRColorMatching` | Normal, Vivid, None | Each selects its own colour tables |
+| `BRGray` | OFF, ON | Improve gray: ImpGray colour tables |
+| `BREnhanceBlkPrt` | OFF, ON | Enhance black: rich black for pure black |
+| `BRImproveOutput` | OFF, BRLessPaperCurl, BRFixIntensity | |
+| `InputSlot` | AutoSelect, Tray1, Tray2, MPTray, Manual | |
+| `TonerSaveMode` | OFF, ON | Toner-save dither and colour tables |
 | `BRSkipBlank` | OFF, ON | |
 | `BRReverse` | OFF, ON | Reverse page order |
 | `Brightness` | −20 … +20 | |
@@ -109,7 +113,7 @@ uv run nox --list
 uv run nox -s lint            # ruff
 uv run nox -s format_check    # ruff format --check
 uv run nox -s typecheck       # pyrefly
-uv run nox -s tests           # pytest (826 tests, needs extracted blobs)
+uv run nox -s tests           # pytest (1207 tests, needs extracted blobs)
 ```
 
 The test fixtures in `tests/fixtures/` are zstd-compressed XL2HB

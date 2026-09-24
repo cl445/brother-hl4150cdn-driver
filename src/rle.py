@@ -292,7 +292,11 @@ class _SwRleConfig:
     emit_literal: Callable[[bytearray, list[int]], None]
     eof: int
     literal_overflow: int
-    run_break_to_context_skip: bool
+    # 10-bit M encoder (compress_encode_plane_m): the word that starts a
+    # context-predicted stretch is counted in the context skip rather than
+    # emitted as run(1) first, and a run break returns to MAIN instead of
+    # jumping straight into a context skip.
+    skip_counts_current: bool
 
 
 def _make_emit_run_nbit(value_bits: int) -> Callable[[bytearray, int, int], None]:
@@ -337,7 +341,7 @@ CONFIG_12BIT = _SwRleConfig(
     emit_literal=_make_emit_literal_nbit(12),
     eof=0xFFFFFFFF,
     literal_overflow=0x7FF,
-    run_break_to_context_skip=False,
+    skip_counts_current=False,
 )
 
 CONFIG_20BIT = _SwRleConfig(
@@ -346,7 +350,7 @@ CONFIG_20BIT = _SwRleConfig(
     emit_literal=_make_emit_literal_nbit(20),
     eof=0xFFFFFFFF,
     literal_overflow=0x7FF,
-    run_break_to_context_skip=False,
+    skip_counts_current=False,
 )
 
 CONFIG_10BIT = _SwRleConfig(
@@ -355,7 +359,7 @@ CONFIG_10BIT = _SwRleConfig(
     emit_literal=_emit_literal_block_10bit,
     eof=0xFFFF,
     literal_overflow=0xFFF,
-    run_break_to_context_skip=True,
+    skip_counts_current=True,
 )
 
 
@@ -369,7 +373,7 @@ def sw_rle_encode(words: list[int], cfg: _SwRleConfig) -> bytes:
     emit_run_fn = cfg.emit_run
     emit_literal_fn = cfg.emit_literal
     lit_overflow = cfg.literal_overflow
-    run_break_to_ctx = cfg.run_break_to_context_skip
+    skip_counts_current = cfg.skip_counts_current
 
     n = len(words)
     output = bytearray()
@@ -423,7 +427,8 @@ def sw_rle_encode(words: list[int], cfg: _SwRleConfig) -> bytes:
                 continue
 
             if match_count == 2:
-                emit_run_fn(output, cur, 1)
+                if not skip_counts_current:
+                    emit_run_fn(output, cur, 1)
                 state = _State.CONTEXT_SKIP
                 continue
 
@@ -451,9 +456,6 @@ def sw_rle_encode(words: list[int], cfg: _SwRleConfig) -> bytes:
             cur = w
             if match_count != 0:
                 match_count = 1
-                if run_break_to_ctx:
-                    state = _State.CONTEXT_SKIP
-                    continue
             state = _State.MAIN
             continue
 
@@ -479,7 +481,8 @@ def sw_rle_encode(words: list[int], cfg: _SwRleConfig) -> bytes:
                         emit_literal_fn(output, word_buf[:lit_n])
                     state = _State.CONTEXT_SKIP
                     continue
-                emit_run_fn(output, word_buf[0], 1)
+                if not skip_counts_current:
+                    emit_run_fn(output, word_buf[0], 1)
                 state = _State.CONTEXT_SKIP
                 continue
 
@@ -537,7 +540,7 @@ def sw_rle_encode(words: list[int], cfg: _SwRleConfig) -> bytes:
                     emit_run_fn(output, word_buf[0], 1)
                 else:
                     emit_literal_fn(output, word_buf[:lit_n])
-            else:
+            elif not skip_counts_current:
                 emit_run_fn(output, word_buf[0], 1)
             if match_count > 0:
                 emit_context_skip(output, match_count)

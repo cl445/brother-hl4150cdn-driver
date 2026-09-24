@@ -26,9 +26,29 @@ LUT_PATH_IN_DEB="usr/local/Brother/Printer/hl4150cdn/inf/lut"
 
 # Single-blob offsets in brhl4150cdnfilter (verified against driver version 1.1.1-5).
 # name=offset:size
+# Colour LUTs are named <profile>[_ig]_<variant>_lut.bin after the tables
+# `lookup_color_transform_table` picks from: profile rgb (Normal), srgb
+# (Vivid) or cmyk (colour matching None); _ig for BRGray=ON; variant density2
+# (toner save), glossy (glossy media) or default.
 BIN_BLOBS=(
   "rgb_default_lut.bin=0x92d58:39304"
+  "rgb_density2_lut.bin=0xafb18:39304"
+  "rgb_glossy_lut.bin=0xa6138:39304"
+  "rgb_ig_default_lut.bin=0xf3057:39304"
+  "rgb_ig_density2_lut.bin=0x10fe17:39304"
+  "rgb_ig_glossy_lut.bin=0x106437:39304"
   "srgb_default_lut.bin=0xc2ed7:39304"
+  "srgb_density2_lut.bin=0xdfc77:39304"
+  "srgb_glossy_lut.bin=0xd6297:39304"
+  "srgb_ig_default_lut.bin=0x1231d6:39304"
+  "srgb_ig_density2_lut.bin=0x13ff76:39304"
+  "srgb_ig_glossy_lut.bin=0x136596:39304"
+  "cmyk_default_lut.bin=0x32543:39304"
+  "cmyk_density2_lut.bin=0x4f343:39304"
+  "cmyk_glossy_lut.bin=0x45943:39304"
+  "cmyk_ig_default_lut.bin=0x62742:39304"
+  "cmyk_ig_density2_lut.bin=0x7f542:39304"
+  "cmyk_ig_glossy_lut.bin=0x75b42:39304"
   "gamma_curve_0.bin=0x283c0:256"
   "gamma_curve_1.bin=0x284c0:256"
 )

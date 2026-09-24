@@ -1,21 +1,22 @@
 """3D colour LUT interpolation for the Brother HL-4150CDN.
 
 Maps RGB input to CMYK ink values via a 17x17x17 grid plus tetrahedral
-interpolation tables. The default profile (`rgb_default_lut.bin`) is
-used for the "Normal" colour-matching mode; `srgb_default_lut.bin`
-provides a higher-saturation alternative.
+interpolation tables. Which of the 18 grids applies is decided like
+`lookup_color_transform_table` in the original driver (see `ColorTable`).
 """
 
 import functools
 import logging
 from collections.abc import Buffer
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
 
 try:
-    from _color_fast import gather_kcmy  # type: ignore[import-not-found]
+    from _color_fast import gather_kcmy, interp_kcmy  # type: ignore[import-not-found]
 
     HAS_CYTHON_COLOR = True
 except ImportError:
@@ -45,14 +46,52 @@ _FRAC = np.array([16 if v == 255 else v & 0xF for v in range(256)], dtype=np.int
 _CORNER_OFFSETS = np.array([0, 17, 1, 18, 289, 306, 290, 307], dtype=np.int32)
 
 
-def _load_lut() -> npt.NDArray[np.int32]:
-    """Load the 3D color LUT as unpacked CMYK channels.
+Profile = Literal["rgb", "srgb", "cmyk"]
+Variant = Literal["default", "density2", "glossy"]
+
+
+@dataclass(frozen=True, slots=True)
+class ColorTable:
+    """One of the colour grids `lookup_color_transform_table` chooses from.
+
+    Attributes:
+        profile: `rgb` for Normal colour matching, `srgb` for Vivid, `cmyk`
+            for colour matching None.
+        improve_gray: the ImpGray=ON grids (BRGray).
+        variant: `density2` with toner save, `glossy` for glossy media.
+        rich_black: pure black takes grid entry 0 (C, M, Y and K) instead of
+            K only; the original does this with BREnhanceBlkPrt in the
+            rgb/srgb profiles (`lut_selection` 0 in `load_color_profile`).
+    """
+
+    profile: Profile = "rgb"
+    improve_gray: bool = False
+    variant: Variant = "default"
+    rich_black: bool = False
+
+    @property
+    def name(self) -> str:
+        """Blob name stem, e.g. `rgb_ig_density2` for `rgb_ig_density2_lut.bin`."""
+        return f"{self.profile}{'_ig' if self.improve_gray else ''}_{self.variant}"
+
+
+DEFAULT_TABLE = ColorTable()
+
+# Tables with a precomputed inverse LUT (install.sh writes both); every
+# other table is interpolated per pixel.
+INVERSE_LUT_TABLES: tuple[ColorTable, ...] = (ColorTable("rgb"), ColorTable("srgb"))
+
+
+def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
+    """Load the 3D color grid of `table` as unpacked CMYK channels.
 
     The binary file contains packed int32 pairs (cm_packed, yk_packed).
     We unpack at load time into (4913, 4) int32 array [C, M, Y, K]
     to avoid packed arithmetic and int64 at runtime.
 
-    Falls back to parametric generation if the binary file is missing.
+    Falls back to parametric generation if the binary file is missing: the
+    generated rgb/srgb default grids stand in for every variant (with a
+    warning, since the output then differs from the original's).
 
     Returns:
         Unpacked LUT of shape (_LUT_ENTRIES, 4), columns [C, M, Y, K].
@@ -60,12 +99,15 @@ def _load_lut() -> npt.NDArray[np.int32]:
     Raises:
         ValueError: If the binary LUT file has an unexpected size.
     """
-    path = _DATA_DIR / "rgb_default_lut.bin"
+    path = _DATA_DIR / f"{table.name}_lut.bin"
     if not path.exists():
-        logger.info("LUT binary not found, generating from parametric model")
-        from color_lut_gen import generate_rgb_default_lut
+        from color_lut_gen import generate_rgb_default_lut, generate_srgb_default_lut
 
-        return generate_rgb_default_lut()
+        if table.name not in ("rgb_default", "srgb_default"):
+            logger.warning("LUT binary %s missing (run scripts/extract_blobs.sh); using a generated grid", path.name)
+        else:
+            logger.info("LUT binary %s not found, generating from parametric model", path.name)
+        return generate_srgb_default_lut() if table.profile == "srgb" else generate_rgb_default_lut()
     data = path.read_bytes()
     if len(data) != _LUT_BYTES:
         msg = f"LUT size {len(data)}, expected {_LUT_BYTES}"
@@ -104,11 +146,7 @@ def _load_interp_tables() -> npt.NDArray[np.uint8]:
     return np.frombuffer(data, dtype=np.uint8).reshape(_NUM_INTERP_TABLES, _LUT_DIM * _LUT_DIM, 9)
 
 
-# K-preset values for pure black (R=G=B=0)
-# The driver has two modes controlled by lut_selection:
-#   lut_selection=0: reads from LUT[0,0,0] → C=83, M=55, Y=65, K=255 (rich black)
-#   lut_selection≠0: uses C=0, M=0, Y=0, K=255 (pure K black)
-# Captures show the standard driver uses pure K black.
+# Ink for pure black (R=G=B=0) unless the table asks for rich black.
 _K_PRESET = np.array([0, 0, 0, 255], dtype=np.int32)
 
 # Precomputed full RGB→KCMY lookup table.
@@ -118,18 +156,59 @@ INVERSE_LUT_PATH = _DATA_DIR / "inverse_lut.npy"
 _INVERSE_LUT_SHAPE = (256, 256, 256, 4)
 
 
-@functools.lru_cache(maxsize=1)
-def _load_data() -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8]]:
-    """Load LUT and interpolation tables (cached singleton).
+@functools.lru_cache(maxsize=8)
+def _load_data(table: ColorTable = DEFAULT_TABLE) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8]]:
+    """Load the grid of `table` and the interpolation tables (cached).
 
     Returns:
         Tuple of (lut, interp_tables); see `_load_lut` and `_load_interp_tables`.
     """
-    return _load_lut(), _load_interp_tables()
+    return _load_lut(table), _load_interp_tables()
 
 
-@functools.lru_cache(maxsize=1)
-def _load_inverse_lut() -> npt.NDArray[np.uint8] | None:
+def black_ink(table: ColorTable, lut: npt.NDArray[np.int32]) -> npt.NDArray[np.int32]:
+    """C, M, Y, K ink for pure black: grid entry 0 for rich black, else K only.
+
+    Returns:
+        int32 array of 4 ink values.
+    """
+    return lut[0].copy() if table.rich_black else _K_PRESET.copy()
+
+
+def interp_arrays(
+    table: ColorTable = DEFAULT_TABLE,
+) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8], npt.NDArray[np.int32]]:
+    """Flat, contiguous grid, interpolation weights and black ink for the native interpolation.
+
+    Views on the cached `_load_data` arrays, so cheap to call per scanline.
+
+    Returns:
+        (grid of 4913*4 int32 as C, M, Y, K; 17*289*9 uint8 weights; 4 int32 black ink).
+    """
+    lut, interp = _load_data(table)
+    return (
+        np.ascontiguousarray(lut, dtype=np.int32).reshape(-1),
+        np.ascontiguousarray(interp).reshape(-1),
+        black_ink(table, lut),
+    )
+
+
+def inverse_lut_path(table: ColorTable = DEFAULT_TABLE) -> Path | None:
+    """Where the inverse LUT of `table` is installed, next to `INVERSE_LUT_PATH`.
+
+    Returns:
+        `INVERSE_LUT_PATH` for the rgb default table, a sibling file for the
+        srgb one, None for tables without a precomputed inverse LUT.
+    """
+    if table not in INVERSE_LUT_TABLES:
+        return None
+    if table.profile == "rgb":
+        return INVERSE_LUT_PATH
+    return INVERSE_LUT_PATH.with_name(f"inverse_lut_{table.profile}.npy")
+
+
+@functools.lru_cache(maxsize=len(INVERSE_LUT_TABLES))
+def _load_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | None:
     """Memory-map the precomputed RGB→KCMY inverse LUT, or None if absent.
 
     Mapped read-only instead of loaded: each CUPS job is a fresh process,
@@ -141,8 +220,8 @@ def _load_inverse_lut() -> npt.NDArray[np.uint8] | None:
         Array of shape (256, 256, 256, 4) uint8, or None when the cache
         file is missing or has an unexpected shape.
     """
-    path = INVERSE_LUT_PATH
-    if not path.exists():
+    path = inverse_lut_path(table)
+    if path is None or not path.exists():
         return None
     try:
         arr = np.load(path, mmap_mode="r", allow_pickle=False)
@@ -157,16 +236,16 @@ def _load_inverse_lut() -> npt.NDArray[np.uint8] | None:
     return np.asarray(arr)
 
 
-def inverse_lut() -> npt.NDArray[np.uint8] | None:
-    """Return the installed inverse LUT (see `_load_inverse_lut`), or None.
+def inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | None:
+    """Return the installed inverse LUT of `table` (see `_load_inverse_lut`), or None.
 
     Returns:
         Array of shape (256, 256, 256, 4) uint8, or None when not installed.
     """
-    return _load_inverse_lut()
+    return _load_inverse_lut(table)
 
 
-def precompute_inverse_lut() -> npt.NDArray[np.uint8]:
+def precompute_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8]:
     """Evaluate the tetrahedral interpolation over all 16.7M RGB inputs.
 
     Iterates one R-slice at a time so the working set stays small enough
@@ -182,7 +261,7 @@ def precompute_inverse_lut() -> npt.NDArray[np.uint8]:
     gb_flat[:, 2] = b_grid.ravel()
     for r in range(256):
         gb_flat[:, 0] = r
-        k_b, c_b, m_b, y_b = _rgb_to_cmyk_interp(gb_flat.tobytes(), 65536)
+        k_b, c_b, m_b, y_b = _rgb_to_cmyk_interp(gb_flat.tobytes(), 65536, table)
         out[r, :, :, 0] = np.frombuffer(k_b, dtype=np.uint8).reshape(256, 256)
         out[r, :, :, 1] = np.frombuffer(c_b, dtype=np.uint8).reshape(256, 256)
         out[r, :, :, 2] = np.frombuffer(m_b, dtype=np.uint8).reshape(256, 256)
@@ -190,15 +269,21 @@ def precompute_inverse_lut() -> npt.NDArray[np.uint8]:
     return out
 
 
-def write_inverse_lut(path: Path | None = None) -> Path:
-    """Precompute the inverse LUT and save it to ``path`` (default INVERSE_LUT_PATH).
+def write_inverse_lut(path: Path | None = None, table: ColorTable = DEFAULT_TABLE) -> Path:
+    """Precompute the inverse LUT of `table` and save it to ``path`` (default `inverse_lut_path`).
 
     Returns:
         The path the array was written to.
+
+    Raises:
+        ValueError: If no path is given and `table` has no default location.
     """
-    target = path or INVERSE_LUT_PATH
+    target = path or inverse_lut_path(table)
+    if target is None:
+        msg = f"no default inverse LUT path for {table.name}"
+        raise ValueError(msg)
     target.parent.mkdir(parents=True, exist_ok=True)
-    arr = precompute_inverse_lut()
+    arr = precompute_inverse_lut(table)
     np.save(target, arr, allow_pickle=False)
     return target
 
@@ -206,7 +291,9 @@ def write_inverse_lut(path: Path | None = None) -> Path:
 _NDArrayU8 = npt.NDArray[np.uint8]
 
 
-def rgb_to_cmyk_lut_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
+def rgb_to_cmyk_lut_arr(
+    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
+) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Like :func:`rgb_to_cmyk_lut` but returns ndarrays directly.
 
     Lets callers in the hot path avoid a bytes→ndarray roundtrip.
@@ -214,7 +301,7 @@ def rgb_to_cmyk_lut_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _NDArr
     Returns:
         (k, c, m, y) uint8 arrays of length `width`.
     """
-    inv = _load_inverse_lut()
+    inv = _load_inverse_lut(table)
     if inv is not None and HAS_CYTHON_COLOR:
         planes = np.empty((4, width), dtype=np.uint8)
         gather_kcmy(rgb_row, width, inv.reshape(-1), planes[0], planes[1], planes[2], planes[3])
@@ -224,46 +311,55 @@ def rgb_to_cmyk_lut_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _NDArr
         idx = (rgb[:, 0].astype(np.uint32) << 16) | (rgb[:, 1].astype(np.uint32) << 8) | rgb[:, 2].astype(np.uint32)
         kcmy = np.ascontiguousarray(inv.reshape(-1, 4)[idx])
         return kcmy[:, 0], kcmy[:, 1], kcmy[:, 2], kcmy[:, 3]
-    _warn_interp_fallback()
-    return _rgb_to_cmyk_interp_arr(rgb_row, width)
+    if HAS_CYTHON_COLOR:
+        planes = np.empty((4, width), dtype=np.uint8)
+        interp_kcmy(rgb_row, width, *interp_arrays(table), planes[0], planes[1], planes[2], planes[3])
+        return planes[0], planes[1], planes[2], planes[3]
+    _warn_interp_fallback(table)
+    return _rgb_to_cmyk_interp_arr(rgb_row, width, table)
 
 
 @functools.cache
-def _warn_interp_fallback() -> None:
-    """Log once per process that the ~20x slower interpolation path is in use."""
+def _warn_interp_fallback(table: ColorTable) -> None:
+    """Log once per process and table that the ~20x slower numpy interpolation is in use."""
     logger.warning(
-        "Inverse LUT %s missing; using per-pixel interpolation (much slower). "
-        "Precompute it with color_lut.write_inverse_lut().",
-        INVERSE_LUT_PATH,
+        "No inverse LUT or native interpolation for colour table %s; using numpy per-pixel "
+        "interpolation (much slower). Build the Cython modules or precompute the inverse LUT.",
+        table.name,
     )
 
 
-def rgb_to_cmyk_lut(rgb_row: Buffer, width: int) -> tuple[bytes, bytes, bytes, bytes]:
+def rgb_to_cmyk_lut(
+    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
+) -> tuple[bytes, bytes, bytes, bytes]:
     """Convert one RGB scanline to CMYK using the driver's 3D LUT.
 
-    Uses the precomputed inverse LUT when present; otherwise falls back
-    to per-pixel tetrahedral interpolation.
+    Uses the precomputed inverse LUT when present; otherwise interpolates
+    per pixel, natively when the Cython module is built.
 
     Args:
         rgb_row: Raw RGB pixel data (width * 3 bytes).
         width: Number of pixels in the row.
+        table: the colour grid to use (see `ColorTable`).
 
     Returns:
         (k_arr, c_arr, m_arr, y_arr) each of `width` bytes.
         Values use pixel-brightness convention (0=full ink, 255=no ink)
         matching dither_channel_1bpp input.
     """
-    k, c, m, y = rgb_to_cmyk_lut_arr(rgb_row, width)
+    k, c, m, y = rgb_to_cmyk_lut_arr(rgb_row, width, table)
     return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()
 
 
-def _rgb_to_cmyk_interp_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
+def _rgb_to_cmyk_interp_arr(
+    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
+) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
 
     Returns:
         (k, c, m, y) in pixel-brightness convention (0=full ink, 255=no ink).
     """
-    lut, interp = _load_data()
+    lut, interp = _load_data(table)
 
     rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
 
@@ -299,7 +395,7 @@ def _rgb_to_cmyk_interp_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _N
     is_black = (rgb[:, 0] == 0) & (rgb[:, 1] == 0) & (rgb[:, 2] == 0)
     is_white = (rgb[:, 0] == 255) & (rgb[:, 1] == 255) & (rgb[:, 2] == 255)
     if np.any(is_black):
-        cmyk[is_black] = _K_PRESET
+        cmyk[is_black] = black_ink(table, lut)
     if np.any(is_white):
         cmyk[is_white] = 0
 
@@ -309,11 +405,13 @@ def _rgb_to_cmyk_interp_arr(rgb_row: Buffer, width: int) -> tuple[_NDArrayU8, _N
     return result[:, 3], result[:, 0], result[:, 1], result[:, 2]
 
 
-def _rgb_to_cmyk_interp(rgb_row: Buffer, width: int) -> tuple[bytes, bytes, bytes, bytes]:
+def _rgb_to_cmyk_interp(
+    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
+) -> tuple[bytes, bytes, bytes, bytes]:
     """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
 
     Returns:
         (k, c, m, y) in pixel-brightness convention (0=full ink, 255=no ink).
     """
-    k, c, m, y = _rgb_to_cmyk_interp_arr(rgb_row, width)
+    k, c, m, y = _rgb_to_cmyk_interp_arr(rgb_row, width, table)
     return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()

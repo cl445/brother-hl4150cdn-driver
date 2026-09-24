@@ -20,11 +20,9 @@ from settings import (
     PageSize,
     PrintSettings,
     Resolution,
-    input_slot_to_tray,
 )
 from transforms import (
     apply_input_remap_rgb,
-    apply_vivid,
     build_input_remap_lut,
     rgb_line_to_cmyk_intensities,
 )
@@ -41,11 +39,9 @@ __all__ = [
     "PrintSettings",
     "Resolution",
     "apply_input_remap_rgb",
-    "apply_vivid",
     "build_input_remap_lut",
     "filter_duplex_pages",
     "filter_page",
-    "input_slot_to_tray",
     "main",
     "read_ppm",
     "rgb_line_to_cmyk_intensities",

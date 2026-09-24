@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from color_lut import INVERSE_LUT_PATH, write_inverse_lut
+from color_lut import INVERSE_LUT_PATH, INVERSE_LUT_TABLES, write_inverse_lut
 from pipeline import filter_page
 from ppm import read_ppm
 from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
@@ -30,7 +30,10 @@ def main() -> None:
         const=str(INVERSE_LUT_PATH),
         default=None,
         metavar="PATH",
-        help=(f"Precompute the RGB→KCMY inverse LUT and exit. Default target: {INVERSE_LUT_PATH}."),
+        help=(
+            "Precompute the RGB→KCMY inverse LUTs and exit: PATH for Normal colour matching, "
+            f"PATH with an _srgb suffix for Vivid. Default PATH: {INVERSE_LUT_PATH}."
+        ),
     )
 
     args = parser.parse_args()
@@ -41,12 +44,15 @@ def main() -> None:
             format="%(levelname)s: %(name)s: %(message)s",
             stream=sys.stderr,
         )
-        target = Path(args.precompute_lut)
-        logger.info("Precomputing inverse LUT to %s ...", target)
-        t0 = time.perf_counter()
-        written = write_inverse_lut(target)
-        size_mb = written.stat().st_size / 1024 / 1024
-        logger.info("Wrote %.1f MiB to %s in %.1fs", size_mb, written, time.perf_counter() - t0)
+        base = Path(args.precompute_lut)
+        for table in INVERSE_LUT_TABLES:
+            suffix = "" if table.profile == "rgb" else f"_{table.profile}"
+            target = base.with_name(f"{base.stem}{suffix}{base.suffix}")
+            logger.info("Precomputing %s inverse LUT to %s ...", table.name, target)
+            t0 = time.perf_counter()
+            written = write_inverse_lut(target, table)
+            size_mb = written.stat().st_size / 1024 / 1024
+            logger.info("Wrote %.1f MiB to %s in %.1fs", size_mb, written, time.perf_counter() - t0)
         return
 
     settings = PrintSettings.from_rc_file(args.rc) if args.rc and Path(args.rc).exists() else PrintSettings()

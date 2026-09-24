@@ -13,7 +13,11 @@ logger = logging.getLogger(__name__)
 
 
 class MediaType(StrEnum):
-    """Paper/media type selection (maps to XL2HB MediaType attribute)."""
+    """Paper/media type selection (maps to XL2HB MediaType attribute).
+
+    Values are this driver's PPD choices; Brother's own spellings from
+    brhl4150cdnrc and its PPD (BOND, Env, PostCard) are accepted as aliases.
+    """
 
     PLAIN = "Plain"
     THIN = "Thin"
@@ -21,10 +25,22 @@ class MediaType(StrEnum):
     THICKER = "Thicker"
     BOND = "Bond"
     ENVELOPE = "Envelope"
+    ENV_THIN = "EnvThin"
     ENV_THICK = "EnvThick"
     RECYCLED = "Recycled"
+    POSTCARD = "Postcard"
     LABEL = "Label"
     GLOSSY = "Glossy"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "MediaType | None":
+        alias = {"bond": cls.BOND, "env": cls.ENVELOPE, "postcard": cls.POSTCARD}
+        if isinstance(value, str):
+            for member in cls:
+                if member.value.lower() == value.lower():
+                    return member
+            return alias.get(value.lower())
+        return None
 
 
 class PageSize(StrEnum):
@@ -35,12 +51,28 @@ class PageSize(StrEnum):
     LEGAL = "Legal"
     EXECUTIVE = "Executive"
     A5 = "A5"
+    A5_ROTATED = "PRA5Rotated"
+    A6 = "A6"
+    ISOB5 = "ISOB5"
+    ISOB6 = "ISOB6"
     JISB5 = "JISB5"
+    JISB6 = "JISB6"
     POSTCARD = "Postcard"
     ENV_DL = "EnvDL"
     ENV_C5 = "EnvC5"
     ENV_10 = "Env10"
     ENV_MONARCH = "EnvMonarch"
+    BR_3X5 = "Br3x5"
+    FOLIO = "FanFoldGermanLegal"
+    ENV_DL_LONG_EDGE = "EnvPRC5Rotated"
+    ENV_YOU4 = "EnvYou4"
+    ENV_CHOU3 = "EnvChou3"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "PageSize | None":
+        # PPD keys of Brother's own cupswrapper PPD (its B5/B6 are ISO sizes).
+        alias = {"A5Rotated": cls.A5_ROTATED, "B5": cls.ISOB5, "B6": cls.ISOB6}
+        return alias.get(value) if isinstance(value, str) else None
 
 
 class Resolution(StrEnum):
@@ -83,7 +115,7 @@ class ImproveOutput(StrEnum):
 
 
 class InputSlot(StrEnum):
-    """Paper input tray selection (maps to PJL SOURCETRAY)."""
+    """Paper input tray selection (maps to the XL2HB MediaSource attribute)."""
 
     AUTO = "AutoSelect"
     TRAY1 = "Tray1"
@@ -260,13 +292,13 @@ DUPLEX_MAP: dict[DuplexMode, int | None] = {
     DuplexMode.TUMBLE: 0x81,
 }
 
-_TRAY_MAP = {"Tray1": "TRAY1", "Tray2": "TRAY2"}
-
-
-def input_slot_to_tray(slot: InputSlot) -> str | None:
-    """Map InputSlot enum to PJL SOURCETRAY value, or None to skip.
-
-    Returns:
-        PJL SOURCETRAY string, or None if the slot has no PJL mapping.
-    """
-    return _TRAY_MAP.get(slot)
+# XL2HB MediaSource values as brhl4150cdnfilter writes them. The tray goes
+# only into BeginPage; the original never emits @PJL SET SOURCETRAY for
+# this model.
+MEDIA_SOURCE: dict[InputSlot, int] = {
+    InputSlot.AUTO: 1,
+    InputSlot.TRAY1: 1001,
+    InputSlot.TRAY2: 1005,
+    InputSlot.MP_TRAY: 1004,
+    InputSlot.MANUAL: 2,
+}
