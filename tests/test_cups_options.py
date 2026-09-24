@@ -5,6 +5,8 @@ Tests PrintSettings.from_cups_options() for all supported option types:
 enum options, resolution, booleans, integers, and edge cases.
 """
 
+from pathlib import Path
+
 import pytest
 
 from brfilter import (
@@ -18,6 +20,7 @@ from brfilter import (
     PrintSettings,
     Resolution,
 )
+from settings import read_ppd_defaults
 
 
 class TestCupsOptionsDefaults:
@@ -245,3 +248,40 @@ class TestCupsOptionsMultiple:
         assert s.reverse is True
         assert s.input_slot == InputSlot.TRAY1
         assert s.copies == 3
+
+
+class TestPpdDefaults:
+    """CUPS passes only the job's options; the queue's PPD defaults fill the rest."""
+
+    _PPD = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn.ppd"
+
+    def test_reads_defaults_of_shipped_ppd(self):
+        defaults = read_ppd_defaults(self._PPD)
+        assert defaults["BRGray"] == "ON"
+        assert defaults["PageSize"] == "A4"
+        assert defaults["BRBrightness"] == "0"
+
+    def test_missing_ppd_gives_no_defaults(self, tmp_path):
+        assert read_ppd_defaults(tmp_path / "absent.ppd") == {}
+
+    def test_ppd_defaults_apply_without_job_options(self):
+        """An IPP job from a desktop carries no BR* options: BRGray=ON comes from the PPD."""
+        s = PrintSettings.from_cups_options("", ppd_defaults=read_ppd_defaults(self._PPD))
+        assert s.improve_gray is True
+        assert s.page_size == PageSize.A4
+
+    def test_job_options_override_ppd_defaults(self):
+        defaults = {"BRGray": "ON", "BRColorMatching": "Normal", "PageSize": "A4"}
+        s = PrintSettings.from_cups_options("BRGray=OFF PageSize=Letter", ppd_defaults=defaults)
+        assert s.improve_gray is False
+        assert s.page_size == PageSize.LETTER
+
+    def test_ipp_sides_beats_ppd_default_duplex(self):
+        s = PrintSettings.from_cups_options("sides=two-sided-long-edge", ppd_defaults={"Duplex": "None"})
+        assert s.duplex == DuplexMode.NO_TUMBLE
+
+    def test_job_duplex_beats_ipp_sides(self):
+        s = PrintSettings.from_cups_options(
+            "Duplex=DuplexTumble sides=two-sided-long-edge", ppd_defaults={"Duplex": "None"}
+        )
+        assert s.duplex == DuplexMode.TUMBLE

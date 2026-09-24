@@ -33,7 +33,7 @@ else:
 
 from page_stream import iter_ppm_pages  # noqa: E402
 from pipeline import collect_rows, filter_duplex_pages, is_blank_page  # noqa: E402
-from settings import DuplexMode, PrintSettings  # noqa: E402
+from settings import DuplexMode, PrintSettings, read_ppd_defaults  # noqa: E402
 from xl2hb import PAPER_SIZES  # noqa: E402
 
 # The printable area starts 100 px (at 600 dpi) from the physical page edge;
@@ -226,10 +226,14 @@ def main() -> None:
 
     logger.info("job=%s user=%s title=%r copies=%d", job_id, user, title, copies)
 
-    # Parse CUPS options into PrintSettings
-    settings = PrintSettings.from_cups_options(options_str, copies)
-    logger.info("settings: page_size=%s duplex=%s resolution=%s mono=%s",
-                settings.page_size, settings.duplex, settings.resolution, settings.mono_color)
+    # The queue's PPD defaults first (CUPS passes only the job's own
+    # options), then the job options on top.
+    ppd_path = os.environ.get("PPD")
+    ppd_defaults = read_ppd_defaults(ppd_path) if ppd_path else {}
+    settings = PrintSettings.from_cups_options(options_str, copies, ppd_defaults)
+    logger.info("settings: page_size=%s duplex=%s resolution=%s mono=%s color_matching=%s gray=%s toner_save=%s",
+                settings.page_size, settings.duplex, settings.resolution, settings.mono_color,
+                settings.color_matching, settings.improve_gray, settings.toner_save)
 
     # Reversed long-edge duplex needs the page count up front: a page's
     # position in the reversed job decides whether it is a back side.

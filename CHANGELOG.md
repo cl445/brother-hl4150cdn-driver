@@ -7,6 +7,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- The CUPS filter now applies the queue's PPD defaults (`$PPD`) before the
+  job's options, as Brother's cupswrapper does. CUPS passes only the
+  options a job carries, and jobs from desktop clients carry no `BR*`
+  options, so defaults such as `DefaultBRGray: ON` had no effect. An IPP
+  `sides` in the job still overrides the PPD's default duplex.
 - Grayscale mode (`BRMonoColor=Mono`) only switched the PJL header to
   `GRAYSCALE` and still sent CMY planes. It now matches the manufacturer's
   filter byte for byte: the BeginImage band config clears its colour flag,

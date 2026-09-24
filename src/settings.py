@@ -2,8 +2,11 @@
 
 import configparser
 import logging
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Self
 
 logger = logging.getLogger(__name__)
@@ -192,11 +195,17 @@ class PrintSettings:
         return settings
 
     @classmethod
-    def from_cups_options(cls, options_str: str, copies: int = 1) -> Self:
+    def from_cups_options(
+        cls, options_str: str, copies: int = 1, ppd_defaults: Mapping[str, str] | None = None
+    ) -> Self:
         """Parse a CUPS option string into PrintSettings.
 
         CUPS passes options as space-separated Key=Value pairs, e.g.:
-        ``"PageSize=A4 Duplex=DuplexNoTumble BRBrightness=5"``.
+        ``"PageSize=A4 Duplex=DuplexNoTumble BRBrightness=5"``. It only
+        passes what the job carries, so the queue's PPD defaults
+        (`ppd_defaults`, see `read_ppd_defaults`) apply first and the job's
+        options override them, as Brother's cupswrapper does. An IPP
+        `sides` in the job still beats a PPD default duplex.
 
         Returns:
             Populated settings instance with the parsed values.
@@ -204,11 +213,12 @@ class PrintSettings:
         settings = cls()
         settings.copies = copies
 
-        opts: dict[str, str] = {}
+        job_opts: dict[str, str] = {}
         for token in options_str.split():
             if "=" in token:
                 key, value = token.split("=", 1)
-                opts[key] = value
+                job_opts[key] = value
+        opts = {**(ppd_defaults or {}), **job_opts}
 
         # Enum options
         enum_map: dict[str, tuple[str, type]] = {
@@ -228,8 +238,8 @@ class PrintSettings:
                 except ValueError:
                     logger.warning("Unknown %s value %r, keeping default", cups_key, opts[cups_key])
 
-        # IPP "sides" when no PPD duplex option came through.
-        if "Duplex" not in opts and "BRDuplex" not in opts and "sides" in opts:
+        # IPP "sides" when the job has no PPD duplex option.
+        if "Duplex" not in job_opts and "BRDuplex" not in job_opts and "sides" in opts:
             sides = _SIDES_TO_DUPLEX.get(opts["sides"])
             if sides is None:
                 logger.warning("Unknown sides value %r, keeping default", opts["sides"])
@@ -277,6 +287,23 @@ class PrintSettings:
                 logger.warning("Non-integer value %r for BRGammaSelect, keeping default", opts["BRGammaSelect"])
 
         return settings
+
+
+_PPD_DEFAULT = re.compile(r"^\*Default(\w+):\s*(\S+)", re.MULTILINE)
+
+
+def read_ppd_defaults(path: str | Path) -> dict[str, str]:
+    """Read the `*DefaultKey: Value` choices of a PPD file as CUPS-style options.
+
+    Returns:
+        Option name → default choice; empty if the file cannot be read.
+    """
+    try:
+        text = Path(path).read_text(encoding="latin-1")
+    except OSError as exc:
+        logger.warning("Cannot read PPD %s: %s", path, exc)
+        return {}
+    return dict(_PPD_DEFAULT.findall(text))
 
 
 _SIDES_TO_DUPLEX = {
