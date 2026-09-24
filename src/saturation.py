@@ -6,13 +6,10 @@ interpolation, and gray/black/white pixel skipping.
 """
 
 import functools
-import logging
 from collections.abc import Buffer
 
 import numpy as np
 import numpy.typing as npt
-
-logger = logging.getLogger(__name__)
 
 # Divisor that scales the [-20, +20] saturation knob into per-channel deltas.
 _SCALE_FACTOR = 50.0
@@ -151,7 +148,8 @@ def _boost_saturation(
     mid_vals = pixels[arange, mid_idx]
 
     half_range = (max_vals - min_vals) // 2
-    # boost = (half_range * sat_mode) / 50, integer division (truncate toward zero)
+    # boost = (half_range * sat_mode) / 50; floor division equals the
+    # original's truncation because both operands are >= 0 here.
     boost = (half_range * sat_mode) // 50
 
     # Clamp boost so max + boost <= 255 and min - boost >= 0

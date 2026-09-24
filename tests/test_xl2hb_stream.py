@@ -10,6 +10,7 @@ from io import BytesIO
 
 import pytest
 
+from fixture_utils import assert_bytes_equal
 from xl2hb import (
     XL2HBWriter,
     get_image_dimensions,
@@ -52,23 +53,6 @@ def _reconstruct_stream(cap) -> bytes:
     return buf.getvalue()
 
 
-def _assert_bytes_equal(actual: bytes, expected: bytes, label: str) -> None:
-    """Assert byte-for-byte equality with a helpful diff on failure."""
-    if actual == expected:
-        return
-    msg_parts = [f"{label}: length {len(actual)} vs {len(expected)}"]
-    for i in range(min(len(actual), len(expected))):
-        if actual[i] != expected[i]:
-            start = max(0, i - 8)
-            end_a = min(len(actual), i + 8)
-            end_e = min(len(expected), i + 8)
-            msg_parts.append(f"  First diff at byte {i}: got 0x{actual[i]:02x}, expected 0x{expected[i]:02x}")
-            msg_parts.append(f"  Expected [{start}:{end_e}]: {expected[start:end_e].hex()}")
-            msg_parts.append(f"  Actual   [{start}:{end_a}]: {actual[start:end_a].hex()}")
-            break
-    pytest.fail("\n".join(msg_parts))
-
-
 # ---------------------------------------------------------------------------
 # Full stream reconstruction tests
 # ---------------------------------------------------------------------------
@@ -79,7 +63,7 @@ class TestWhitePage:
         """a4_white: zero blocks, byte-for-byte match."""
         cap = all_captures["a4_white"]
         actual = _reconstruct_stream(cap)
-        _assert_bytes_equal(actual, cap.raw, "a4_white")
+        assert_bytes_equal(actual, cap.raw, "a4_white")
 
 
 class TestSingleBlockK:
@@ -88,7 +72,7 @@ class TestSingleBlockK:
         """Single K-plane block captures."""
         cap = all_captures[name]
         actual = _reconstruct_stream(cap)
-        _assert_bytes_equal(actual, cap.raw, name)
+        assert_bytes_equal(actual, cap.raw, name)
 
 
 class TestMultiBlockFlush:
@@ -96,7 +80,7 @@ class TestMultiBlockFlush:
         """a4_black: 4 K blocks with buffer flush boundaries."""
         cap = all_captures["a4_black"]
         actual = _reconstruct_stream(cap)
-        _assert_bytes_equal(actual, cap.raw, "a4_black")
+        assert_bytes_equal(actual, cap.raw, "a4_black")
 
 
 class TestMultiPlane:
@@ -105,7 +89,7 @@ class TestMultiPlane:
         """M+Y two-plane captures."""
         cap = all_captures[name]
         actual = _reconstruct_stream(cap)
-        _assert_bytes_equal(actual, cap.raw, name)
+        assert_bytes_equal(actual, cap.raw, name)
 
 
 class TestAllPlanes:
@@ -114,7 +98,7 @@ class TestAllPlanes:
         """All 4 planes (K,C,M,Y) captures."""
         cap = all_captures[name]
         actual = _reconstruct_stream(cap)
-        _assert_bytes_equal(actual, cap.raw, name)
+        assert_bytes_equal(actual, cap.raw, name)
 
 
 # ---------------------------------------------------------------------------

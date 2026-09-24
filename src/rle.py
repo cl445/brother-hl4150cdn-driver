@@ -4,13 +4,11 @@ The plane encoders share three pieces of machinery:
 
 * ``group_bits`` / ``pack_groups``: read raw scanline bytes as a stream
   of N-bit groups (12, 20, …) and pack groups back to bytes.
-* ``_rle_encode``: simple RLE encoder used by the ``encode_m_plane_20``
-  sub-block path.
-* ``_sw_rle_encode``: unified sliding-window RLE encoder, parametrised
-  by ``_SwRleConfig`` so a single state machine handles 12-bit, 20-bit
+* ``sw_rle_encode``: unified sliding-window RLE encoder, parametrised
+  by ``SwRleConfig`` so a single state machine handles 12-bit, 20-bit
   and 10-bit variants.
 
-``_finalize_compressed`` is the shared post-processing step: if the
+``finalize_compressed`` is the shared post-processing step: if the
 compressed output exceeds the raw input by more than 0x14 bytes, fall
 back to a literal dump of the raw scanline.
 """
@@ -21,92 +19,63 @@ from enum import IntEnum, auto
 
 import numpy as np
 
+
+def group_bits_py(data: bytes, group_size: int) -> list[int]:
+    """Group input byte data into values of group_size bits each (MSB first).
+
+    Returns:
+        List of integer groups; the last entry is zero-padded if the
+        bit count is not a multiple of `group_size`.
+    """
+    total_bits = len(data) * 8
+    if total_bits == 0:
+        return []
+
+    bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
+    n_full = total_bits // group_size
+
+    if n_full > 0:
+        full_bits = bits[: n_full * group_size].reshape(n_full, group_size)
+        powers = 1 << np.arange(group_size - 1, -1, -1, dtype=np.uint32)
+        groups = (full_bits.astype(np.uint32) * powers).sum(axis=1).tolist()
+    else:
+        groups = []
+
+    remaining = total_bits - n_full * group_size
+    if remaining > 0:
+        value = 0
+        offset = n_full * group_size
+        for i in range(remaining):
+            if bits[offset + i]:
+                value |= 1 << (group_size - 1 - i)
+        groups.append(value)
+
+    return groups
+
+
+def pack_groups_py(groups: list[int], group_size: int) -> bytes:
+    """Pack N-bit groups into bytes, MSB first.
+
+    Returns:
+        Packed byte string of length `ceil(len(groups) * group_size / 8)`.
+    """
+    if not groups:
+        return b""
+
+    arr = np.array(groups, dtype=np.uint32)
+    shifts = np.arange(group_size - 1, -1, -1, dtype=np.uint32)
+    bit_matrix = ((arr[:, None] >> shifts[None, :]) & 1).astype(np.uint8)
+    return np.packbits(bit_matrix.ravel()).tobytes()
+
+
 try:
     from _rle_fast import group_bits, pack_groups  # type: ignore[import-not-found]
 
     HAS_CYTHON_RLE = True
 except ImportError:
+    group_bits = group_bits_py
+    pack_groups = pack_groups_py
     HAS_CYTHON_RLE = False
-
-    def group_bits(data: bytes, group_size: int) -> list[int]:
-        """Group input byte data into values of group_size bits each (MSB first).
-
-        Returns:
-            List of integer groups; the last entry is zero-padded if the
-            bit count is not a multiple of `group_size`.
-        """
-        total_bits = len(data) * 8
-        if total_bits == 0:
-            return []
-
-        bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
-        n_full = total_bits // group_size
-
-        if n_full > 0:
-            full_bits = bits[: n_full * group_size].reshape(n_full, group_size)
-            powers = 1 << np.arange(group_size - 1, -1, -1, dtype=np.uint32)
-            groups = (full_bits.astype(np.uint32) * powers).sum(axis=1).tolist()
-        else:
-            groups = []
-
-        remaining = total_bits - n_full * group_size
-        if remaining > 0:
-            value = 0
-            offset = n_full * group_size
-            for i in range(remaining):
-                if bits[offset + i]:
-                    value |= 1 << (group_size - 1 - i)
-            groups.append(value)
-
-        return groups
-
-    def pack_groups(groups: list[int], group_size: int) -> bytes:
-        """Pack N-bit groups into bytes, MSB first.
-
-        Returns:
-            Packed byte string of length `ceil(len(groups) * group_size / 8)`.
-        """
-        if not groups:
-            return b""
-
-        arr = np.array(groups, dtype=np.uint32)
-        shifts = np.arange(group_size - 1, -1, -1, dtype=np.uint32)
-        bit_matrix = ((arr[:, None] >> shifts[None, :]) & 1).astype(np.uint8)
-        return np.packbits(bit_matrix.ravel()).tobytes()
-
-
-def data_to_encode_groups(data: bytes, read_group: int, encode_group: int) -> list[int]:
-    """Convert raw byte data to encode-size groups via the read-group process.
-
-    1. Read floor(total_bits / read_group) full groups from input
-    2. Regroup those bits into encode_group-size values
-    3. Pad with zeros to ceil(total_bits / encode_group) total groups
-
-    Returns:
-        List of integer groups, padded to the encode-grid size.
-    """
-    total_bits = len(data) * 8
-    n_read = total_bits // read_group
-    bits_covered = n_read * read_group
-    total_encode_groups = -(-total_bits // encode_group)  # ceil division
-
-    covered_bytes = bits_covered // 8
-    covered_remainder = bits_covered % 8
-
-    if covered_remainder == 0:
-        covered_data = data[:covered_bytes]
-    else:
-        buf = bytearray(data[:covered_bytes])
-        mask = (0xFF << (8 - covered_remainder)) & 0xFF
-        buf.append(data[covered_bytes] & mask)
-        covered_data = bytes(buf)
-
-    groups = group_bits(covered_data, encode_group)
-
-    while len(groups) < total_encode_groups:
-        groups.append(0)
-
-    return groups
 
 
 def emit_count_ext(output: bytearray, remaining: int) -> None:
@@ -152,63 +121,6 @@ def emit_literal_block(output: bytearray, values: list[int], value_bits: int = 1
         emit_count_ext(output, count - 0x41)
 
     output.extend(pack_groups(values, value_bits))
-
-
-def rle_encode(groups: list[int], value_bits: int = 12) -> bytes:
-    """RLE-encode a list of N-bit groups.
-
-    Args:
-        groups: List of N-bit values to encode.
-        value_bits: Size of each value in bits (12 or 20).
-
-    Returns:
-        Compressed data bytes (empty if all-zero).
-    """
-    n = len(groups)
-    if n == 0:
-        return b""
-
-    arr = np.array(groups, dtype=np.uint32)
-    if not np.any(arr):
-        return b""
-
-    changes = np.empty(n, dtype=bool)
-    changes[0] = True
-    changes[1:] = arr[1:] != arr[:-1]
-    starts = np.where(changes)[0]
-    nr = len(starts)
-    rlens = np.empty(nr, dtype=np.intp)
-    rlens[:-1] = starts[1:] - starts[:-1]
-    rlens[-1] = n - starts[-1]
-    rvals = arr[starts].tolist()
-    rlens = rlens.tolist()
-
-    output = bytearray()
-    ri = 0
-
-    while ri < nr:
-        lit_start = ri
-        while ri < nr and rlens[ri] == 1:
-            ri += 1
-
-        n_lit = ri - lit_start
-        if n_lit > 0:
-            if n_lit == 1:
-                v = rvals[lit_start]
-                if value_bits <= 12:
-                    output.extend((0x80 | ((v >> 8) & 0xF), v & 0xFF))
-                else:
-                    output.extend((0x80 | ((v >> 16) & 0xF), (v >> 8) & 0xFF, v & 0xFF))
-            else:
-                emit_literal_block(output, rvals[lit_start:ri], value_bits)
-
-        if ri >= nr:
-            break
-
-        emit_run(output, rvals[ri], rlens[ri], value_bits)
-        ri += 1
-
-    return bytes(output)
 
 
 def emit_context_skip(output: bytearray, count: int) -> None:
@@ -286,7 +198,9 @@ class _ContextWindow5:
 
 
 @dataclass(frozen=True, slots=True)
-class _SwRleConfig:
+class SwRleConfig:
+    """Word-size specific parts of the sliding-window RLE (12-, 20- or 10-bit)."""
+
     make_context: Callable[[], _ContextWindow3 | _ContextWindow5]
     emit_run: Callable[[bytearray, int, int], None]
     emit_literal: Callable[[bytearray, list[int]], None]
@@ -335,7 +249,7 @@ def _emit_literal_block_10bit(output: bytearray, values: list[int]) -> None:
     output.extend(pack_groups(values, 10))
 
 
-CONFIG_12BIT = _SwRleConfig(
+CONFIG_12BIT = SwRleConfig(
     make_context=_ContextWindow3,
     emit_run=_make_emit_run_nbit(12),
     emit_literal=_make_emit_literal_nbit(12),
@@ -344,7 +258,7 @@ CONFIG_12BIT = _SwRleConfig(
     skip_counts_current=False,
 )
 
-CONFIG_20BIT = _SwRleConfig(
+CONFIG_20BIT = SwRleConfig(
     make_context=_ContextWindow3,
     emit_run=_make_emit_run_nbit(20),
     emit_literal=_make_emit_literal_nbit(20),
@@ -353,7 +267,7 @@ CONFIG_20BIT = _SwRleConfig(
     skip_counts_current=False,
 )
 
-CONFIG_10BIT = _SwRleConfig(
+CONFIG_10BIT = SwRleConfig(
     make_context=_ContextWindow5,
     emit_run=_emit_run_10bit,
     emit_literal=_emit_literal_block_10bit,
@@ -363,8 +277,8 @@ CONFIG_10BIT = _SwRleConfig(
 )
 
 
-def sw_rle_encode(words: list[int], cfg: _SwRleConfig) -> bytes:
-    """Sliding-window RLE encoder, parametrised by `_SwRleConfig`.
+def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
+    """Sliding-window RLE encoder, parametrised by `SwRleConfig`.
 
     Returns:
         Encoded byte stream produced by the configured emit callbacks.
@@ -553,12 +467,13 @@ def sw_rle_encode(words: list[int], cfg: _SwRleConfig) -> bytes:
     return bytes(output)
 
 
-def finalize_compressed(output: bytes, data: bytes, input_len: int, word_bits: int) -> bytes:
+def finalize_compressed(output: bytes, data: bytes, word_bits: int) -> bytes:
     """Fall back to a raw dump if the compressed output exceeds raw + 0x14 bytes.
 
     Returns:
         Either `output` unchanged or a raw-dump block carrying `data`.
     """
+    input_len = len(data)
     if len(output) > input_len + 0x14:
         n_words = (input_len * 8 + word_bits - 1) // word_bits
         padded_bytes = (n_words * word_bits + 7) // 8
@@ -573,4 +488,4 @@ def finalize_compressed(output: bytes, data: bytes, input_len: int, word_bits: i
         out.extend(data)
         out.extend(bytes(pad_count))
         return bytes(out)
-    return bytes(output) if isinstance(output, bytearray) else output
+    return output

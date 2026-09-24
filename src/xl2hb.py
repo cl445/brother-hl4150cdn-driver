@@ -198,10 +198,13 @@ PLANE_PARAMS_FINE = {
 # Plane flush order: C, M, Y, K.
 FLUSH_ORDER = (1, 2, 3, 0)
 
-BPL = 596  # bytes per line at 600 DPI for A4 width (4768 pixels / 8)
+# Bytes per line of an A4 Normal-mode plane (4768 pixels / 8): the
+# PlaneBuffer default and the reference width of the tests. The pipeline
+# passes the width of the actual paper size.
+BPL = 596
 
 # PlaneBuffer sizing constants.
-PLANE_BUF_INIT_FREE = 0x7FF2  # 32754 bytes (after 14+3 overhead)
+PLANE_BUF_INIT_FREE = 0x7FF2  # 32754 bytes: 0x8000 minus the 14-byte plane header
 PLANE_BUF_FLUSH_THRESH = 0x1688  # 5768 bytes
 
 
@@ -424,10 +427,10 @@ class PlaneBuffer:
 
     Plane header (14 bytes, big-endian multi-byte fields):
         +0x00  1B  comp_type = 0 (RLE)
-        +0x01  1B  bit_depth = 4
+        +0x01  1B  bit_depth (4 in Normal mode, 12 in Fine mode)
         +0x02  1B  quant_type (2 or 4)
         +0x03  1B  comp_size (10, 12, or 20)
-        +0x04  2B  row_width_BE (BPL = 596)
+        +0x04  2B  row_width_BE (bytes per line; 596 for A4)
         +0x06  2B  line_count_BE
         +0x08  4B  data_size_BE (= total extended data length)
         +0x0C  2B  always 0x0000
@@ -704,18 +707,15 @@ def generate_pjl_header(
     apt_mode: bool = False,
     improve_gray: bool = False,
     ucrgcr: bool = False,
-    source_tray: str | None = None,
-    ret: str | None = None,
-    page_protect: bool = False,
-    manual_duplex: bool = False,
 ) -> bytes:
     """Generate the PJL header.
 
-    Lines are LF-terminated and emitted in a fixed order so the printer
-    sees the parameters in the sequence it expects.
+    Lines are LF-terminated and emitted in the order of the original's
+    pjl.c. The PAGEPROTECT, RET, SOURCETRAY and MANUALDPX commands it also
+    knows are never sent for this model.
 
     Returns:
-        Encoded PJL header bytes (latin-1).
+        Encoded PJL header bytes (ASCII).
     """
     lines = [
         "\x1b%-12345X@PJL \n",
@@ -725,12 +725,6 @@ def generate_pjl_header(
         f"@PJL SET LESSPAPERCURL={'ON' if less_paper_curl else 'OFF'}\n",
         f"@PJL SET FIXINTENSITYUP={'ON' if fix_intensity else 'OFF'}\n",
     ]
-    if page_protect:
-        lines.append("@PJL SET PAGEPROTECT=AUTO\n")
-    if ret is not None:
-        lines.append(f"@PJL SET RET={ret}\n")
-    if source_tray is not None:
-        lines.append(f"@PJL SET SOURCETRAY={source_tray}\n")
     lines.append(f"@PJL SET APTMODE={'ON4' if apt_mode else 'OFF'}\n")
     if color:
         if improve_gray:
@@ -738,8 +732,6 @@ def generate_pjl_header(
         if ucrgcr:
             lines.append("@PJL SET UCRGCRFORIMAGE=ON\n")
     lines.append(f"@PJL SET RESOLUTION={resolution}\n")
-    if manual_duplex:
-        lines.append("@PJL SET MANUALDPX=ON\n")
     lines.append("@PJL ENTER LANGUAGE=XL2HB\n")
     return "".join(lines).encode("ascii")
 

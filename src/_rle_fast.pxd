@@ -14,11 +14,9 @@ cdef struct OutBuf:
 cdef Py_ssize_t encode_line(
     const unsigned char *p,
     Py_ssize_t n_bytes,
-    int read_group,
-    int encode_group,
     int bits,
     unsigned int *scratch,
     OutBuf *o,
 ) noexcept nogil
 
-cdef Py_ssize_t encode_scratch_words(Py_ssize_t n_bytes, int encode_group) noexcept nogil
+cdef Py_ssize_t encode_scratch_words(Py_ssize_t n_bytes, int bits) noexcept nogil

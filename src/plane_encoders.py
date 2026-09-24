@@ -2,53 +2,43 @@
 
 * :func:`encode_plane` for K and Y (12-bit sliding-window RLE).
 * :func:`encode_c_plane` for C (20-bit sliding-window RLE).
-* :func:`encode_m_plane_10` for the M plane's 10-bit sub-block.
-* :func:`encode_m_plane_20` for the M plane's 20-bit sub-block.
+* :func:`encode_m_plane_10` for M (10-bit sliding-window RLE).
 
-All four return an empty bytestring when the input scanline is all-zero
+All three return an empty bytestring when the input scanline is all-zero
 (no ink), and fall back to a raw literal dump when their compressed
 output would otherwise exceed the input length.
 """
-
-import numpy as np
 
 from rle import (
     CONFIG_10BIT,
     CONFIG_12BIT,
     CONFIG_20BIT,
-    _SwRleConfig,
-    data_to_encode_groups,
+    SwRleConfig,
     finalize_compressed,
     group_bits,
-    rle_encode,
     sw_rle_encode,
 )
 
 try:
     from _rle_fast import encode_sw_rle  # type: ignore[import-not-found]
 
-    HAS_CYTHON_SW_RLE = True
+    _HAS_CYTHON_SW_RLE = True
 except ImportError:
-    HAS_CYTHON_SW_RLE = False
+    _HAS_CYTHON_SW_RLE = False
 
-# Per-plane parameters: (read_group_size, encode_group_size). K and Y read
-# every bit of the line: the last 12-bit word keeps the trailing bits and is
-# zero-padded, as read_word_16 does in the original. A read group of 12 would
-# drop them, which only shows when the line width is not a multiple of 12
-# bits and its last pixels carry ink (sizes without right padding, e.g. A5).
-_PLANE_GROUP_SIZES = {
-    "K": (1, 12),
-    "C": (20, 12),
-    "M": (12, 12),  # M plane has additional sub-blocks handled separately.
-    "Y": (1, 12),
-}
+# Planes encoded with the 12-bit model. Every bit of the line is read: the
+# last 12-bit word keeps the trailing bits and is zero-padded, as
+# read_word_16 does in the original. This only shows when the line width is
+# not a multiple of 12 bits and its last pixels carry ink (sizes without
+# right padding, e.g. A5).
+_12BIT_PLANES = ("K", "Y")
 
 
 def _encode_via_sw_rle(
     words: list[int],
     data: bytes,
-    config: _SwRleConfig,
-    encode_group: int,
+    config: SwRleConfig,
+    word_bits: int,
 ) -> bytes:
     """Run the sliding-window RLE encoder + raw-fallback finalize step.
 
@@ -62,7 +52,7 @@ def _encode_via_sw_rle(
     if not words or not any(words):
         return b""
     output = sw_rle_encode(words, config)
-    return finalize_compressed(output, data, len(data), encode_group)
+    return finalize_compressed(output, data, word_bits)
 
 
 def encode_plane(data: bytes, plane: str = "K") -> bytes:
@@ -76,16 +66,14 @@ def encode_plane(data: bytes, plane: str = "K") -> bytes:
         Compressed data bytes, empty if the line is all-zero.
 
     Raises:
-        ValueError: If `plane` is not one of 'K', 'C', 'M', 'Y'.
+        ValueError: If `plane` is not 'K' or 'Y'.
     """
-    if plane not in _PLANE_GROUP_SIZES:
-        msg = f"Unknown plane {plane!r}, expected one of {set(_PLANE_GROUP_SIZES)}"
+    if plane not in _12BIT_PLANES:
+        msg = f"Unknown plane {plane!r}, expected one of {_12BIT_PLANES}"
         raise ValueError(msg)
-    read_group, encode_group = _PLANE_GROUP_SIZES[plane]
-    if HAS_CYTHON_SW_RLE:
-        return encode_sw_rle(data, read_group, encode_group, 12)
-    groups = data_to_encode_groups(data, read_group, encode_group)
-    return _encode_via_sw_rle(groups, data, CONFIG_12BIT, encode_group)
+    if _HAS_CYTHON_SW_RLE:
+        return encode_sw_rle(data, 12)
+    return _encode_via_sw_rle(group_bits(data, 12), data, CONFIG_12BIT, 12)
 
 
 def encode_c_plane(data: bytes) -> bytes:
@@ -97,8 +85,8 @@ def encode_c_plane(data: bytes) -> bytes:
     Returns:
         Compressed bytes, empty if the line is all-zero.
     """
-    if HAS_CYTHON_SW_RLE:
-        return encode_sw_rle(data, 1, 20, 20)
+    if _HAS_CYTHON_SW_RLE:
+        return encode_sw_rle(data, 20)
     return _encode_via_sw_rle(group_bits(data, 20), data, CONFIG_20BIT, 20)
 
 
@@ -111,34 +99,6 @@ def encode_m_plane_10(data: bytes) -> bytes:
     Returns:
         Compressed bytes, empty if the line is all-zero.
     """
-    if HAS_CYTHON_SW_RLE:
-        return encode_sw_rle(data, 1, 10, 10)
+    if _HAS_CYTHON_SW_RLE:
+        return encode_sw_rle(data, 10)
     return _encode_via_sw_rle(group_bits(data, 10), data, CONFIG_10BIT, 10)
-
-
-def encode_m_plane_20(data: bytes) -> bytes:
-    """Encode the M-plane comp_size=20 sub-block.
-
-    Reads 10-bit groups, extracts bit 5 of each, places it at bit 4 of
-    a 5-bit field, then pairs two 5-bit fields into 20-bit values.
-
-    Returns:
-        Compressed bytes for the 20-bit sub-block.
-    """
-    total_bits = len(data) * 8
-    n_10bit = total_bits // 10
-    total_20bit = -(-total_bits // 20)
-
-    ten_bit = np.array(group_bits(data, 10)[:n_10bit], dtype=np.uint32)
-    bit5 = ((ten_bit >> 5) & 1) << 4
-
-    if len(bit5) % 2 != 0:
-        bit5 = np.append(bit5, 0)
-
-    pairs = bit5.reshape(-1, 2)
-    groups_20 = ((pairs[:, 0] << 10) | pairs[:, 1]).tolist()
-
-    while len(groups_20) < total_20bit:
-        groups_20.append(0)
-
-    return rle_encode(groups_20, value_bits=20)

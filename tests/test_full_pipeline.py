@@ -5,12 +5,25 @@ Tests end-to-end output against original driver captures.
 """
 
 import io
+import struct
 
 import numpy as np
 import pytest
 
-from brfilter import InputSlot, MediaType, MonoColor, PageSize, PrintSettings, Resolution, filter_page, read_ppm
-from fixture_utils import read_fixture
+from brfilter import (
+    ColorMatching,
+    DuplexMode,
+    InputSlot,
+    MediaType,
+    MonoColor,
+    PageSize,
+    PrintSettings,
+    Resolution,
+    filter_page,
+    filter_pages,
+    read_ppm,
+)
+from fixture_utils import assert_matches_fixture, read_fixture
 from xl2hb import PAPER_SIZES
 
 # ---------------------------------------------------------------------------
@@ -104,7 +117,7 @@ class TestOutputStructure:
         # Find the footer
         footer_pos = out.rfind(uel + uel)
         payload = out[payload_start:footer_pos]
-        assert 0xB1 not in payload or payload.count(bytes([0xB1])) == 0
+        assert 0xB1 not in payload
 
     def test_black_page_has_read_image(self):
         """All-black input should produce at least one ReadImage."""
@@ -121,16 +134,9 @@ class TestOutputStructure:
 class TestWhitePagePipeline:
     def test_white_page_matches_capture(self):
         """All-white PPM → byte-for-byte match with a4_white.xl2hb."""
-        expected = read_fixture("a4_white.xl2hb")
-        if expected is None:
-            pytest.skip("a4_white.xl2hb not available")
-
         w, h = 4760, 6812
-        pixels = bytes(w * h * 3) + bytes([255] * (w * h * 3))
-        # Actually: white = (255,255,255) for all pixels
         pixels = bytes([255]) * (w * h * 3)
-        out = _run_pipeline(w, h, pixels)
-        assert out == expected, f"White page mismatch: got {len(out)}B, expected {len(expected)}B"
+        assert_matches_fixture("a4_white", _run_pipeline(w, h, pixels))
 
 
 # ---------------------------------------------------------------------------
@@ -144,30 +150,16 @@ class TestBlackPagePipeline:
 
         This requires the compression to match exactly.
         """
-        expected = read_fixture("a4_black.xl2hb")
-        if expected is None:
-            pytest.skip("a4_black.xl2hb not available")
-
         w, h = 4760, 6812
         pixels = bytes(w * h * 3)  # all (0,0,0) = black
-        out = _run_pipeline(w, h, pixels)
-        if out != expected:
-            # Find first diff
-            for i in range(min(len(out), len(expected))):
-                if out[i] != expected[i]:
-                    pytest.fail(
-                        f"Black page mismatch at byte {i}: "
-                        f"got 0x{out[i]:02x}, expected 0x{expected[i]:02x}. "
-                        f"Output {len(out)}B vs expected {len(expected)}B"
-                    )
-            pytest.fail(f"Length mismatch: {len(out)}B vs {len(expected)}B")
+        assert_matches_fixture("a4_black", _run_pipeline(w, h, pixels))
 
 
 # ---------------------------------------------------------------------------
 # Capture-paired PPM tests (require matching PPM files)
 # ---------------------------------------------------------------------------
 
-_PPM_CAPTURE_PAIRS_PASS = [
+_PPM_CAPTURE_PAIRS = [
     ("test_fullwidth_k", "K-only fullwidth"),
     ("test_halfpage_k", "Half-page K"),
     ("test_narrow_k", "Narrow K strip"),
@@ -175,40 +167,15 @@ _PPM_CAPTURE_PAIRS_PASS = [
     ("test_fullwidth_c", "Full-width color (C/M/Y/K)"),
 ]
 
-_PPM_CAPTURE_PAIRS_XFAIL = []
-
 
 class TestPPMCapturePairs:
     """Tests that use the actual PPM files that generated each capture."""
 
-    @pytest.mark.parametrize(("name", "desc"), _PPM_CAPTURE_PAIRS_PASS, ids=[n for n, _ in _PPM_CAPTURE_PAIRS_PASS])
-    def test_ppm_to_xl2hb_matches_capture_k(self, name, desc):
-        """K-only PPMs that already match the driver output."""
-        ppm_data = read_fixture(f"{name}.ppm")
-        expected = read_fixture(f"{name}.xl2hb")
-
-        if ppm_data is None or expected is None:
-            pytest.skip(f"Missing {name}.ppm or {name}.xl2hb")
-
-        w, h, _, pixels = _read_ppm_strict(ppm_data)
-
-        out = _run_pipeline(w, h, pixels)
-        assert out == expected, f"{name}: output {len(out)}B vs expected {len(expected)}B"
-
-    @pytest.mark.parametrize(("name", "desc"), _PPM_CAPTURE_PAIRS_XFAIL, ids=[n for n, _ in _PPM_CAPTURE_PAIRS_XFAIL])
-    @pytest.mark.xfail(reason="C/M planes use JPEG-LS-like compression; our RLE encoder differs")
-    def test_ppm_to_xl2hb_matches_capture_color(self, name, desc):
-        """Run PPM through pipeline, compare with driver capture."""
-        ppm_data = read_fixture(f"{name}.ppm")
-        expected = read_fixture(f"{name}.xl2hb")
-
-        if ppm_data is None or expected is None:
-            pytest.skip(f"Missing {name}.ppm or {name}.xl2hb")
-
-        w, h, _, pixels = _read_ppm_strict(ppm_data)
-
-        out = _run_pipeline(w, h, pixels)
-        assert out == expected, f"{name}: output {len(out)}B vs expected {len(expected)}B"
+    @pytest.mark.parametrize(("name", "desc"), _PPM_CAPTURE_PAIRS, ids=[n for n, _ in _PPM_CAPTURE_PAIRS])
+    def test_ppm_to_xl2hb_matches_capture(self, name, desc):
+        """The PPM behind each capture reproduces it byte for byte."""
+        w, h, _, pixels = _read_ppm_strict(read_fixture(f"{name}.ppm"))
+        assert_matches_fixture(name, _run_pipeline(w, h, pixels))
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +184,7 @@ class TestPPMCapturePairs:
 
 _A4_W, _A4_H = 4760, 6812
 
-_COLOR_PAIRS_PASS = [
+_COLOR_PAIRS = [
     ("cyan_100", 3000, 3100, 0, 255, 255),
     ("gray50_1000", 1000, 2000, 128, 128, 128),
     ("red_100", 3000, 3100, 255, 0, 0),
@@ -227,28 +194,15 @@ _COLOR_PAIRS_PASS = [
 
 def _run_color_band_test(name, y0, y1, r, g, b):
     """Run a color-band pipeline test against capture."""
-    expected = read_fixture(f"{name}.xl2hb")
-    if expected is None:
-        pytest.skip(f"{name}.xl2hb not available")
-
     ppm = _make_ppm_band(_A4_W, _A4_H, y0, y1, r, g, b)
-    out = _pipeline_from_ppm(ppm)
-    if out != expected:
-        for i in range(min(len(out), len(expected))):
-            if out[i] != expected[i]:
-                pytest.fail(
-                    f"{name}: first diff at byte {i}: "
-                    f"got 0x{out[i]:02x}, expected 0x{expected[i]:02x}. "
-                    f"Output {len(out)}B vs expected {len(expected)}B"
-                )
-        pytest.fail(f"{name}: length mismatch: {len(out)}B vs {len(expected)}B")
+    assert_matches_fixture(name, _pipeline_from_ppm(ppm))
 
 
 class TestColorPages:
     @pytest.mark.parametrize(
         ("name", "y0", "y1", "r", "g", "b"),
-        _COLOR_PAIRS_PASS,
-        ids=[p[0] for p in _COLOR_PAIRS_PASS],
+        _COLOR_PAIRS,
+        ids=[p[0] for p in _COLOR_PAIRS],
     )
     def test_color_band_matches_capture(self, name, y0, y1, r, g, b):
         """Generated color-band PPM → byte-for-byte match with capture."""
@@ -264,9 +218,7 @@ class TestColorPages:
 # ---------------------------------------------------------------------------
 
 
-from brfilter import ColorMatching  # noqa: E402
-
-_SETTING_VARIANTS_PASS = [
+_SETTING_VARIANTS = [
     ("baseline", PrintSettings()),
     ("saturation_p20", PrintSettings(saturation=20)),  # no-op on saturated cyan
     ("green_p20", PrintSettings(green=20)),  # no-op on cyan (G already 255)
@@ -285,20 +237,8 @@ _SETTING_VARIANTS_PASS = [
 
 
 def _run_settings_variant(name, settings):
-    expected = read_fixture(f"cyan_100_{name}.xl2hb")
-    if expected is None:
-        pytest.skip(f"cyan_100_{name}.xl2hb not available")
     ppm = _make_ppm_band(_A4_W, _A4_H, 3000, 3100, 0, 255, 255)
-    out = _pipeline_from_ppm(ppm, settings)
-    if out != expected:
-        for i in range(min(len(out), len(expected))):
-            if out[i] != expected[i]:
-                pytest.fail(
-                    f"cyan_100_{name}: first diff at byte {i}: "
-                    f"got 0x{out[i]:02x}, expected 0x{expected[i]:02x}. "
-                    f"Output {len(out)}B vs expected {len(expected)}B"
-                )
-        pytest.fail(f"cyan_100_{name}: length mismatch: {len(out)}B vs {len(expected)}B")
+    assert_matches_fixture(f"cyan_100_{name}", _pipeline_from_ppm(ppm, settings))
 
 
 class TestSettingVariants:
@@ -306,16 +246,11 @@ class TestSettingVariants:
 
     @pytest.mark.parametrize(
         ("name", "settings"),
-        _SETTING_VARIANTS_PASS,
-        ids=[v[0] for v in _SETTING_VARIANTS_PASS],
+        _SETTING_VARIANTS,
+        ids=[v[0] for v in _SETTING_VARIANTS],
     )
     def test_setting_variant_matches(self, name, settings):
         _run_settings_variant(name, settings)
-
-
-# ---------------------------------------------------------------------------
-# Pipeline settings tests
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +277,7 @@ class TestPaperSizes:
     @pytest.mark.parametrize("name", _PAPER_SIZE_CAPTURES)
     def test_matches_capture(self, name):
         out = _pipeline_from_ppm(_make_ppm_edges(name), PrintSettings(page_size=PageSize(name)))
-        _assert_matches_capture(f"size_{name}", out)
+        assert_matches_fixture(f"size_{name}", out)
 
 
 # ---------------------------------------------------------------------------
@@ -376,15 +311,6 @@ _MONO_RAMP_VARIANTS = [
     ("ramp_contrast", {"contrast": -20}),
     ("ramp_ts", {"toner_save": True}),
 ]
-
-
-def _assert_matches_capture(name: str, out: bytes) -> None:
-    expected = read_fixture(f"{name}.xl2hb")
-    if expected is None:
-        pytest.skip(f"{name}.xl2hb not available")
-    if out != expected:
-        first = next((i for i in range(min(len(out), len(expected))) if out[i] != expected[i]), None)
-        pytest.fail(f"{name}: first diff at byte {first}. Output {len(out)}B vs expected {len(expected)}B")
 
 
 # Colour pixels on which the binary's 80-bit trunc((new_range / old_range) * (mid - min))
@@ -446,7 +372,7 @@ class TestMixedPage:
 
     @pytest.mark.parametrize(("name", "settings"), _MIXED_VARIANTS, ids=[v[0] for v in _MIXED_VARIANTS])
     def test_matches_capture(self, name, settings):
-        _assert_matches_capture(f"mixed_{name}", _pipeline_from_ppm(_make_ppm_mixed(), settings))
+        assert_matches_fixture(f"mixed_{name}", _pipeline_from_ppm(_make_ppm_mixed(), settings))
 
 
 class TestMonoMode:
@@ -454,12 +380,12 @@ class TestMonoMode:
     def test_band_matches_capture(self, name, y0, y1, r, g, b):
         ppm = _make_ppm_band(_A4_W, _A4_H, y0, y1, r, g, b)
         out = _pipeline_from_ppm(ppm, PrintSettings(mono_color=MonoColor.MONO))
-        _assert_matches_capture(f"mono_{name}", out)
+        assert_matches_fixture(f"mono_{name}", out)
 
     @pytest.mark.parametrize(("name", "kwargs"), _MONO_RAMP_VARIANTS, ids=[v[0] for v in _MONO_RAMP_VARIANTS])
     def test_ramp_matches_capture(self, name, kwargs):
         out = _pipeline_from_ppm(_make_ppm_ramps(), PrintSettings(mono_color=MonoColor.MONO, **kwargs))
-        _assert_matches_capture(f"mono_{name}", out)
+        assert_matches_fixture(f"mono_{name}", out)
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -469,7 +395,7 @@ class TestMonoMode:
     def test_colour_only_settings_are_ignored(self, kwargs):
         """The original driver's output for these equals plain mono."""
         out = _pipeline_from_ppm(_make_ppm_ramps(), PrintSettings(mono_color=MonoColor.MONO, **kwargs))
-        _assert_matches_capture("mono_ramp", out)
+        assert_matches_fixture("mono_ramp", out)
 
     def test_only_k_plane(self):
         ppm = _make_ppm_bytes(4760, 10, 128, 0, 0)
@@ -518,28 +444,18 @@ class TestPipelineSettings:
         assert b"ECONOMODE=OFF" in out
         assert b"ECONOMODE=ON" not in out
 
-    def test_letter_size_dimensions(self):
-        """Letter size should use 4900x6400 pixel dimensions."""
-        ppm = _make_ppm_bytes(4900, 100, 255, 255, 255)
-        settings = PrintSettings(page_size=PageSize.LETTER)
-        out = _pipeline_from_ppm(ppm, settings)
-        # Verify image dimensions in BeginImage
-        # Source width should be 4928 (4900 rounded to 32)
-        # Source height should be 6396 (6400 - 4)
-        assert b"\xc1\x40\x13" in out  # uint16 LE for 4928 = 0x1340
-
 
 # ---------------------------------------------------------------------------
-# Target: fine resolution (1200 DPI)
+# Fine mode framing
 # ---------------------------------------------------------------------------
 
 
 class TestFineResolution:
-    """Fine mode uses same source dimensions as Normal but different dithering/band config.
+    """Fine mode framing: PJL, session, image dimensions and depth.
 
     Verified against original Brother driver captures: Fine mode uses
-    RESOLUTION=600 in PJL, 600x600 session, same source/dest dimensions
-    as Normal (A4: 4768x6808), COLOR_DEPTH=1, and APTMODE=ON4.
+    RESOLUTION=600 in PJL, a 600x600 session, the Normal source height
+    but the unrounded width (A4: 4760x6808), COLOR_DEPTH=1 and APTMODE=ON4.
     """
 
     def _find_ubyte_attr(self, data: bytes, attr_id: int) -> int:
@@ -551,8 +467,6 @@ class TestFineResolution:
 
     def _find_uint16_attr(self, data: bytes, attr_id: int) -> int:
         """Find a uint16 attribute value by attribute ID."""
-        import struct
-
         marker = bytes([0xF8, attr_id])
         idx = data.index(marker)
         lo, hi = data[idx - 2], data[idx - 1]
@@ -560,8 +474,6 @@ class TestFineResolution:
 
     def _find_uint16_xy_attr(self, data: bytes, attr_id: int) -> tuple[int, int]:
         """Find a uint16_xy attribute (x, y) by attribute ID."""
-        import struct
-
         marker = bytes([0xF8, attr_id])
         idx = data.index(marker)
         x = struct.unpack("<H", data[idx - 4 : idx - 2])[0]
@@ -629,15 +541,10 @@ class TestFineResolution:
 class TestFineWhitePagePipeline:
     def test_fine_white_matches_capture(self):
         """Fine all-white PPM -> byte-for-byte match with fine_white.xl2hb."""
-        expected = read_fixture("fine_white.xl2hb")
-        if expected is None:
-            pytest.skip("fine_white.xl2hb not available")
-
         w, h = 4760, 6812
         pixels = bytes([255]) * (w * h * 3)
         settings = PrintSettings(resolution=Resolution.FINE)
-        out = _run_pipeline(w, h, pixels, settings)
-        assert out == expected, f"Fine white mismatch: got {len(out)}B, expected {len(expected)}B"
+        assert_matches_fixture("fine_white", _run_pipeline(w, h, pixels, settings))
 
 
 class TestFineBlackPagePipeline:
@@ -648,27 +555,14 @@ class TestFineBlackPagePipeline:
         PlaneBuffer headers (bit_depth=12, quant_type=0, comp_size=0),
         COLOR_DEPTH=1, band config, and APTMODE=ON4.
         """
-        expected = read_fixture("fine_black.xl2hb")
-        if expected is None:
-            pytest.skip("fine_black.xl2hb not available")
-
         w, h = 4760, 6812
         pixels = bytes(w * h * 3)  # all (0,0,0) = black
         settings = PrintSettings(resolution=Resolution.FINE)
-        out = _run_pipeline(w, h, pixels, settings)
-        if out != expected:
-            for i in range(min(len(out), len(expected))):
-                if out[i] != expected[i]:
-                    pytest.fail(
-                        f"Fine black mismatch at byte {i}: "
-                        f"got 0x{out[i]:02x}, expected 0x{expected[i]:02x}. "
-                        f"Output {len(out)}B vs expected {len(expected)}B"
-                    )
-            pytest.fail(f"Length mismatch: {len(out)}B vs {len(expected)}B")
+        assert_matches_fixture("fine_black", _run_pipeline(w, h, pixels, settings))
 
 
 # ---------------------------------------------------------------------------
-# Target: skip blank optimization
+# Skip blank pages
 # ---------------------------------------------------------------------------
 
 
@@ -687,12 +581,7 @@ class TestSkipBlank:
 
 
 def test_filter_page_accepts_ppm_wider_than_printable_area():
-    """cli.py feeds the uncropped GS render (4958 px) into an A4 page (4768 px)."""
-    import io
-
-    from pipeline import filter_page
-    from settings import PrintSettings
-
+    """cli.py feeds the uncropped GS render (4958 px) into an A4 page (4760 px)."""
     width, height = 4958, 16
     pixel_data = bytes(range(256)) * (width * height * 3 // 256) + bytes(width * height * 3 % 256)
     out = io.BytesIO()
@@ -707,8 +596,6 @@ def test_filter_page_accepts_ppm_wider_than_printable_area():
 
 def _duplex_test_pages() -> list[tuple[int, int, bytes]]:
     """Four A4 pages whose content is asymmetric in x and y, so flips show up."""
-    import numpy as np
-
     colours = [(0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 0, 0)]
     pages = []
     for i in range(4):
@@ -729,69 +616,51 @@ def _duplex_test_pages() -> list[tuple[int, int, bytes]]:
 )
 def test_duplex_job_matches_brother_capture(fixture, duplex):
     """Whole 4-page job in one session, incl. the flipped long-edge back pages."""
-    from pipeline import filter_duplex_pages
-    from settings import DuplexMode
-
-    expected = read_fixture(f"{fixture}.xl2hb")
-    if expected is None:
-        pytest.skip(f"{fixture}.xl2hb not available")
     out = io.BytesIO()
-    filter_duplex_pages(_duplex_test_pages(), PrintSettings(duplex=DuplexMode(duplex)), out)
-    assert out.getvalue() == expected
+    filter_pages(_duplex_test_pages(), PrintSettings(duplex=DuplexMode(duplex)), out)
+    assert_matches_fixture(fixture, out.getvalue())
 
 
 @pytest.mark.parametrize("duplex", ["None", "DuplexNoTumble", "DuplexTumble"])
 @pytest.mark.parametrize("n_pages", [3, 4])
 def test_reverse_matches_reversed_input(duplex, n_pages):
     """Reverse order renders forward and spools, but must equal rendering the reversed pages."""
-    from pipeline import filter_duplex_pages
-    from settings import DuplexMode
-
     pages = _duplex_test_pages()[:n_pages]
     expected = io.BytesIO()
-    filter_duplex_pages(pages[::-1], PrintSettings(duplex=DuplexMode(duplex)), expected)
+    filter_pages(pages[::-1], PrintSettings(duplex=DuplexMode(duplex)), expected)
 
     out = io.BytesIO()
     settings = PrintSettings(duplex=DuplexMode(duplex), reverse=True)
-    filter_duplex_pages(iter(pages), settings, out, page_count=n_pages)
+    filter_pages(iter(pages), settings, out, page_count=n_pages)
     assert out.getvalue() == expected.getvalue()
 
 
 def test_reverse_long_edge_requires_page_count():
-    from pipeline import filter_duplex_pages
-    from settings import DuplexMode
-
     settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE, reverse=True)
     with pytest.raises(ValueError, match="page_count"):
-        filter_duplex_pages(iter(_duplex_test_pages()), settings, io.BytesIO())
+        filter_pages(iter(_duplex_test_pages()), settings, io.BytesIO())
 
 
 def _as_row_blocks(pixel_data: bytes, width: int, height: int, block_rows: int):
-    import numpy as np
-
     rows = np.frombuffer(pixel_data, dtype=np.uint8).reshape(height, width * 3)
     return (rows[i : i + block_rows] for i in range(0, height, block_rows))
 
 
 @pytest.mark.parametrize(
-    ("duplex", "gamma_select", "n_pages"),
+    ("duplex", "n_pages"),
     [
-        ("None", None, 2),
-        ("DuplexNoTumble", None, 2),  # page 2 is a mirrored back side
-        ("None", 1, 1),  # tone curve: no white-row short cut
+        ("None", 2),
+        ("DuplexNoTumble", 2),  # page 2 is a mirrored back side
     ],
 )
-def test_streamed_row_blocks_match_whole_pages(duplex, gamma_select, n_pages):
+def test_streamed_row_blocks_match_whole_pages(duplex, n_pages):
     """Pages given as row blocks (as page_stream delivers them) render identically."""
-    from pipeline import filter_duplex_pages
-    from settings import DuplexMode
-
-    settings = PrintSettings(duplex=DuplexMode(duplex), gamma_select=gamma_select)
+    settings = PrintSettings(duplex=DuplexMode(duplex))
     pages = _duplex_test_pages()[:n_pages]
     expected = io.BytesIO()
-    filter_duplex_pages(pages, settings, expected)
+    filter_pages(pages, settings, expected)
 
     streamed = [(w, h, _as_row_blocks(data, w, h, 333)) for w, h, data in pages]
     out = io.BytesIO()
-    filter_duplex_pages(streamed, settings, out)
+    filter_pages(streamed, settings, out)
     assert out.getvalue() == expected.getvalue()

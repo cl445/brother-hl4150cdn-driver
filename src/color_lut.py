@@ -208,8 +208,8 @@ def inverse_lut_path(table: ColorTable = DEFAULT_TABLE) -> Path | None:
 
 
 @functools.lru_cache(maxsize=len(INVERSE_LUT_TABLES))
-def _load_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | None:
-    """Memory-map the precomputed RGB→KCMY inverse LUT, or None if absent.
+def inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | None:
+    """Memory-map the installed RGB→KCMY inverse LUT of `table`, or None if absent.
 
     Mapped read-only instead of loaded: each CUPS job is a fresh process,
     and reading all 64 MiB up front costs 1-3 s on a Pi. With the mapping
@@ -236,15 +236,6 @@ def _load_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8
     return np.asarray(arr)
 
 
-def inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | None:
-    """Return the installed inverse LUT of `table` (see `_load_inverse_lut`), or None.
-
-    Returns:
-        Array of shape (256, 256, 256, 4) uint8, or None when not installed.
-    """
-    return _load_inverse_lut(table)
-
-
 def precompute_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8]:
     """Evaluate the tetrahedral interpolation over all 16.7M RGB inputs.
 
@@ -261,11 +252,8 @@ def precompute_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.
     gb_flat[:, 2] = b_grid.ravel()
     for r in range(256):
         gb_flat[:, 0] = r
-        k_b, c_b, m_b, y_b = _rgb_to_cmyk_interp(gb_flat.tobytes(), 65536, table)
-        out[r, :, :, 0] = np.frombuffer(k_b, dtype=np.uint8).reshape(256, 256)
-        out[r, :, :, 1] = np.frombuffer(c_b, dtype=np.uint8).reshape(256, 256)
-        out[r, :, :, 2] = np.frombuffer(m_b, dtype=np.uint8).reshape(256, 256)
-        out[r, :, :, 3] = np.frombuffer(y_b, dtype=np.uint8).reshape(256, 256)
+        for i, plane in enumerate(_rgb_to_cmyk_interp_arr(gb_flat, 65536, table)):
+            out[r, :, :, i] = plane.reshape(256, 256)
     return out
 
 
@@ -301,7 +289,7 @@ def rgb_to_cmyk_lut_arr(
     Returns:
         (k, c, m, y) uint8 arrays of length `width`.
     """
-    inv = _load_inverse_lut(table)
+    inv = inverse_lut(table)
     if inv is not None and HAS_CYTHON_COLOR:
         planes = np.empty((4, width), dtype=np.uint8)
         gather_kcmy(rgb_row, width, inv.reshape(-1), planes[0], planes[1], planes[2], planes[3])
@@ -403,15 +391,3 @@ def _rgb_to_cmyk_interp_arr(
     result = np.ascontiguousarray((255 - cmyk).astype(np.uint8))
 
     return result[:, 3], result[:, 0], result[:, 1], result[:, 2]
-
-
-def _rgb_to_cmyk_interp(
-    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
-) -> tuple[bytes, bytes, bytes, bytes]:
-    """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
-
-    Returns:
-        (k, c, m, y) in pixel-brightness convention (0=full ink, 255=no ink).
-    """
-    k, c, m, y = _rgb_to_cmyk_interp_arr(rgb_row, width, table)
-    return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()

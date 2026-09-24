@@ -3,28 +3,27 @@
 import numpy as np
 import pytest
 
-from rle import CONFIG_10BIT, CONFIG_12BIT, CONFIG_20BIT, data_to_encode_groups, finalize_compressed, sw_rle_encode
+from rle import CONFIG_10BIT, CONFIG_12BIT, CONFIG_20BIT, finalize_compressed, group_bits_py, sw_rle_encode
 
 _rle_fast = pytest.importorskip("_rle_fast")
 if not hasattr(_rle_fast, "encode_sw_rle"):
     pytest.skip("_rle_fast built without encode_sw_rle; rebuild the extension", allow_module_level=True)
 encode_sw_rle = _rle_fast.encode_sw_rle
 
-# (read_group, encode_group, bits, config) for every call site in plane_encoders.
+# (bits, config) for every plane encoder in plane_encoders.
 _VARIANTS = {
-    "K/Y 12-bit": (12, 12, 12, CONFIG_12BIT),
-    "C via encode_plane": (20, 12, 12, CONFIG_12BIT),
-    "C 20-bit": (1, 20, 20, CONFIG_20BIT),
-    "M 10-bit": (1, 10, 10, CONFIG_10BIT),
+    "K/Y 12-bit": (12, CONFIG_12BIT),
+    "C 20-bit": (20, CONFIG_20BIT),
+    "M 10-bit": (10, CONFIG_10BIT),
 }
 
 
-def _python_encode(data: bytes, read_group: int, encode_group: int, config) -> bytes:
+def _python_encode(data: bytes, bits: int, config) -> bytes:
     """Reference: plane_encoders._encode_via_sw_rle over the Python word split."""
-    words = data_to_encode_groups(data, read_group, encode_group)
+    words = group_bits_py(data, bits)
     if not words or not any(words):
         return b""
-    return finalize_compressed(sw_rle_encode(words, config), data, len(data), encode_group)
+    return finalize_compressed(sw_rle_encode(words, config), data, bits)
 
 
 def _rows() -> list[bytes]:
@@ -64,25 +63,25 @@ def _rows() -> list[bytes]:
 
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_matches_python_encoder(variant):
-    read_group, encode_group, bits, config = _VARIANTS[variant]
+    bits, config = _VARIANTS[variant]
     for data in _rows():
-        expected = _python_encode(data, read_group, encode_group, config)
-        assert encode_sw_rle(data, read_group, encode_group, bits) == expected, (variant, len(data), data[:16])
+        expected = _python_encode(data, bits, config)
+        assert encode_sw_rle(data, bits) == expected, (variant, len(data), data[:16])
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
 def test_matches_python_encoder_random_sparse(variant):
     """Many short sparse rows: exercises every state transition cheaply."""
-    read_group, encode_group, bits, config = _VARIANTS[variant]
+    bits, config = _VARIANTS[variant]
     rng = np.random.default_rng(hash(variant) & 0xFFFF)
     for _ in range(2000):
         n = int(rng.integers(1, 64))
         vals = rng.choice(np.array([0, 0, 0, 0xFF, 0x0F, 0xF0, 0x81], dtype=np.uint8), n)
         data = vals.tobytes()
-        expected = _python_encode(data, read_group, encode_group, config)
-        assert encode_sw_rle(data, read_group, encode_group, bits) == expected, (variant, data.hex())
+        expected = _python_encode(data, bits, config)
+        assert encode_sw_rle(data, bits) == expected, (variant, data.hex())
 
 
 def test_rejects_unknown_word_size():
     with pytest.raises(ValueError, match="unsupported"):
-        encode_sw_rle(b"\x01", 12, 12, 16)
+        encode_sw_rle(b"\x01", 16)

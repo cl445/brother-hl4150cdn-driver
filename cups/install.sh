@@ -13,12 +13,11 @@ LIB_DIR="/usr/local/lib/brhl4150cdn"
 VENV_DIR="$LIB_DIR/.venv"
 
 # Detect OS-specific CUPS paths
+CUPS_PPD_DIR="/usr/share/cups/model"
 if [[ "$(uname)" == "Darwin" ]]; then
     CUPS_FILTER_DIR="/usr/libexec/cups/filter"
-    CUPS_PPD_DIR="/usr/share/cups/model"
 else
     CUPS_FILTER_DIR="/usr/lib/cups/filter"
-    CUPS_PPD_DIR="/usr/share/cups/model"
 fi
 
 ADD_PRINTER=false
@@ -30,7 +29,7 @@ usage() {
     echo "Options:"
     echo "  --add-printer [URI]  Create a CUPS printer queue after installing."
     echo "                       If URI is omitted, attempts auto-detection via"
-    echo "                       lpinfo or falls back to socket://BRW*.local:9100"
+    echo "                       lpinfo or falls back to socket://BRW.local:9100"
     echo ""
     echo "This script must be run with sudo."
     exit 1
@@ -112,7 +111,7 @@ fi
 # Create virtual environment with dependencies
 echo "Creating virtual environment at $VENV_DIR..."
 python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install --quiet numpy
+"$VENV_DIR/bin/pip" install --quiet "numpy>=2.5.3"  # keep in sync with pyproject.toml
 
 # Precompute the RGB→KCMY inverse LUTs (64 MiB each: Normal and Vivid colour
 # matching). Replaces per-pixel tetrahedral interpolation; roughly 4x faster

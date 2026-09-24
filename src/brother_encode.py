@@ -10,19 +10,18 @@ This module is a thin façade that re-exports the public encoder API
 from :mod:`rle`, :mod:`plane_encoders`, and :mod:`fine_encoder`.
 """
 
-from fine_encoder import compress_jpegls_encode, compress_rle_preencode, encode_fine_plane
-from plane_encoders import encode_c_plane, encode_m_plane_10, encode_m_plane_20, encode_plane
+from fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane
+from plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
 from rle import group_bits, pack_groups
 from xl2hb import BPL
 
 __all__ = [
     "BPL",
-    "compress_jpegls_encode",
+    "compress_pattern_encode",
     "compress_rle_preencode",
     "encode_c_plane",
     "encode_fine_plane",
     "encode_m_plane_10",
-    "encode_m_plane_20",
     "encode_plane",
     "group_bits",
     "pack_groups",

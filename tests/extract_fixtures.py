@@ -1,13 +1,14 @@
 """
 Capture parser for XL2HB test fixtures.
 
-Parses original driver captures at test time, extracting per-block compressed
-plane data for comparison against our framing layer.  No fixture files needed.
+Parses original driver captures (tests/fixtures/) at test time, extracting
+per-block compressed plane data for comparison against our framing layer.
+It keeps its own copy of the PCL-XL tags so it does not share code with the
+writer it checks.
 """
 
 import struct
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 
@@ -135,22 +136,16 @@ def _parse_blob_entries(blob: bytes) -> list[bytes]:
     return entries
 
 
-def parse_xl2hb_capture(source: Path | str | bytes) -> CaptureFixture:
-    """Parse an XL2HB capture file into a CaptureFixture.
+def parse_xl2hb_capture(raw: bytes, filename: str = "<bytes>") -> CaptureFixture:
+    """Parse an XL2HB capture into a CaptureFixture.
 
     Walks the binary payload, extracts PJL header/footer and all
     ReadImage blocks with their compressed plane data.
 
     Args:
-        source: Path to an ``.xl2hb`` file, or raw bytes.
+        raw: The capture's bytes.
+        filename: Name used in error messages and stored on the fixture.
     """
-    if isinstance(source, bytes):
-        raw = source
-        filename = "<bytes>"
-    else:
-        path = Path(source)
-        raw = path.read_bytes()
-        filename = path.stem
 
     # --- Find PJL header boundary ---
     marker = b") BROTHER XL2HB"

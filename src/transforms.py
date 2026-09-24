@@ -4,8 +4,8 @@
   brightness, contrast, and per-channel RGB-key shifts as a single 256-entry
   per-channel input remap.
 * :func:`color_table` picks the colour grid the original driver would use
-  for the settings; :func:`rgb_line_to_cmyk_intensities` separates RGB into
-  CMYK through it. Colour matching, BRGray, toner save, glossy media and
+  for the settings; :func:`color_lut.rgb_to_cmyk_lut_arr` separates RGB
+  into CMYK through it. Colour matching, BRGray, toner save, glossy media and
   BREnhanceBlkPrt only choose the grid; they do not touch the pixels.
 """
 
@@ -14,7 +14,7 @@ from collections.abc import Buffer
 import numpy as np
 import numpy.typing as npt
 
-from color_lut import DEFAULT_TABLE, ColorTable, Profile, Variant, rgb_to_cmyk_lut, rgb_to_cmyk_lut_arr
+from color_lut import ColorTable, Profile, Variant
 from settings import ColorMatching, MediaType, PrintSettings
 
 _NDArrayU8 = npt.NDArray[np.uint8]
@@ -99,31 +99,3 @@ def apply_input_remap_rgb(
     is_white = (rgb[:, 0] == 255) & (rgb[:, 1] == 255) & (rgb[:, 2] == 255)
     out[is_white] = rgb[is_white]
     return out.tobytes()
-
-
-def rgb_line_to_cmyk_intensities_arr(
-    rgb_row: Buffer,
-    width: int,
-    table: ColorTable = DEFAULT_TABLE,
-) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
-    """Like :func:`rgb_line_to_cmyk_intensities` but returns ndarrays directly.
-
-    Returns:
-        (k, c, m, y) uint8 intensity arrays of length `width`.
-    """
-    return rgb_to_cmyk_lut_arr(rgb_row, width, table)
-
-
-def rgb_line_to_cmyk_intensities(
-    rgb_row: Buffer,
-    width: int,
-    table: ColorTable = DEFAULT_TABLE,
-) -> tuple[bytes, bytes, bytes, bytes]:
-    """Convert one RGB scanline to per-channel CMYK intensity arrays through `table`.
-
-    Returns:
-        Tuple ``(k_arr, c_arr, m_arr, y_arr)`` each of ``width`` bytes in
-        pixel-brightness convention (0 = full ink, 255 = no ink), ready
-        for :func:`dither.dither_channel_1bpp`.
-    """
-    return rgb_to_cmyk_lut(rgb_row, width, table)

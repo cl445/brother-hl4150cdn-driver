@@ -4,6 +4,8 @@ PJL header/footer tests.
 Verifies our PJL generation matches the format in all captures.
 """
 
+import pytest
+
 from xl2hb import generate_pjl_footer, generate_pjl_header
 
 
@@ -75,53 +77,10 @@ class TestPJLHeader:
         header = generate_pjl_header()
         assert b"UCRGCRFORIMAGE" not in header
 
-    def test_sourcetray_tray1(self):
-        header = generate_pjl_header(source_tray="TRAY1")
-        assert b"SOURCETRAY=TRAY1" in header
-
-    def test_sourcetray_tray2(self):
-        header = generate_pjl_header(source_tray="TRAY2")
-        assert b"SOURCETRAY=TRAY2" in header
-
-    def test_sourcetray_absent_by_default(self):
-        header = generate_pjl_header()
-        assert b"SOURCETRAY" not in header
-
-    def test_ret_light(self):
-        header = generate_pjl_header(ret="LIGHT")
-        assert b"RET=LIGHT" in header
-
-    def test_ret_medium(self):
-        header = generate_pjl_header(ret="MEDIUM")
-        assert b"RET=MEDIUM" in header
-
-    def test_ret_dark(self):
-        header = generate_pjl_header(ret="DARK")
-        assert b"RET=DARK" in header
-
-    def test_ret_off(self):
-        header = generate_pjl_header(ret="OFF")
-        assert b"RET=OFF" in header
-
-    def test_ret_absent_by_default(self):
-        header = generate_pjl_header()
-        assert b"RET=" not in header
-
-    def test_pageprotect_auto(self):
-        header = generate_pjl_header(page_protect=True)
-        assert b"PAGEPROTECT=AUTO" in header
-
-    def test_pageprotect_absent_by_default(self):
-        header = generate_pjl_header()
-        assert b"PAGEPROTECT" not in header
-
-    def test_manualdpx_on(self):
-        header = generate_pjl_header(manual_duplex=True)
-        assert b"MANUALDPX=ON" in header
-
-    def test_manualdpx_absent_by_default(self):
-        header = generate_pjl_header()
-        assert b"MANUALDPX" not in header
+    @pytest.mark.parametrize("command", [b"SOURCETRAY", b"RET=", b"PAGEPROTECT", b"MANUALDPX"])
+    def test_commands_the_original_never_sends(self, command):
+        """pjl.c knows these commands, but brhl4150cdnfilter never emits them for this model."""
+        assert command not in generate_pjl_header()
 
     def test_command_order_matches_original(self):
         """All commands present, in original pjl.c order."""
@@ -130,10 +89,6 @@ class TestPJLHeader:
             apt_mode=True,
             improve_gray=True,
             ucrgcr=True,
-            source_tray="TRAY1",
-            ret="MEDIUM",
-            page_protect=True,
-            manual_duplex=True,
         )
         text = header.decode("ascii")
         commands = [
@@ -142,14 +97,10 @@ class TestPJLHeader:
             "COLORADAPT=",
             "LESSPAPERCURL=",
             "FIXINTENSITYUP=",
-            "PAGEPROTECT=",
-            "RET=",
-            "SOURCETRAY=",
             "APTMODE=",
             "IMPROVEGRAY=",
             "UCRGCRFORIMAGE=",
             "RESOLUTION=",
-            "MANUALDPX=",
             "ENTER LANGUAGE=",
         ]
         positions = []

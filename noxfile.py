@@ -1,4 +1,4 @@
-"""Nox sessions: lint, format, typecheck, tests.
+"""Nox sessions: lint, format, typecheck, deps, tests.
 
 All sessions install the project plus its `dev` and `test` extras so the tool
 versions stay in sync with `pyproject.toml`.
@@ -9,8 +9,8 @@ import nox
 nox.options.default_venv_backend = "uv"
 
 PYTHON = "3.13"
-SOURCES = ["src", "tests", "main.py", "noxfile.py"]
-TYPECHECK_SOURCES = ["src", "tests", "main.py"]
+SOURCES = ["src", "tests", "scripts", "noxfile.py", "setup_cython.py"]
+TYPECHECK_SOURCES = ["src", "tests", "noxfile.py"]
 
 
 @nox.session(python=PYTHON)
@@ -40,6 +40,13 @@ def typecheck(session: nox.Session) -> None:
     """Run the pyrefly type checker."""
     session.install(".[dev,test]")
     session.run("pyrefly", "check", *TYPECHECK_SOURCES)
+
+
+@nox.session(python=PYTHON)
+def deps(session: nox.Session) -> None:
+    """Check declared dependencies against imports (deptry)."""
+    session.install(".[dev]")
+    session.run("deptry", ".")
 
 
 @nox.session(python=PYTHON)

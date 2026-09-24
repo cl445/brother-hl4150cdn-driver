@@ -6,7 +6,10 @@ Decomposes the 17x17x17 -> CMYK LUT into three physically interpretable layers:
   3. 3D trilinear residual: low-res correction grid for 3-way interactions
 
 Joint least-squares fit of all layers simultaneously.
-Exports coefficients as Python source code for embedding in color_lut_gen.py.
+
+This is the first-pass fit that color_lut_gen.py started from, not the
+generator of its shipped coefficients: those use 7x7x7 (rgb) and 9x9x9
+(srgb) residual grids plus sparse corrections. The script is kept as a record of the method.
 
 Usage:
     uv run python scripts/fit_lut_coefficients.py
@@ -22,8 +25,8 @@ import numpy as np
 # Configuration
 # ---------------------------------------------------------------------------
 LUT_DIM = 17
-PAIR_DIM = 9   # 2D interaction grid resolution
-TRI_DIM = 5    # 3D residual grid resolution
+PAIR_DIM = 9  # 2D interaction grid resolution
+TRI_DIM = 5  # 3D residual grid resolution
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "src" / "color_data"
 OUTPUT_FILE = Path(__file__).resolve().parent / "fitted_coefficients.py"
@@ -39,10 +42,10 @@ def load_original_lut() -> np.ndarray:
     assert len(data) == LUT_DIM**3 * 8, f"Unexpected LUT size: {len(data)}"
     packed = np.frombuffer(data, dtype=np.int32).reshape(-1, 2)
     unpacked = np.empty((LUT_DIM**3, 4), dtype=np.int32)
-    unpacked[:, 0] = packed[:, 0] & 0xFFFF   # C
-    unpacked[:, 1] = packed[:, 0] >> 16       # M
-    unpacked[:, 2] = packed[:, 1] & 0xFFFF   # Y
-    unpacked[:, 3] = packed[:, 1] >> 16       # K
+    unpacked[:, 0] = packed[:, 0] & 0xFFFF  # C
+    unpacked[:, 1] = packed[:, 0] >> 16  # M
+    unpacked[:, 2] = packed[:, 1] & 0xFFFF  # Y
+    unpacked[:, 3] = packed[:, 1] >> 16  # K
     return unpacked
 
 
@@ -178,11 +181,11 @@ def fit_all_channels(lut: np.ndarray) -> dict:
     # Concatenate all basis matrices
     A = np.hstack([basis_1d, basis_rg, basis_rb, basis_gb, basis_3d])
 
-    n_1d = basis_1d.shape[1]       # 51
-    n_rg = basis_rg.shape[1]       # 81
-    n_rb = basis_rb.shape[1]       # 81
-    n_gb = basis_gb.shape[1]       # 81
-    n_3d = basis_3d.shape[1]       # 125
+    n_1d = basis_1d.shape[1]  # 51
+    n_rg = basis_rg.shape[1]  # 81
+    n_rb = basis_rb.shape[1]  # 81
+    n_gb = basis_gb.shape[1]  # 81
+    n_3d = basis_3d.shape[1]  # 125
     total = A.shape[1]
 
     print(f"Basis dimensions: 1D={n_1d}, RG={n_rg}, RB={n_rb}, GB={n_gb}, 3D={n_3d}, total={total}")
@@ -201,23 +204,25 @@ def fit_all_channels(lut: np.ndarray) -> dict:
         pred = A @ coeffs
         err = np.abs(pred - target)
 
-        print(f"\n{ch_name}: rank={rank}, max_err={err.max():.1f}, "
-              f"mean_err={err.mean():.1f}, p95={np.percentile(err, 95):.1f}")
+        print(
+            f"\n{ch_name}: rank={rank}, max_err={err.max():.1f}, "
+            f"mean_err={err.mean():.1f}, p95={np.percentile(err, 95):.1f}"
+        )
 
         # Split coefficients
         offset = 0
-        tone = coeffs[offset:offset + n_1d]
+        tone = coeffs[offset : offset + n_1d]
         offset += n_1d
-        pair_rg = coeffs[offset:offset + n_rg]
+        pair_rg = coeffs[offset : offset + n_rg]
         offset += n_rg
-        pair_rb = coeffs[offset:offset + n_rb]
+        pair_rb = coeffs[offset : offset + n_rb]
         offset += n_rb
-        pair_gb = coeffs[offset:offset + n_gb]
+        pair_gb = coeffs[offset : offset + n_gb]
         offset += n_gb
-        tri = coeffs[offset:offset + n_3d]
+        tri = coeffs[offset : offset + n_3d]
 
         results[ch_name] = {
-            "tone": tone,                          # (51,)
+            "tone": tone,  # (51,)
             "pair_rg": pair_rg.reshape(PAIR_DIM, PAIR_DIM),  # (9, 9)
             "pair_rb": pair_rb.reshape(PAIR_DIM, PAIR_DIM),  # (9, 9)
             "pair_gb": pair_gb.reshape(PAIR_DIM, PAIR_DIM),  # (9, 9)
@@ -319,46 +324,6 @@ def generate_interp_tables_reference() -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Generate gamma curves analytically
-# ---------------------------------------------------------------------------
-def analyze_gamma_curves():
-    """Analyze the gamma curves and find a parametric representation."""
-    for curve_id in range(2):
-        path = DATA_DIR / f"gamma_curve_{curve_id}.bin"
-        data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
-        print(f"\nGamma curve {curve_id}:")
-        print(f"  First 20: {data[:20].tolist()}")
-        print(f"  Last 20:  {data[236:].tolist()}")
-
-        # Check if it's identity
-        identity = np.arange(256, dtype=np.uint8)
-        if np.array_equal(data, identity):
-            print("  -> Identity curve")
-            continue
-
-        # Check if it's piecewise linear with 17 control points
-        # Grid points at 0, 16, 32, ..., 240, 255
-        grid_indices = [i * 16 for i in range(16)] + [255]
-        grid_values = data[grid_indices]
-        print(f"  Grid values (17 pts): {grid_values.tolist()}")
-
-        # Reconstruct via piecewise linear interpolation
-        reconstructed = np.zeros(256, dtype=np.float64)
-        for i in range(256):
-            if i <= 240:
-                seg = i // 16
-                frac = (i % 16) / 16.0
-            else:
-                seg = 15
-                frac = (i - 240) / 15.0
-
-            reconstructed[i] = grid_values[seg] * (1 - frac) + grid_values[min(seg + 1, 16)] * frac
-
-        err = np.abs(reconstructed - data.astype(np.float64))
-        print(f"  Piecewise linear error: max={err.max():.1f}, mean={err.mean():.2f}")
-
-
-# ---------------------------------------------------------------------------
 # Export coefficients
 # ---------------------------------------------------------------------------
 def format_array(arr: np.ndarray, name: str, indent: int = 0) -> str:
@@ -426,16 +391,6 @@ def export_coefficients(results: dict, output_path: Path):
         tri_all[i] = results[ch]["tri"]
     lines.append(format_array(tri_all, "TRILINEAR"))
 
-    # Also export gamma curve control points
-    lines.append("")
-    lines.append("# Gamma curve control points (17 points at grid positions 0,16,32,...,240,255)")
-    for curve_id in range(2):
-        path = DATA_DIR / f"gamma_curve_{curve_id}.bin"
-        data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
-        grid_indices = [i * 16 for i in range(16)] + [255]
-        grid_values = data[grid_indices]
-        lines.append(f"GAMMA_{curve_id}_POINTS = np.array({grid_values.tolist()}, dtype=np.uint8)")
-
     lines.append("")
     output_path.write_text("\n".join(lines) + "\n")
     print(f"\nCoefficients written to {output_path}")
@@ -465,19 +420,23 @@ def validate(results: dict, lut: np.ndarray):
     print("\n=== Validation ===")
     for ch_idx, ch_name in enumerate(["C", "M", "Y", "K"]):
         r = results[ch_name]
-        coeffs = np.concatenate([
-            r["tone"],
-            r["pair_rg"].flatten(),
-            r["pair_rb"].flatten(),
-            r["pair_gb"].flatten(),
-            r["tri"].flatten(),
-        ])
+        coeffs = np.concatenate(
+            [
+                r["tone"],
+                r["pair_rg"].flatten(),
+                r["pair_rb"].flatten(),
+                r["pair_gb"].flatten(),
+                r["tri"].flatten(),
+            ]
+        )
         pred = A @ coeffs
         pred_clamped = np.clip(np.round(pred), 0, 255).astype(np.int32)
         target = lut[:, ch_idx]
         err = np.abs(pred_clamped - target)
-        print(f"{ch_name}: max_err={err.max()}, mean_err={err.mean():.2f}, "
-              f"p95={np.percentile(err, 95):.1f}, p99={np.percentile(err, 99):.1f}")
+        print(
+            f"{ch_name}: max_err={err.max()}, mean_err={err.mean():.2f}, "
+            f"p95={np.percentile(err, 95):.1f}, p99={np.percentile(err, 99):.1f}"
+        )
 
     # Validate interpolation tables
     print("\n=== Interpolation Tables ===")
@@ -489,10 +448,6 @@ def validate(results: dict, lut: np.ndarray):
     if diff.max() > 0:
         mismatch_count = np.sum(diff > 0)
         print(f"  Mismatches: {mismatch_count}/{original.size}")
-
-    # Validate gamma curves
-    print("\n=== Gamma Curves ===")
-    analyze_gamma_curves()
 
 
 # ---------------------------------------------------------------------------

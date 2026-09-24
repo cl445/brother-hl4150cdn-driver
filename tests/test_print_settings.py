@@ -13,8 +13,8 @@ import pytest
 from brfilter import (
     DuplexMode,
     PrintSettings,
-    filter_duplex_pages,
     filter_page,
+    filter_pages,
 )
 from xl2hb import (
     MEDIA_SIZE,
@@ -118,24 +118,16 @@ BRReverse=ON
         assert s.page_size == "A4"  # default preserved
 
     def test_parse_original_rc(self):
-        """Parse the actual driver RC file."""
+        """Parse the RC file of Brother's driver (extracted by scripts/extract_blobs.sh)."""
         from pathlib import Path
 
-        rc_path = str(
+        rc_path = (
             Path(__file__).resolve().parent.parent
-            / "original"
-            / "extracted_lpr"
-            / "usr"
-            / "local"
-            / "Brother"
-            / "Printer"
-            / "hl4150cdn"
-            / "inf"
-            / "brhl4150cdnrc"
+            / ".brother-blobs/extracted/usr/local/Brother/Printer/hl4150cdn/inf/brhl4150cdnrc"
         )
-        if not Path(rc_path).exists():
-            pytest.skip("Original RC file not available")
-        s = PrintSettings.from_rc_file(rc_path)
+        if not rc_path.exists():
+            pytest.skip("Brother driver not extracted; run scripts/extract_blobs.sh")
+        s = PrintSettings.from_rc_file(str(rc_path))
         assert s.page_size == "Letter"  # US default
         assert s.media_type == "Plain"
         assert s.copies == 1
@@ -165,11 +157,6 @@ class TestPaperSizes:
     )
     def test_paper_dimensions(self, name, expected_wh):
         assert PAPER_SIZES[name] == expected_wh
-
-    @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
-    def test_all_sizes_have_media_enum(self, name):
-        """Every paper size should have a corresponding MediaSize enum."""
-        assert name in MEDIA_SIZE, f"No MediaSize enum for {name}"
 
     @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
     def test_image_dimensions_32bit_aligned(self, name):
@@ -208,14 +195,6 @@ class TestPaperSizes:
         assert get_image_dimensions(name)[1] == height
         assert MEDIA_SIZE[name] == media_size
 
-    @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
-    def test_bpl_calculation(self, name):
-        """BPL = (source_width + 7) // 8."""
-        sw, _ = get_image_dimensions(name)
-        expected_bpl = (sw + 7) // 8
-        # Since sw is always 32-aligned, BPL = sw // 8
-        assert expected_bpl == sw // 8
-
 
 # ---------------------------------------------------------------------------
 # Media types
@@ -252,22 +231,6 @@ class TestMediaTypes:
 
 
 class TestPJLSettingsPropagation:
-    def test_economode_on(self):
-        header = generate_pjl_header(economode=True)
-        assert b"ECONOMODE=ON" in header
-
-    def test_economode_off(self):
-        header = generate_pjl_header(economode=False)
-        assert b"ECONOMODE=OFF" in header
-
-    def test_color_mode(self):
-        header = generate_pjl_header(color=True)
-        assert b"RENDERMODE=COLOR" in header
-
-    def test_mono_mode(self):
-        header = generate_pjl_header(color=False)
-        assert b"RENDERMODE=GRAYSCALE" in header
-
     def test_less_paper_curl(self):
         header = generate_pjl_header(less_paper_curl=True)
         assert b"LESSPAPERCURL=ON" in header
@@ -276,21 +239,13 @@ class TestPJLSettingsPropagation:
         header = generate_pjl_header(fix_intensity=True)
         assert b"FIXINTENSITYUP=ON" in header
 
-    def test_apt_mode(self):
-        header = generate_pjl_header(apt_mode=True)
-        assert b"APTMODE=ON" in header
-
     def test_resolution_600(self):
         header = generate_pjl_header(resolution=600)
         assert b"RESOLUTION=600" in header
 
-    def test_resolution_1200(self):
-        header = generate_pjl_header(resolution=1200)
-        assert b"RESOLUTION=1200" in header
-
 
 # ---------------------------------------------------------------------------
-# Target: duplex support
+# Duplex
 # ---------------------------------------------------------------------------
 
 
@@ -328,7 +283,7 @@ class TestDuplex:
             (1, 1, b"\xff\xff\xff"),  # back (white)
         ]
         buf = io.BytesIO()
-        filter_duplex_pages(pages, settings, buf)
+        filter_pages(pages, settings, buf)
         data = buf.getvalue()
 
         # Verify exactly one session
@@ -344,7 +299,7 @@ class TestDuplex:
 
 
 # ---------------------------------------------------------------------------
-# Target: multiple copies
+# Copies
 # ---------------------------------------------------------------------------
 
 
@@ -360,30 +315,33 @@ class TestCopies:
 
 
 # ---------------------------------------------------------------------------
-# Target: toner save mode effect
+# Toner save
 # ---------------------------------------------------------------------------
 
 
 class TestTonerSave:
     def test_toner_save_reduces_coverage(self):
-        """Toner save should reduce ink coverage (lighter output)."""
+        """Brother's toner-save dither tables put fewer dots on a mid-gray row."""
+        from pathlib import Path
+
         import numpy as np
 
-        from dither import dither_channel_1bpp, load_dither_tables
+        from dither import dither_channel_1bpp_arr, load_dither_tables
 
+        lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
         width = 256
         # Mid-gray row: ink level ~127 (pixel brightness 128 -> ink 127)
-        row = bytes([128] * width)
+        row = np.full(width, 128, dtype=np.uint8)
 
-        normal_ch = load_dither_tables()
-        ts_ch = load_dither_tables(toner_save=True)
+        normal_ch = load_dither_tables(lut_dir)
+        ts_ch = load_dither_tables(lut_dir, toner_save=True)
 
         normal_dots = 0
         ts_dots = 0
         # Dither multiple rows to average out pattern effects
         for y in range(32):
-            normal_out = dither_channel_1bpp(row, y, width, normal_ch["K"])
-            ts_out = dither_channel_1bpp(row, y, width, ts_ch["K"])
+            normal_out = dither_channel_1bpp_arr(row, y, width, normal_ch["K"])
+            ts_out = dither_channel_1bpp_arr(row, y, width, ts_ch["K"])
             normal_dots += np.unpackbits(np.frombuffer(normal_out, dtype=np.uint8)).sum()
             ts_dots += np.unpackbits(np.frombuffer(ts_out, dtype=np.uint8)).sum()
 

@@ -13,12 +13,11 @@ from brother_decode import (
     decode_plane,
 )
 from brother_encode import (
-    compress_jpegls_encode,
+    compress_pattern_encode,
     compress_rle_preencode,
     encode_c_plane,
     encode_fine_plane,
     encode_m_plane_10,
-    encode_m_plane_20,
     encode_plane,
     group_bits,
     pack_groups,
@@ -150,34 +149,6 @@ class TestCPlaneEncoding:
 
 
 # ---------------------------------------------------------------------------
-# M-plane comp_size=20 sub-block
-# ---------------------------------------------------------------------------
-
-_M20_VECTORS = [
-    ("2bytes", bytes([0xFF] * 2) + bytes(BPL - 2), "804010f00000e6"),
-    ("4bytes", bytes([0xFF] * 4) + bytes(BPL - 4), "400401004000f00000e5"),
-    ("8bytes", bytes([0xFF] * 8) + bytes(BPL - 8), "a04010f00000e4"),
-    ("16bytes", bytes([0xFF] * 16) + bytes(BPL - 16), "d04010804000f00000e0"),
-    ("32bytes", bytes([0xFF] * 32) + bytes(BPL - 32), "f0401005f00000da"),
-    ("64bytes", bytes([0xFF] * 64) + bytes(BPL - 64), "f0401011804000f00000cd"),
-    ("128bytes", bytes([0xFF] * 128) + bytes(BPL - 128), "f040102bf00000b4"),
-    ("256bytes", bytes([0xFF] * 256) + bytes(BPL - 256), "f040105e804000f0000080"),
-    ("596bytes", bytes([0xFF] * 595) + bytes(1), "f04010e6800000"),
-]
-
-
-class TestMPlane20Encoding:
-    @pytest.mark.parametrize(
-        ("name", "data", "expected_hex"),
-        [pytest.param(n, d, e, id=n) for n, d, e in _M20_VECTORS],
-    )
-    def test_m20(self, name, data, expected_hex):
-        expected = bytes.fromhex(expected_hex)
-        result = encode_m_plane_20(data)
-        assert result == expected
-
-
-# ---------------------------------------------------------------------------
 # M-plane comp_size=10 sub-block
 # ---------------------------------------------------------------------------
 
@@ -206,22 +177,6 @@ class TestMPlane10Encoding:
 
     def test_all_zero_returns_empty(self):
         assert encode_m_plane_10(bytes(BPL)) == b""
-
-
-# ---------------------------------------------------------------------------
-# M-plane combined (both sub-blocks concatenated)
-# ---------------------------------------------------------------------------
-
-
-class TestMPlaneCombined:
-    def test_combined_format(self):
-        """M-plane entry = m20 + m10 sub-blocks concatenated."""
-        data = bytes([0xFF] * 8) + bytes(BPL - 8)
-        m20 = encode_m_plane_20(data)
-        m10 = encode_m_plane_10(data)
-        combined = m20 + m10
-        assert len(combined) > 0
-        assert combined == m20 + m10
 
 
 # ---------------------------------------------------------------------------
@@ -403,9 +358,7 @@ class TestCaptureCompression:
 
     def test_k_roundtrip_from_capture(self, all_captures):
         """Decompress → re-compress → matches capture for K-plane blocks."""
-        cap = all_captures.get("allblack_1000")
-        if cap is None:
-            pytest.skip("allblack_1000 capture not available")
+        cap = all_captures["allblack_1000"]
 
         k_blocks = [b for b in cap.blocks if b.plane_id == 0]
         assert k_blocks, "No K-plane blocks found in allblack_1000"
@@ -460,25 +413,25 @@ class TestFinePreEncode:
         assert result == b""
 
 
-class TestFineJpeglsEncode:
-    """Stage 2: compress_jpegls_encode pattern matching."""
+class TestFinePatternEncode:
+    """Stage 2: compress_pattern_encode pattern matching."""
 
     def test_stride1_repeat(self):
         """12 identical bytes should be encoded as mode 0."""
         data = bytes([0x50] * 12)
-        result = compress_jpegls_encode(data)
+        result = compress_pattern_encode(data)
         assert len(result) < len(data)
         assert 0x50 in result  # pattern byte present
 
     def test_literal_passthrough(self):
         """Bytes >= 0x10 with no pattern pass through as literals."""
         data = bytes([0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0, 0xB0])
-        result = compress_jpegls_encode(data)
+        result = compress_pattern_encode(data)
         # Less than 12 bytes, so no pattern detection — all literal
         assert result == data
 
     def test_empty_input(self):
-        result = compress_jpegls_encode(b"")
+        result = compress_pattern_encode(b"")
         assert result == b""
 
 

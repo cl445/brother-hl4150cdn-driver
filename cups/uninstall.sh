@@ -8,12 +8,11 @@ set -euo pipefail
 LIB_DIR="/usr/local/lib/brhl4150cdn"
 
 # Detect OS-specific CUPS paths
+CUPS_PPD_DIR="/usr/share/cups/model"
 if [[ "$(uname)" == "Darwin" ]]; then
     CUPS_FILTER_DIR="/usr/libexec/cups/filter"
-    CUPS_PPD_DIR="/usr/share/cups/model"
 else
     CUPS_FILTER_DIR="/usr/lib/cups/filter"
-    CUPS_PPD_DIR="/usr/share/cups/model"
 fi
 
 REMOVE_PRINTER=false
@@ -85,7 +84,7 @@ echo ""
 echo "Uninstallation complete."
 
 if ! $REMOVE_PRINTER; then
-    if lpstat -p Brother_HL-4150CDN &>/dev/null 2>&1; then
+    if lpstat -p Brother_HL-4150CDN &>/dev/null; then
         echo ""
         echo "Note: Printer queue 'Brother_HL-4150CDN' still exists."
         echo "To remove it, run: sudo $0 --remove-printer"

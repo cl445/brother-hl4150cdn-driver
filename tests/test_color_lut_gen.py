@@ -1,6 +1,6 @@
 """Tests for parametric color data generation.
 
-Validates that generated LUT, interpolation tables, and gamma curves
+Validates that generated LUT and interpolation tables
 match the original binary data within acceptable tolerances.
 """
 
@@ -13,7 +13,6 @@ import numpy as np
 import pytest
 
 from color_lut_gen import (
-    generate_gamma_curve,
     generate_interp_tables,
     generate_rgb_default_lut,
     generate_srgb_default_lut,
@@ -139,40 +138,6 @@ class TestInterpTables:
 
 
 # ---------------------------------------------------------------------------
-# Gamma curve tests
-# ---------------------------------------------------------------------------
-class TestGammaCurves:
-    """Test that generated gamma curves match originals exactly."""
-
-    @pytest.mark.parametrize("curve_id", [0, 1])
-    def test_exact_match(self, curve_id):
-        """Generated curve should match original byte-for-byte."""
-        original = np.frombuffer((_DATA_DIR / f"gamma_curve_{curve_id}.bin").read_bytes(), dtype=np.uint8)
-        generated = generate_gamma_curve(curve_id)
-        assert generated.shape == (256,)
-        assert generated.dtype == np.uint8
-        np.testing.assert_array_equal(generated, original)
-
-    def test_invalid_curve_id(self):
-        with pytest.raises(ValueError, match="Invalid gamma curve_id"):
-            generate_gamma_curve(2)
-
-    @pytest.mark.parametrize("curve_id", [0, 1])
-    def test_monotonic(self, curve_id):
-        """Gamma curves should be monotonically non-decreasing."""
-        curve = generate_gamma_curve(curve_id)
-        diffs = np.diff(curve.astype(np.int16))
-        assert np.all(diffs >= 0), "Gamma curve is not monotonic"
-
-    @pytest.mark.parametrize("curve_id", [0, 1])
-    def test_endpoints(self, curve_id):
-        """Gamma curve should map 0->0 and 255->255."""
-        curve = generate_gamma_curve(curve_id)
-        assert curve[0] == 0
-        assert curve[255] == 255
-
-
-# ---------------------------------------------------------------------------
 # sRGB LUT generation tests
 # ---------------------------------------------------------------------------
 def _load_original_srgb_lut() -> np.ndarray:
@@ -245,12 +210,18 @@ class TestSRGBLUTGeneration:
 class TestFallbackIntegration:
     """Test that the fallback mechanism works when binary files are missing."""
 
+    @pytest.fixture(autouse=True)
+    def _fresh_caches(self):
+        """The tests swap the data directory; start and end with empty caches."""
+        import color_lut
+
+        color_lut._load_data.cache_clear()
+        yield
+        color_lut._load_data.cache_clear()
+
     def test_color_lut_fallback(self):
         """color_lut module should fall back to generation when binaries missing."""
         import color_lut
-
-        # Clear the LRU cache
-        color_lut._load_data.cache_clear()
 
         with (
             tempfile.TemporaryDirectory() as tmpdir,
@@ -260,36 +231,13 @@ class TestFallbackIntegration:
             assert lut.shape == (4913, 4)
             assert interp.shape == (17, 289, 9)
 
-        # Restore cache
-        color_lut._load_data.cache_clear()
-
-    def test_tone_curve_fallback(self):
-        """tone_curve module should fall back to generation when binaries missing."""
-        import tone_curve
-
-        # Clear cache
-        tone_curve._gamma_cache.clear()
-
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(tone_curve, "_DATA_DIR", Path(tmpdir)):
-            curve = tone_curve.load_gamma_curve(0)
-            assert curve.shape == (256,)
-            assert curve.dtype == np.uint8
-
-        # Restore cache
-        tone_curve._gamma_cache.clear()
-
     def test_pipeline_without_binaries(self):
         """Full pipeline should work without binary data files."""
         import color_lut
-        import tone_curve
-
-        color_lut._load_data.cache_clear()
-        tone_curve._gamma_cache.clear()
 
         with (
             tempfile.TemporaryDirectory() as tmpdir,
             mock.patch.object(color_lut, "_DATA_DIR", Path(tmpdir)),
-            mock.patch.object(tone_curve, "_DATA_DIR", Path(tmpdir)),
         ):
             from brfilter import PrintSettings, filter_page
 
@@ -301,6 +249,3 @@ class TestFallbackIntegration:
             # Should produce valid XL2HB output
             assert result.startswith(b"\x1b%-12345X")
             assert b") BROTHER XL2HB" in result
-
-        color_lut._load_data.cache_clear()
-        tone_curve._gamma_cache.clear()

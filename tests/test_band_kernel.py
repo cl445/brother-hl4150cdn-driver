@@ -8,9 +8,9 @@ import pytest
 import color_lut
 import pipeline
 from fixture_utils import read_fixture
-from pipeline import filter_duplex_pages
+from pipeline import filter_pages
 from settings import ColorMatching, DuplexMode, MediaType, PrintSettings
-from test_full_pipeline import _SETTING_VARIANTS_PASS, _duplex_test_pages, _run_settings_variant
+from test_full_pipeline import _SETTING_VARIANTS, _duplex_test_pages, _run_settings_variant
 from transforms import color_table
 
 if not pipeline.HAS_BAND_KERNEL:
@@ -29,13 +29,13 @@ def random_lut() -> np.ndarray:
 @pytest.fixture(autouse=True)
 def _use_random_lut(request, monkeypatch, random_lut) -> None:
     if "real_lut" not in request.fixturenames and "no_inverse_lut" not in request.fixturenames:
-        monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda table=None: random_lut)
+        monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: random_lut)
 
 
 @pytest.fixture
 def no_inverse_lut(monkeypatch) -> None:
     """No inverse LUT installed: kernel and per-line path interpolate the grid."""
-    monkeypatch.setattr(color_lut, "_load_inverse_lut", lambda table=None: None)
+    monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: None)
 
 
 @pytest.fixture(scope="module")
@@ -50,9 +50,9 @@ def real_lut_path(tmp_path_factory):
 def real_lut(monkeypatch, real_lut_path):
     """The real inverse LUT, as installed by install.sh."""
     monkeypatch.setattr(color_lut, "INVERSE_LUT_PATH", real_lut_path)
-    color_lut._load_inverse_lut.cache_clear()
+    color_lut.inverse_lut.cache_clear()
     yield
-    color_lut._load_inverse_lut.cache_clear()
+    color_lut.inverse_lut.cache_clear()
 
 
 def _page(width: int, height: int, seed: int) -> bytes:
@@ -72,7 +72,7 @@ def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> byte
     monkeypatch.setattr(pipeline, "HAS_BAND_KERNEL", kernel)
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
     out = io.BytesIO()
-    filter_duplex_pages(pages, settings, out)
+    filter_pages(pages, settings, out)
     return out.getvalue()
 
 
@@ -84,8 +84,6 @@ _SETTINGS = {
     "saturation_n15": PrintSettings(saturation=-15),
     "input_remap": PrintSettings(brightness=-20, contrast=10, red=5, blue=-7),
     "saturation_remap": PrintSettings(saturation=5, brightness=12),
-    "gamma": PrintSettings(gamma_select=1),  # tone curve, no white-row short cut
-    "gamma_brightness": PrintSettings(gamma_select=0, brightness=10, contrast=-5),
     "toner_save": PrintSettings(toner_save=True),
     "improve_gray": PrintSettings(improve_gray=True),
     "enhance_black": PrintSettings(enhance_black=True),
@@ -148,7 +146,7 @@ def test_kernel_reports_short_pages(monkeypatch):
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "2")
     rows = np.zeros((300, _A4_W * 3), np.uint8)
     with pytest.raises(ValueError, match="page ended after 300 rows"):
-        filter_duplex_pages([(_A4_W, 500, iter([rows]))], PrintSettings(), io.BytesIO())
+        filter_pages([(_A4_W, 500, iter([rows]))], PrintSettings(), io.BytesIO())
 
 
 def test_fine_mode_keeps_per_line_path(monkeypatch):
@@ -166,7 +164,7 @@ def test_render_threads_from_environment(monkeypatch):
     assert 1 <= pipeline._render_threads() <= 3
 
 
-@pytest.mark.parametrize(("name", "settings"), _SETTING_VARIANTS_PASS)
+@pytest.mark.parametrize(("name", "settings"), _SETTING_VARIANTS)
 def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
     """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
     table = color_table(settings)
@@ -177,7 +175,5 @@ def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
 
 def test_kernel_matches_brother_duplex_capture(real_lut, monkeypatch):
     expected = read_fixture("duplex4_long_edge.xl2hb")
-    if expected is None:
-        pytest.skip("duplex4_long_edge.xl2hb not available")
     settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE)
     assert _render(_duplex_test_pages(), settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected

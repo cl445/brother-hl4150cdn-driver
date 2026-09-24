@@ -1,18 +1,17 @@
 """End-to-end PPM → XL2HB pipeline.
 
-`filter_page` is the single-page entry point. `filter_duplex_pages`
-shares one XL2HB session across multiple pages so duplex jobs come out
-as a single print job.
+`filter_page` is the single-page entry point. `filter_pages` renders a
+whole job (simplex or duplex) inside one XL2HB session, as the
+manufacturer's filter does.
 """
 
-import functools
 import logging
 import os
 import tempfile
 from collections import deque
 from collections.abc import Buffer, Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from functools import partial
+from functools import cache, partial
 from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
@@ -29,16 +28,13 @@ from settings import (
     DuplexMode,
     ImproveOutput,
     MonoColor,
-    PageSize,
     PrintSettings,
     Resolution,
 )
-from tone_curve import apply_tone_curve_arr, build_tone_curve
 from transforms import (
     apply_input_remap_rgb,
     build_input_remap_lut,
     color_table,
-    rgb_line_to_cmyk_intensities_arr,
 )
 from xl2hb import (
     FLUSH_ORDER,
@@ -133,23 +129,28 @@ def collect_rows(pixel_data: PageData, width: int, height: int) -> npt.NDArray[n
     return page
 
 
-def _iter_rows(blocks: RowBlocks, *, check_white: bool) -> Iterator[tuple[npt.NDArray[np.uint8], bool]]:
+def _white_rows(block: npt.NDArray[np.uint8]) -> npt.NDArray[np.bool_]:
+    """Return which rows of `block` are pure white (all bytes 255).
+
+    White rows carry no ink whatever the settings: apply_input_remap_rgb
+    preserves (255,255,255), saturation and vivid leave the gray axis
+    untouched, and every colour table maps white to zero ink.
+    """
+    if not block.shape[1]:
+        return np.ones(block.shape[0], dtype=np.bool_)
+    return block.min(axis=1) == 255
+
+
+def _iter_rows(blocks: RowBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], bool]]:
     """Yield (scanline, is_pure_white) for every row of every block.
 
-    The white test runs vectorised per block; without `check_white` every
-    row is reported as not white.
+    The white test runs vectorised per block.
 
     Yields:
         Contiguous RGB scanline view and whether all its bytes are 255.
     """
     for block in blocks:
-        if not check_white:
-            white = [False] * block.shape[0]
-        elif block.shape[1]:
-            white = (block.min(axis=1) == 255).tolist()
-        else:
-            white = [True] * block.shape[0]
-        yield from zip(block, white, strict=True)
+        yield from zip(block, _white_rows(block).tolist(), strict=True)
 
 
 def is_blank_page(pixel_data: PageBuffer) -> bool:
@@ -196,8 +197,6 @@ class _ColourSetup(NamedTuple):
     settings: PrintSettings
     table: color_lut.ColorTable
     input_remap: tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8]] | None
-    tone_lut: npt.NDArray[np.uint8] | None
-    check_white: bool
 
     @property
     def saturation(self) -> int:
@@ -238,8 +237,8 @@ def _encode_lines(
 ) -> Iterator[LineCodes]:
     """Colour-convert, dither and encode the page one scanline at a time.
 
-    Reference path for Fine mode and for installs without the native band
-    kernel or the inverse LUT.
+    Reference path for Fine mode, for installs without the native band
+    kernel, and for dither channels without a threshold matrix.
 
     Yields:
         Encoded planes of each input row, top to bottom.
@@ -248,14 +247,12 @@ def _encode_lines(
     encoders = _PLANE_ENCODERS[is_fine]
     pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
 
-    for line_idx, (row, is_white) in enumerate(_iter_rows(blocks, check_white=colour.check_white)):
+    for line_idx, (row, is_white) in enumerate(_iter_rows(blocks)):
         if is_white:
             yield _BLANK_LINE
             continue
         rgb_row = _adjust_rgb(row, width, colour)
-        k_arr, c_arr, m_arr, y_arr = rgb_line_to_cmyk_intensities_arr(rgb_row, width, colour.table)
-        if colour.tone_lut is not None:
-            k_arr, c_arr, m_arr, y_arr = apply_tone_curve_arr(k_arr, c_arr, m_arr, y_arr, colour.tone_lut)
+        k_arr, c_arr, m_arr, y_arr = color_lut.rgb_to_cmyk_lut_arr(rgb_row, width, colour.table)
         if pad_arr is not None:
             k_arr = np.concatenate((k_arr, pad_arr))
             c_arr = np.concatenate((c_arr, pad_arr))
@@ -305,20 +302,13 @@ def _encode_lines_mono(
 
     for block in blocks:
         n = block.shape[0]
-        if not colour.check_white:
-            white = [False] * n
-        elif block.shape[1]:
-            white = (block.min(axis=1) == 255).tolist()
-        else:
-            white = [True] * n
+        white = _white_rows(block).tolist()
         rgb = block
         if colour.input_remap is not None:
             rgb = _page_rows(
                 apply_input_remap_rgb(np.ascontiguousarray(block), n * width, *colour.input_remap), width, n
             )
         luma = _luma(rgb, width)
-        if colour.tone_lut is not None:
-            luma = np.take(colour.tone_lut, luma)
         if pad_arr is not None:
             luma = np.concatenate((luma, np.broadcast_to(pad_arr, (n, pad_arr.size))), axis=1)
         for row, is_white in zip(luma, white, strict=True):
@@ -378,7 +368,7 @@ def _render_threads() -> int:
     return max(1, min(3, (os.cpu_count() or 1) - 1))
 
 
-@functools.cache
+@cache
 def _band_executor(workers: int) -> ThreadPoolExecutor:
     """Return the process-wide pool of `workers` render threads."""
     return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="brhl4150cdn-band")
@@ -415,23 +405,17 @@ def _encode_lines_banded(
     Yields:
         Encoded planes of each input row, top to bottom.
     """
-    tone = _EMPTY_TABLE if colour.tone_lut is None else colour.tone_lut
     # Tile the thresholds up front; the render threads only read them.
     thresholds = tuple(channels[c].tiled_thresholds(sw) for c in "KCMY")
 
     def encode(band: npt.NDArray[np.uint8], first_line: int) -> list[LineCodes]:
         n = band.shape[0]
-        if not colour.check_white:
-            skip = np.zeros(n, dtype=np.uint8)
-        elif band.shape[1]:
-            skip = (band.min(axis=1) == 255).view(np.uint8)
-        else:
-            skip = np.ones(n, dtype=np.uint8)
+        skip = _white_rows(band).view(np.uint8)
         rgb = band
         if colour.adjusts_rgb:
             rgb = _page_rows(_adjust_rgb(np.ascontiguousarray(band), n * width, colour), width, n)
         lengths = np.empty((n, 4), dtype=np.int32)
-        data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, tone, *thresholds, lengths)
+        data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, *thresholds, lengths)
         codes: list[LineCodes] = []
         pos = 0
         for k_len, c_len, m_len, y_len in lengths.tolist():
@@ -466,7 +450,6 @@ def _render_page(
     pixel_data: PageData,
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
-    page_size: PageSize,
     *,
     back_side: bool = False,
 ) -> None:
@@ -481,13 +464,13 @@ def _render_page(
         ValueError: If `pixel_data` has fewer than `height` rows.
     """
     is_fine = settings.resolution == Resolution.FINE
+    page_size = settings.page_size
+    _, paper_h = PAPER_SIZES[page_size]
 
     if is_fine:
         sw, sh = get_image_dimensions_fine(page_size)
-        _, paper_h = PAPER_SIZES.get(page_size, PAPER_SIZES["A4"])
         bpl = (sw + 1) // 2  # 4bpp: 2 pixels per byte
     else:
-        _, paper_h = PAPER_SIZES.get(page_size, PAPER_SIZES["A4"])
         sw, sh = get_image_dimensions(page_size)
         bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
 
@@ -514,23 +497,22 @@ def _render_page(
 
     plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
 
-    def flush_plane(pid: int, next_line: int) -> None:
-        pb = plane_bufs[pid]
-        result = pb.flush()
+    def write_plane(pid: int) -> None:
+        result = plane_bufs[pid].flush()
         if result:
             start, count, blob = result
             w.write_read_image(start, count, pid, blob)
-        pb.reset(next_line)
+
+    def flush_plane(pid: int, next_line: int) -> None:
+        write_plane(pid)
+        plane_bufs[pid].reset(next_line)
 
     # Pre-build LUTs (constant per page). The cmyk profile (colour matching
     # None) takes no brightness/contrast/RGB-key remap: the original sends it
     # through cmyk_basic, which skips compress_color_manage.
     table = color_table(settings)
-    tone_lut = None
     input_remap = None
-    if settings.gamma_select is not None:
-        tone_lut = build_tone_curve(settings.brightness, settings.contrast, settings.gamma_select)
-    elif table.profile != "cmyk" and (
+    if table.profile != "cmyk" and (
         settings.brightness != 0
         or settings.contrast != 0
         or settings.red != 0
@@ -543,11 +525,7 @@ def _render_page(
             build_input_remap_lut(settings.brightness, settings.contrast, settings.blue),
         )
 
-    # apply_input_remap_rgb explicitly preserves (255,255,255); saturation
-    # and vivid leave the gray axis untouched; the LUT clamps white→0 ink.
-    # Only tone_curve can deposit ink on white, so skip the short-circuit
-    # when gamma_select is active.
-    colour = _ColourSetup(settings, table, input_remap, tone_lut, check_white=tone_lut is None)
+    colour = _ColourSetup(settings, table, input_remap)
     kernel_colour = None if mono else _band_kernel_colour(colour.table, channels, is_fine=is_fine)
     if mono:
         lines = _encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
@@ -581,31 +559,25 @@ def _render_page(
                     flush_plane(pid, line_idx + 1)
 
     for pid in FLUSH_ORDER:
-        pb = plane_bufs[pid]
-        result = pb.flush()
-        if result:
-            start, count, blob = result
-            w.write_read_image(start, count, pid, blob)
+        write_plane(pid)
 
     w.write_end_image()
     w.write_end_page(copies=settings.copies)
 
 
-def _init_channels(settings: PrintSettings, lut_dir: str | None = None) -> dict[str, DitherChannel]:
+def _init_channels(settings: PrintSettings) -> dict[str, DitherChannel]:
     """Initialize dither channels for the current print settings.
 
-    `lut_dir` defaults to the installed `src/lut/` directory next to this
-    module. The factory inside `load_dither_tables` handles the fine→normal
-    fallback and the Bayer fallback when no BRCD set matches.
+    The BRCD tables are read from the `lut/` directory next to this module
+    (`src/lut/` in the repository, the lib directory when installed).
+    `load_dither_tables` handles the fine→normal fallback and the Bayer
+    fallback when no BRCD set matches.
 
     Returns:
         Channel dict keyed by 'K', 'C', 'M', 'Y'.
     """
-    if lut_dir is None:
-        lut_dir = str(Path(__file__).resolve().parent / "lut")
-
     return load_dither_tables(
-        lut_dir,
+        str(Path(__file__).resolve().parent / "lut"),
         fine=settings.resolution == Resolution.FINE,
         toner_save=settings.toner_save,
     )
@@ -617,15 +589,14 @@ def filter_page(
     pixel_data: PageBuffer,
     settings: PrintSettings,
     output: BinaryIO,
-    lut_dir: str | None = None,
 ) -> None:
     """Convert PPM pixel data to XL2HB and write to output."""
     if settings.skip_blank and is_blank_page(pixel_data):
         return
 
-    filter_duplex_pages([(width, height, pixel_data)], settings, output, lut_dir=lut_dir, page_count=1)
+    filter_pages([(width, height, pixel_data)], settings, output, page_count=1)
 
-    _, paper_h = PAPER_SIZES.get(settings.page_size, PAPER_SIZES["A4"])
+    _, paper_h = PAPER_SIZES[settings.page_size]
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
 
 
@@ -658,7 +629,6 @@ def _render_pages_reversed(
                 pixel_data,
                 settings,
                 channels,
-                settings.page_size,
                 back_side=back_side,
             )
             spans.append((start, spool.tell() - start))
@@ -675,14 +645,13 @@ def _render_pages_reversed(
             output.write(spool.read(length))
 
 
-def filter_duplex_pages(
+def filter_pages(
     pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
     output: BinaryIO,
-    lut_dir: str | None = None,
     page_count: int | None = None,
 ) -> None:
-    """Render multiple pages inside a single XL2HB session.
+    """Render a job's pages inside a single XL2HB session.
 
     Pages are consumed lazily; with duplex, every second page is a back side.
     With `settings.reverse` the pages are still rendered one at a time in
@@ -691,9 +660,8 @@ def filter_duplex_pages(
 
     Args:
         pages: iterable of (width, height, pixel_data) tuples
-        settings: PrintSettings (should have duplex != "None" for actual duplex)
+        settings: PrintSettings of the job
         output: writable binary stream
-        lut_dir: optional path to BRCD LUT directory
         page_count: number of pages in `pages`. Required for reverse order
             with long-edge duplex, where a page's position in the reversed
             job decides whether it is a mirrored back side.
@@ -704,8 +672,6 @@ def filter_duplex_pages(
     if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE and page_count is None:
         msg = "page_count is required for reverse order with long-edge duplex"
         raise ValueError(msg)
-    page_size = settings.page_size
-
     # PJL header always reports 600 dpi; Fine mode differs only in dithering.
     color = settings.mono_color != MonoColor.MONO
     pjl = generate_pjl_header(
@@ -730,16 +696,14 @@ def filter_duplex_pages(
     w.write_begin_session()
     w.write_open_data_source()
 
-    channels = _init_channels(settings, lut_dir=lut_dir)
+    channels = _init_channels(settings)
 
     duplex = settings.duplex != DuplexMode.NONE
     if settings.reverse:
         _render_pages_reversed(pages, settings, channels, output, page_count)
     else:
         for index, (width, height, pixel_data) in enumerate(pages):
-            _render_page(
-                w, width, height, pixel_data, settings, channels, page_size, back_side=duplex and index % 2 == 1
-            )
+            _render_page(w, width, height, pixel_data, settings, channels, back_side=duplex and index % 2 == 1)
 
     w.write_close_data_source()
     w.write_end_session()

@@ -1,12 +1,12 @@
 """
 Ordered dithering tests.
 
-Defines the target API and behavior for the dithering subsystem,
-based on the reverse-engineered dither.c from the original driver.
+Tests the dithering subsystem against the reverse-engineered dither.c
+of the original driver and against its captures.
 
 The driver uses ordered dithering with BRCD lookup tables,
-supporting both 1bpp (bitmap) and 4bpp (nibble) output modes,
-and 1-channel (mono) and 4-channel (CMYK) configurations.
+supporting 1bpp (bitmap, Normal mode) and 4bpp (nibble, Fine mode)
+output, one channel at a time.
 """
 
 import pytest
@@ -25,17 +25,11 @@ class TestDitherAPI:
     def test_has_init_function(self):
         from dither import load_dither_tables  # noqa: F401
 
-    def test_has_ordered_4ch_1bpp(self):
-        from dither import dither_cmyk_1bpp  # noqa: F401
-
     def test_has_ordered_1ch_1bpp(self):
         from dither import dither_channel_1bpp  # noqa: F401
 
     def test_has_ordered_1ch_4bpp(self):
         from dither import dither_channel_4bpp  # noqa: F401
-
-    def test_has_ordered_4ch_4bpp(self):
-        from dither import dither_cmyk_4bpp  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -109,50 +103,6 @@ class TestOrdered1bpp:
         a = dither_channel_1bpp(row, y=42, width=4760)
         b = dither_channel_1bpp(row, y=42, width=4760)
         assert a == b
-
-
-# ---------------------------------------------------------------------------
-# 4-channel (CMYK) dithering
-# ---------------------------------------------------------------------------
-
-
-class TestOrdered4Channel:
-    """4-channel ordered dithering (CMYK mode)."""
-
-    def test_4ch_returns_four_planes(self):
-        """4-channel dither should return K, C, M, Y plane data."""
-        from dither import dither_cmyk_1bpp
-
-        # Input: 4760 pixels x 4 channels (C, M, Y, K)
-        cmyk_row = bytes([0, 0, 0, 255] * 4760)  # pure black
-        k, c, m, y = dither_cmyk_1bpp(cmyk_row, y=0, width=4760)
-        bpl = (4760 + 7) // 8
-        assert len(k) == bpl
-        assert len(c) == bpl
-        assert len(m) == bpl
-        assert len(y) == bpl
-
-    def test_pure_black_only_k(self):
-        """Pure black through CMYK dither: only K plane should have dots."""
-        from dither import dither_cmyk_1bpp
-
-        cmyk_row = bytes([0, 0, 0, 255] * 4760)
-        k, c, m, y = dither_cmyk_1bpp(cmyk_row, y=0, width=4760)
-        assert any(k)
-        assert not any(c)
-        assert not any(m)
-        assert not any(y)
-
-    def test_pure_cyan_only_c(self):
-        """Pure cyan: only C plane should have dots."""
-        from dither import dither_cmyk_1bpp
-
-        cmyk_row = bytes([255, 0, 0, 0] * 4760)
-        k, c, m, y = dither_cmyk_1bpp(cmyk_row, y=0, width=4760)
-        assert not any(k)
-        assert any(c)
-        assert not any(m)
-        assert not any(y)
 
 
 # ---------------------------------------------------------------------------
@@ -273,56 +223,6 @@ class TestOrdered1ch4bpp:
                 assert (b & 0x0F) <= 15
 
 
-class TestOrdered4ch4bpp:
-    """4-channel ordered dithering to 4bpp nibble-packed output."""
-
-    def test_returns_four_planes(self):
-        """Should return K, C, M, Y plane data."""
-        from dither import dither_cmyk_4bpp
-
-        cmyk_row = bytes([0, 0, 0, 255] * 100)  # pure black
-        k, c, m, y = dither_cmyk_4bpp(cmyk_row, y=0, width=100)
-        assert isinstance(k, bytes)
-        assert isinstance(c, bytes)
-        assert isinstance(m, bytes)
-        assert isinstance(y, bytes)
-
-    def test_pure_black_only_k(self):
-        """Pure black (K=255): only K plane should have non-zero nibbles."""
-        from dither import dither_cmyk_4bpp
-
-        cmyk_row = bytes([0, 0, 0, 255] * 100)
-        k, c, m, y = dither_cmyk_4bpp(cmyk_row, y=0, width=100)
-        assert any(k)
-        assert not any(c)
-        assert not any(m)
-        assert not any(y)
-
-    def test_pure_cyan_only_c(self):
-        """Pure cyan (C=255): only C plane should have non-zero nibbles."""
-        from dither import dither_cmyk_4bpp
-
-        cmyk_row = bytes([255, 0, 0, 0] * 100)
-        k, c, m, y = dither_cmyk_4bpp(cmyk_row, y=0, width=100)
-        assert not any(k)
-        assert any(c)
-        assert not any(m)
-        assert not any(y)
-
-    def test_output_lengths(self):
-        """Each plane should be (width + 1) // 2 bytes."""
-        from dither import dither_cmyk_4bpp
-
-        for width in [4760, 100, 33]:
-            cmyk_row = bytes([128, 64, 32, 200] * width)
-            k, c, m, y = dither_cmyk_4bpp(cmyk_row, y=0, width=width)
-            expected = (width + 1) // 2
-            assert len(k) == expected
-            assert len(c) == expected
-            assert len(m) == expected
-            assert len(y) == expected
-
-
 # ---------------------------------------------------------------------------
 # BRCD dither table loading
 # ---------------------------------------------------------------------------
@@ -335,7 +235,7 @@ class TestBRCDTables:
         """Should load dither tables from a BRCD cache file."""
         from pathlib import Path
 
-        from dither import dither_load_brcd
+        from dither import dither_channel_1bpp, dither_load_brcd
 
         lut_base = Path(__file__).resolve().parent.parent / "src" / "lut"
         k_path = str(lut_base / "0600-k_cache09.bin")
@@ -344,8 +244,10 @@ class TestBRCDTables:
         ch = dither_load_brcd(k_path)
         assert ch.width == 32
         assert ch.height == 32
-        assert len(ch.patterns) == 256
-        assert ch.patterns[0] == bytes(ch.row_bytes)  # ink=0 → no dots
+        assert ch.threshold_matrix.shape == (32, 32)
+        # ink=0 (white) places no dots, full ink (black) fills every position.
+        assert dither_channel_1bpp(bytes([255] * 32), 0, 32, ch) == bytes(4)
+        assert dither_channel_1bpp(bytes(32), 0, 32, ch) == b"\xff" * 4
 
     def test_bayer_fallback(self):
         """Bayer matrix fallback produces valid dither tables."""
@@ -356,9 +258,8 @@ class TestBRCDTables:
         assert "C" in channels
         assert "M" in channels
         assert "Y" in channels
-        # Each channel should have 256 patterns
         for ch in channels.values():
-            assert len(ch.patterns) == 256
+            assert ch.threshold_matrix.shape == (32, 32)
             assert ch.width == 32
             assert ch.height == 32
 
@@ -386,18 +287,14 @@ class TestCaptureVerification:
         """
         import io
 
-        from brfilter import read_ppm, rgb_line_to_cmyk_intensities
+        from brfilter import read_ppm, rgb_to_cmyk_lut
         from brother_decode import decode_plane
         from dither import dither_channel_1bpp, load_dither_tables
         from fixture_utils import read_fixture
 
-        cap = all_captures.get("test_fullwidth_k")
-        if cap is None:
-            pytest.skip("test_fullwidth_k capture not available")
+        cap = all_captures["test_fullwidth_k"]
 
         ppm_data = read_fixture("test_fullwidth_k.ppm")
-        if ppm_data is None:
-            pytest.skip("test_fullwidth_k.ppm not available")
 
         ppm = read_ppm(io.BytesIO(ppm_data))
         assert ppm is not None, "test_fullwidth_k.ppm is malformed"
@@ -424,7 +321,7 @@ class TestCaptureVerification:
                 # Our pipeline: RGB → CMYK intensity → dither
                 row_start = line_idx * width * 3
                 rgb_row = pixels[row_start : row_start + width * 3]
-                k_int, _, _, _ = rgb_line_to_cmyk_intensities(rgb_row, width)
+                k_int, _, _, _ = rgb_to_cmyk_lut(rgb_row, width)
                 if pad:
                     k_int = k_int + pad
                 our_plane = dither_channel_1bpp(k_int, line_idx, sw, channels["K"])
@@ -438,34 +335,29 @@ class TestCaptureVerification:
         """Dithered K and Y planes for test_fullwidth_c should match capture.
 
         Verifies color separation (3D LUT) + BRCD dithering for a cyan page.
-        K and Y planes use 12-bit RLE encoding that we can decode and compare.
-        C/M planes use a different compression codec (JPEG-LS-like) that
-        requires a separate encoder implementation for byte-level matching.
+        K and Y planes use 12-bit RLE encoding that we can decode and compare
+        here; the C and M encoders are covered byte for byte by the pipeline
+        capture tests.
         """
         import io
         from pathlib import Path
 
-        from brfilter import read_ppm, rgb_line_to_cmyk_intensities
+        from brfilter import read_ppm, rgb_to_cmyk_lut
         from brother_decode import decode_plane
-        from dither import _try_load_brcd, dither_channel_1bpp, load_dither_tables
+        from dither import dither_channel_1bpp, load_brcd_tables
         from fixture_utils import read_fixture
 
-        cap = all_captures.get("test_fullwidth_c")
-        if cap is None:
-            pytest.skip("test_fullwidth_c capture not available")
+        cap = all_captures["test_fullwidth_c"]
 
         ppm_data = read_fixture("test_fullwidth_c.ppm")
-        if ppm_data is None:
-            pytest.skip("test_fullwidth_c.ppm not available")
 
         ppm = read_ppm(io.BytesIO(ppm_data))
         assert ppm is not None, "test_fullwidth_c.ppm is malformed"
         width, height, _, pixels = ppm
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
-        channels = _try_load_brcd(lut_dir)
-        if channels is None:
-            channels = load_dither_tables()
+        channels = load_brcd_tables(lut_dir)
+        assert channels is not None, "BRCD tables missing; run scripts/extract_blobs.sh"
         sw = ((width + 31) // 32) * 32
         bpl = sw // 8
         pad = bytes([255] * (sw - width)) if sw > width else b""
@@ -489,7 +381,7 @@ class TestCaptureVerification:
 
                     row_start = line_idx * width * 3
                     rgb_row = pixels[row_start : row_start + width * 3]
-                    intensities = rgb_line_to_cmyk_intensities(rgb_row, width)
+                    intensities = rgb_to_cmyk_lut(rgb_row, width)
                     ch_int = intensities[ch_idx]
                     if pad:
                         ch_int = ch_int + pad
@@ -510,28 +402,25 @@ class TestCaptureVerification:
         """
         from pathlib import Path
 
-        from brfilter import rgb_line_to_cmyk_intensities
+        from brfilter import rgb_to_cmyk_lut
         from brother_encode import encode_plane
 
-        cap = all_captures.get("gray75_1000")
-        if cap is None:
-            pytest.skip("gray75_1000 capture not available")
+        cap = all_captures["gray75_1000"]
 
         k_blocks = [b for b in cap.blocks if b.plane_id == 0]
         assert k_blocks, "No K-plane blocks in gray75_1000"
 
-        from dither import _try_load_brcd, dither_channel_1bpp, load_dither_tables
+        from dither import dither_channel_1bpp, load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
-        channels = _try_load_brcd(lut_dir)
-        if channels is None:
-            channels = load_dither_tables()
+        channels = load_brcd_tables(lut_dir)
+        assert channels is not None, "BRCD tables missing; run scripts/extract_blobs.sh"
         sw = 4768  # standard 32-pixel aligned width for A4
         width = 4760
 
         # Gray75 source = RGB(64,64,64) → LUT → K intensity (pixel-brightness)
         rgb_row = bytes([64, 64, 64]) * width
-        k_int, _, _, _ = rgb_line_to_cmyk_intensities(rgb_row, width)
+        k_int, _, _, _ = rgb_to_cmyk_lut(rgb_row, width)
         pad = b"\xff" * (sw - width)
         gray_k_int = k_int + pad
 
@@ -565,10 +454,10 @@ class TestFineBRCDTables:
         """Should load all 4 Fine BRCD channels."""
         from pathlib import Path
 
-        from dither import _try_load_brcd
+        from dither import load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
-        channels = _try_load_brcd(lut_dir, fine=True)
+        channels = load_brcd_tables(lut_dir, fine=True)
         if channels is None:
             pytest.skip("Fine BRCD files not available")
         assert set(channels.keys()) == {"K", "C", "M", "Y"}
@@ -577,10 +466,10 @@ class TestFineBRCDTables:
         """Fine BRCD channels have specific dimensions per channel."""
         from pathlib import Path
 
-        from dither import _try_load_brcd
+        from dither import load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
-        channels = _try_load_brcd(lut_dir, fine=True)
+        channels = load_brcd_tables(lut_dir, fine=True)
         if channels is None:
             pytest.skip("Fine BRCD files not available")
         # K: 96x12, C: 160x20, M: 160x20, Y: 48x12 (from captures)
@@ -597,10 +486,10 @@ class TestFineBRCDTables:
         """4bpp dithering with Fine channels produces correct output length."""
         from pathlib import Path
 
-        from dither import _try_load_brcd, dither_channel_4bpp
+        from dither import dither_channel_4bpp, load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
-        channels = _try_load_brcd(lut_dir, fine=True)
+        channels = load_brcd_tables(lut_dir, fine=True)
         if channels is None:
             pytest.skip("Fine BRCD files not available")
 

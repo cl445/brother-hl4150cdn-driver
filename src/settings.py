@@ -37,7 +37,7 @@ class MediaType(StrEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> "MediaType | None":
-        alias = {"bond": cls.BOND, "env": cls.ENVELOPE, "postcard": cls.POSTCARD}
+        alias = {"env": cls.ENVELOPE}
         if isinstance(value, str):
             for member in cls:
                 if member.value.lower() == value.lower():
@@ -148,7 +148,6 @@ class PrintSettings:
     improve_output: ImproveOutput = ImproveOutput.OFF
     brightness: int = 0
     contrast: int = 0
-    gamma_select: int | None = None
     red: int = 0
     green: int = 0
     blue: int = 0
@@ -183,9 +182,6 @@ class PrintSettings:
         settings.improve_output = ImproveOutput(s.get("BRImproveOutput", "OFF"))
         settings.brightness = int(s.get("Brightness", "0"))
         settings.contrast = int(s.get("Contrast", "0"))
-        gamma_str = s.get("GammaSelect", None)
-        if gamma_str is not None:
-            settings.gamma_select = int(gamma_str)
         settings.red = int(s.get("RedKey", "0"))
         settings.green = int(s.get("GreenKey", "0"))
         settings.blue = int(s.get("BlueKey", "0"))
@@ -278,13 +274,6 @@ class PrintSettings:
                     setattr(settings, attr, max(-20, min(20, val)))
                 except ValueError:
                     logger.warning("Non-integer value %r for %s, keeping default", opts[cups_key], cups_key)
-
-        # Gamma select (0 or 1, None = disabled)
-        if "BRGammaSelect" in opts:
-            try:
-                settings.gamma_select = int(opts["BRGammaSelect"])
-            except ValueError:
-                logger.warning("Non-integer value %r for BRGammaSelect, keeping default", opts["BRGammaSelect"])
 
         return settings
 

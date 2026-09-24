@@ -2,8 +2,8 @@
 #
 # extract_blobs.sh - Pull Brother HL-4150CDN calibration tables into src/.
 #
-# The driver needs the printer's calibration tables (colour LUTs, gamma curves,
-# dither tables) to drive the hardware. Those tables ship inside the official
+# The driver needs the printer's calibration tables (colour LUTs and dither
+# tables) to drive the hardware. Those tables ship inside the official
 # Brother LPR driver and are not redistributed here — this script downloads the
 # `.deb`, verifies its MD5, and copies the tables into src/lut/ and
 # src/color_data/. Both directories are gitignored.
@@ -49,8 +49,6 @@ BIN_BLOBS=(
   "cmyk_ig_default_lut.bin=0x62742:39304"
   "cmyk_ig_density2_lut.bin=0x7f542:39304"
   "cmyk_ig_glossy_lut.bin=0x75b42:39304"
-  "gamma_curve_0.bin=0x283c0:256"
-  "gamma_curve_1.bin=0x284c0:256"
 )
 
 # interp_tables.bin is 17 sub-tables (17×17×9 = 2601 bytes each) stored at a
@@ -152,4 +150,4 @@ echo "[4/4] Extracted $total_blobs calibration blobs → src/color_data/"
 
 echo ""
 echo "Done. The driver can now reproduce byte-identical Brother output."
-echo "Re-run with --force after upgrading Brother's driver version."
+echo "--force re-downloads and re-extracts the pinned driver package."

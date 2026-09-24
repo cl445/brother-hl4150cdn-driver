@@ -2,8 +2,8 @@
 
 * :func:`compress_rle_preencode` — Stage 1: nibble-aware RLE that maps
   4bpp scanlines to bytes in the range 0x10..0xFF.
-* :func:`compress_jpegls_encode` — Stage 2: pattern-matching encoder
-  that detects strides 1/2/3 over a 12-byte ring buffer; bytes 0x00..0x0F
+* :func:`compress_pattern_encode` — Stage 2: pattern-matching encoder
+  that detects strides 1/2/3 within a 12-byte look-ahead window; bytes 0x00..0x0F
   are reserved as pattern headers.
 * :func:`encode_fine_plane` — runs both stages back-to-back; returns
   empty bytes for an all-zero scanline.
@@ -176,7 +176,7 @@ def compress_rle_preencode(data: bytes) -> bytes:
     return bytes(output)
 
 
-def _jpegls_emit_ext_count(output: bytearray, remaining: int) -> None:
+def _pattern_emit_ext_count(output: bytearray, remaining: int) -> None:
     """Emit extended length bytes for the Stage 2 pattern encoder."""
     while remaining > 0xFE:
         output.append(0xFF)
@@ -184,7 +184,7 @@ def _jpegls_emit_ext_count(output: bytearray, remaining: int) -> None:
     output.append(remaining & 0xFF)
 
 
-def _jpegls_flush_pattern(
+def _pattern_flush(
     output: bytearray,
     pattern_mode: int,
     match_count: int,
@@ -205,7 +205,7 @@ def _jpegls_flush_pattern(
             output.append(match_count - 3)
         else:
             output.append(3)
-            _jpegls_emit_ext_count(output, match_count - 6)
+            _pattern_emit_ext_count(output, match_count - 6)
         output.append(p0)
         pattern_start += match_count
 
@@ -215,7 +215,7 @@ def _jpegls_flush_pattern(
             output.append(0x08)
         else:
             output.append(0x09)
-            _jpegls_emit_ext_count(output, match_count - 4)
+            _pattern_emit_ext_count(output, match_count - 4)
         output.append(p0)
         for _ in range(match_count):
             output.append(ring[pattern_start + 1])
@@ -227,7 +227,7 @@ def _jpegls_flush_pattern(
             output.append((match_count - 2) | 0x04)
         else:
             output.append(0x07)
-            _jpegls_emit_ext_count(output, match_count - 5)
+            _pattern_emit_ext_count(output, match_count - 5)
         output.append(p0)
         output.append(p1)
         pattern_start += match_count * 2
@@ -238,7 +238,7 @@ def _jpegls_flush_pattern(
             output.append(0x0A)
         else:
             output.append(0x0B)
-            _jpegls_emit_ext_count(output, match_count - 4)
+            _pattern_emit_ext_count(output, match_count - 4)
         output.append(p0)
         for _ in range(match_count):
             output.append(ring[pattern_start + 1])
@@ -251,7 +251,7 @@ def _jpegls_flush_pattern(
             output.append(0x0C)
         else:
             output.append(0x0D)
-            _jpegls_emit_ext_count(output, match_count - 3)
+            _pattern_emit_ext_count(output, match_count - 3)
         output.append(p0)
         output.append(p1)
         for _ in range(match_count):
@@ -264,7 +264,7 @@ def _jpegls_flush_pattern(
             output.append(0x0E)
         else:
             output.append(0x0F)
-            _jpegls_emit_ext_count(output, match_count - 3)
+            _pattern_emit_ext_count(output, match_count - 3)
         output.append(p0)
         output.append(p1)
         output.append(p2)
@@ -273,7 +273,7 @@ def _jpegls_flush_pattern(
     return pattern_start
 
 
-def compress_jpegls_encode(data: bytes) -> bytes:
+def compress_pattern_encode(data: bytes) -> bytes:
     """Stage 2 of Fine mode compression: pattern-matching encoder.
 
     Buffers 12 bytes, detects repeating patterns at strides 1/2/3.
@@ -545,7 +545,7 @@ def compress_jpegls_encode(data: bytes) -> bytes:
                         # has_pattern remains False
 
         if do_flush:
-            pattern_start = _jpegls_flush_pattern(
+            pattern_start = _pattern_flush(
                 output,
                 pattern_mode,
                 match_count,
@@ -560,7 +560,7 @@ def compress_jpegls_encode(data: bytes) -> bytes:
 
     # End of input — flush remaining pattern + literals
     if has_pattern:
-        pattern_start = _jpegls_flush_pattern(
+        pattern_start = _pattern_flush(
             output,
             pattern_mode,
             match_count,
@@ -587,4 +587,4 @@ def encode_fine_plane(data: bytes) -> bytes:
     stage1 = compress_rle_preencode(data)
     if not stage1:
         return b""
-    return compress_jpegls_encode(stage1)
+    return compress_pattern_encode(stage1)

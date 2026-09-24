@@ -1,9 +1,10 @@
 # cython: language_level=3, boundscheck=False, wraparound=False, cdivision=True
-"""Bit-packing helpers for the XL2HB plane encoders.
+"""Native plane encoders for XL2HB: bit packing and sliding-window RLE.
 
 `group_bits` reads a byte stream as N-bit groups (MSB first) and
-`pack_groups` is its inverse. Both are bit-buffer state machines that
-benefit substantially from native compilation.
+`pack_groups` is its inverse. `encode_sw_rle` is the native counterpart
+of rle.sw_rle_encode; its core (`encode_line`) runs without the GIL and
+is shared with _band_fast through _rle_fast.pxd.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
@@ -191,47 +192,36 @@ cdef void _emit_context_skip(OutBuf *o, Py_ssize_t count) noexcept nogil:
 
 
 cdef Py_ssize_t _extract_words(
-    const unsigned char *p, Py_ssize_t n_bytes, int read_group, int encode_group, unsigned int *out
+    const unsigned char *p, Py_ssize_t n_bytes, int bits, unsigned int *out
 ) noexcept nogil:
-    """Split the scanline into `encode_group`-bit words, MSB first.
+    """Split the scanline into `bits`-bit words, MSB first, like rle.group_bits.
 
-    Bits past the last full `read_group` are treated as zero, matching
-    rle.data_to_encode_groups (read_group=1 gives plain group_bits).
+    The last word is zero-padded.
     """
-    cdef Py_ssize_t total_bits = n_bytes * 8
-    cdef Py_ssize_t covered = (total_bits // read_group) * read_group
-    cdef Py_ssize_t n_words = (total_bits + encode_group - 1) // encode_group
-    cdef Py_ssize_t i, bitpos = 0, byte_i = 0, take
+    cdef Py_ssize_t n_words = (n_bytes * 8 + bits - 1) // bits
+    cdef Py_ssize_t i, byte_i = 0
     cdef unsigned long long buf = 0
     cdef int buf_bits = 0
-    cdef unsigned int w
     for i in range(n_words):
-        # Refill so that at least encode_group bits are buffered (zeros past end).
-        while buf_bits < encode_group:
+        # Refill so that at least `bits` bits are buffered (zeros past end).
+        while buf_bits < bits:
             if byte_i < n_bytes:
                 buf = (buf << 8) | p[byte_i]
             else:
                 buf = buf << 8
             byte_i += 1
             buf_bits += 8
-        w = <unsigned int>((buf >> (buf_bits - encode_group)) & ((1ULL << encode_group) - 1))
-        buf_bits -= encode_group
-        # Zero the bits of this word that lie at or beyond `covered`.
-        if bitpos + encode_group > covered:
-            take = covered - bitpos
-            if take <= 0:
-                w = 0
-            else:
-                w &= <unsigned int>(((1ULL << take) - 1) << (encode_group - take))
-        bitpos += encode_group
-        out[i] = w
+        out[i] = <unsigned int>((buf >> (buf_bits - bits)) & ((1ULL << bits) - 1))
+        buf_bits -= bits
     return n_words
 
 
 cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, unsigned int *wbuf) noexcept nogil:
     """Port of rle.sw_rle_encode; state names follow the Python version.
 
-    `wbuf` is scratch space for at least n + 2 words.
+    `bits` selects the settings of rle.CONFIG_10BIT / CONFIG_12BIT /
+    CONFIG_20BIT (context size, literal overflow, skip_counts_current);
+    keep the two in sync. `wbuf` is scratch space for at least n + 2 words.
     """
     cdef int ctx_size = 5 if bits == 10 else 3
     cdef Py_ssize_t lit_overflow = 0xFFF if bits == 10 else 0x7FF
@@ -411,8 +401,6 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
 cdef Py_ssize_t encode_line(
     const unsigned char *p,
     Py_ssize_t n_bytes,
-    int read_group,
-    int encode_group,
     int bits,
     unsigned int *scratch,
     OutBuf *o,
@@ -420,10 +408,9 @@ cdef Py_ssize_t encode_line(
     """Append one plane scanline, sliding-window RLE encoded, to `o`.
 
     Native equivalent of plane_encoders._encode_via_sw_rle over the words
-    from rle.data_to_encode_groups(data, read_group, encode_group)
-    (read_group=1 selects plain group_bits). `bits` picks the config:
-    12 (CONFIG_12BIT), 20 (CONFIG_20BIT) or 10 (CONFIG_10BIT). `scratch`
-    must hold encode_scratch_words(n_bytes, encode_group) words.
+    from rle.group_bits(data, bits). `bits` is the word size and picks the
+    config: 12 (CONFIG_12BIT), 20 (CONFIG_20BIT) or 10 (CONFIG_10BIT).
+    `scratch` must hold encode_scratch_words(n_bytes, bits) words.
 
     Returns the number of bytes appended (0 if every word is zero), or -1
     if `o` could not grow (`o.failed` is set).
@@ -435,7 +422,7 @@ cdef Py_ssize_t encode_line(
 
     if n_bytes == 0:
         return 0
-    n_words = _extract_words(p, n_bytes, read_group, encode_group, words)
+    n_words = _extract_words(p, n_bytes, bits, words)
     for i in range(n_words):
         if words[i] != 0:
             any_ink = True
@@ -454,7 +441,7 @@ cdef Py_ssize_t encode_line(
         else:
             _put(o, 0x7F)
             _count_ext(o, n_words - 0x41)
-        padded_bytes = (n_words * encode_group + 7) // 8
+        padded_bytes = (n_words * bits + 7) // 8
         pad_count = padded_bytes - n_bytes
         if _ensure(o, n_bytes + pad_count):
             memcpy(o.data + o.len, p, n_bytes)
@@ -468,12 +455,12 @@ cdef Py_ssize_t encode_line(
     return o.len - start
 
 
-cdef Py_ssize_t encode_scratch_words(Py_ssize_t n_bytes, int encode_group) noexcept nogil:
+cdef Py_ssize_t encode_scratch_words(Py_ssize_t n_bytes, int bits) noexcept nogil:
     """Words of scratch space `encode_line` needs for an `n_bytes` scanline."""
-    return 2 * ((n_bytes * 8 + encode_group - 1) // encode_group) + 2
+    return 2 * ((n_bytes * 8 + bits - 1) // bits) + 2
 
 
-def encode_sw_rle(bytes data, int read_group, int encode_group, int bits):
+def encode_sw_rle(bytes data, int bits):
     """Encode one plane scanline with the sliding-window RLE, incl. raw fallback.
 
     See `encode_line`.
@@ -491,7 +478,7 @@ def encode_sw_rle(bytes data, int read_group, int encode_group, int bits):
         raise ValueError(f"unsupported word size {bits}")
     if n_bytes == 0:
         return b""
-    scratch = <unsigned int *>malloc(encode_scratch_words(n_bytes, encode_group) * sizeof(unsigned int))
+    scratch = <unsigned int *>malloc(encode_scratch_words(n_bytes, bits) * sizeof(unsigned int))
     if scratch == NULL:
         raise MemoryError()
     o.data = NULL
@@ -499,7 +486,7 @@ def encode_sw_rle(bytes data, int read_group, int encode_group, int bits):
     o.cap = 0
     o.failed = False
     try:
-        n = encode_line(p, n_bytes, read_group, encode_group, bits, scratch, &o)
+        n = encode_line(p, n_bytes, bits, scratch, &o)
         if n < 0:
             raise MemoryError()
         return PyBytes_FromStringAndSize(<char *>o.data, o.len)
