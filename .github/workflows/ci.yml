@@ -11,8 +11,8 @@ concurrency:
 
 jobs:
   static-checks:
-    name: lint + format + typecheck
-    runs-on: ubuntu-latest
+    name: lint + format + typecheck + deps
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -27,12 +27,14 @@ jobs:
         run: uv run nox -s format_check
       - name: Pyrefly typecheck
         run: uv run nox -s typecheck
+      - name: Dependency check
+        run: uv run nox -s deps
 
   tests:
     # Both variants run the byte-identity suite: "cython" covers the native
     # modules, "pure-python" the fallbacks used when no compiler is available.
     name: pytest (${{ matrix.variant }}, with Brother blobs)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:

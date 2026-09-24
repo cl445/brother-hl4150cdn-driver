@@ -1,6 +1,6 @@
 [project]
 name = "brother-hl4150cdn-driver"
-version = "1.0.0"
+version = "1.1.0"
 description = "Open-source driver replacement for the Brother HL-4150CDN color laser printer (XL2HB protocol, CUPS integration)"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -19,12 +19,12 @@ classifiers = [
     "Topic :: System :: Hardware :: Hardware Drivers",
 ]
 dependencies = [
-    "numpy>=2.4.3",
+    "numpy>=2.5.3",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "pytest-cov>=7.1", "zstandard>=0.23"]
-dev = ["ruff>=0.15.12", "nox>=2026.4.10", "pyrefly>=0.63.0", "deptry>=0.21"]
+test = ["pytest>=9.1.1", "pytest-cov>=7.1", "zstandard>=0.23"]
+dev = ["ruff>=0.16.8", "nox>=2026.8.17", "pyrefly>=1.3.1", "deptry>=0.21"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -115,7 +115,6 @@ ignore = [
 ]
 "src/xl2hb.py" = ["FBT001", "FBT002"]  # boolean params map PJL options naturally
 "src/color_lut.py" = ["PLC0415"]   # local import keeps the parametric fallback generator out of the hot path
-"src/tone_curve.py" = ["PLC0415"]  # ditto for gamma curve generation
 "noxfile.py" = [
     "A001",    # format() shadows builtin - standard nox convention
 ]
@@ -127,9 +126,6 @@ ignore = [
     "PLR1716", # chained range comparisons read better as written
     "DOC",     # Returns/Raises sections not required in ad-hoc scripts
 ]
-
-[tool.ruff.lint.isort]
-known-first-party = ["brfilter", "xl2hb", "dither"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -155,20 +151,22 @@ exclude_lines = [
 # `pythonpath = ["src", "tests"]` makes these flat imports — they're first-party.
 known_first_party = [
     "brfilter", "brother_encode", "cli", "color_lut", "color_lut_gen",
-    "dither", "fine_encoder", "pipeline", "plane_encoders", "ppm",
-    "rle", "saturation", "settings", "tone_curve", "transforms", "xl2hb",
+    "dither", "fine_encoder", "page_stream", "pipeline", "plane_encoders", "ppm",
+    "rle", "saturation", "settings", "transforms", "xl2hb",
+    # Optional Cython modules built by setup_cython.py (pure-Python fallback).
+    "_band_fast", "_color_fast", "_dither_fast", "_rle_fast",
 ]
 # Treat the `test` and `dev` extras as dev groups so their entries
 # (pytest, ruff, ...) are not required to be imported from main code.
 optional_dependencies_dev_groups = ["test", "dev"]
 # noxfile.py is a dev-tool config; it's expected to import the dev tool itself.
-extend_exclude = ["noxfile\\.py"]
+# setup_cython.py is a build script; install.sh and CI install Cython for it.
+extend_exclude = ["noxfile\\.py", "setup_cython\\.py"]
 
 [tool.pyrefly]
 python-version = "3.13"
 search-path = ["src", "tests"]
-project-includes = ["src/**/*.py", "tests/**/*.py", "main.py", "noxfile.py"]
+project-includes = ["src/**/*.py", "tests/**/*.py", "noxfile.py"]
 project-excludes = [".venv/**", ".nox/**", "__pycache__/**"]
 untyped-def-behavior = "check-and-infer-return-type"
 strict-callable-subtyping = true
-replace-imports-with-any = ["numba"]

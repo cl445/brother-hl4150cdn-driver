@@ -6,7 +6,42 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-24
+
+Output now matches the manufacturer's filter byte for byte for every RC
+setting, grayscale, all 21 paper sizes and duplex. On a Raspberry Pi 3B+ a
+page takes about a second instead of close to three minutes.
+
+### Upgrading
+- Re-run `scripts/extract_blobs.sh` (16 new colour grids) and
+  `cups/install.sh` (Cython modules, inverse LUTs for Normal and Vivid).
+- Re-assign the PPD to existing queues
+  (`lpadmin -p <queue> -P /usr/share/cups/model/brhl4150cdn.ppd`): the
+  duplex option is now the standard `Duplex` keyword, and the new paper
+  sizes and media types are only in the new PPD. This resets the queue's
+  default options.
+
 ### Fixed
+- Duplex never reached the printer: the PPD option was named `BRDuplex`,
+  so CUPS could not map IPP `sides` onto it. It is now the standard
+  `Duplex` option (`BRDuplex` from older queues is still accepted). The
+  BeginPage attributes now match the original (`DuplexPageMode` 0x00 for
+  long edge, 0x81 for short edge; long-edge back pages are mirrored and
+  flagged), and the whole job is one XL2HB session.
+- Rows wider than the printable area (an uncropped Ghostscript render)
+  crashed the dither with a broadcast error; they are now cut to width.
+- Executive, Com-10 and Monarch were rasterised at Letter size unless the
+  PostScript job set its own page size: Ghostscript does not know the paper
+  names the CUPS filter passed. The filter now gives Ghostscript the page
+  size in points for every format.
+- The README's settings table listed option names the PPD does not have
+  (`MediaType`, `InputSlot`, `TonerSaveMode`, `Brightness`, `RedKey`, ...);
+  `lp -o` with those names was silently ignored. It now lists the PPD's
+  names (`BRMediaType`, `BRInputSlot`, `BRTonerSaveMode`, `BRBrightness`,
+  `BRRed`, ...) and values.
+- Ghostscript's error output went to a pipe that was only read after the
+  job, so a job with many Ghostscript warnings could stall the filter. It
+  now goes to a temporary file.
 - The CUPS filter now applies the queue's PPD defaults (`$PPD`) before the
   job's options, as Brother's cupswrapper does. CUPS passes only the
   options a job carries, and jobs from desktop clients carry no `BR*`
@@ -61,6 +96,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   evaluation, instead of rounding half up.
 
 ### Changed
+- Much faster on slow ARM hosts, with byte-identical output. On a Pi 3B+
+  a 131-page job through the CUPS filter takes 133 s at 64 MB peak memory;
+  1.0.0 needed 167 s for a single A4 page.
+  - Optional Cython modules (`_rle_fast`, `_color_fast`, `_dither_fast`,
+    `_band_fast`): RLE encoding, colour lookup, dither and a band renderer
+    that runs colour, dither and RLE for all planes without the GIL on up
+    to three threads (`BRHL4150CDN_RENDER_THREADS` overrides). Pure Python
+    remains the fallback; `install.sh` builds them when a compiler is
+    available.
+  - A precomputed RGB→KCMY inverse LUT (`--precompute-lut`, memory-mapped)
+    replaces per-pixel interpolation.
+  - Pure-white scanlines skip colour conversion and dithering.
+  - The CUPS filter streams Ghostscript output in bands instead of
+    holding whole pages in memory, and avoids page-sized copies.
+  - `BRReverse` no longer keeps every page in memory: finished pages are
+    spooled to a temporary file and written in reverse order (a 131-page
+    job was OOM-killed on a Pi 3 before).
 - Without an installed inverse LUT, the native band kernel interpolates the
   colour grid itself (about 1.8x slower than the inverse LUT on an M-series
   Mac, still multi-threaded) instead of the ~20x slower numpy path.
@@ -68,8 +120,27 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Vivid (`inverse_lut.npy`, `inverse_lut_srgb.npy`, 64 MiB each); the other
   grids always use the kernel interpolation.
 
+- Requires numpy 2.5.3 or newer. Development tools updated (ruff 0.16,
+  pyrefly 1.3, pytest 9.1); CI runs on Ubuntu 26.04 and checks
+  dependencies with deptry.
+
+- `pipeline.filter_duplex_pages` is now `filter_pages` (it renders every
+  job, simplex included); the unused `lut_dir` parameters are gone.
+
 ### Removed
 - `apply_vivid` (the guessed saturation boost) and `input_slot_to_tray`.
+- The placeholder `main.py`.
+- Code that production never reached: the M-plane 20-bit sub-block encoder
+  (`encode_m_plane_20`, `rle_encode`), the `read_group` option of the RLE
+  encoders, the PJL options `SOURCETRAY`, `RET`, `PAGEPROTECT` and
+  `MANUALDPX` (the original never sends them for this model), the
+  pattern-based pure-Python dither fallback, and bytes-only helpers that
+  only tests used (`dither_cmyk_1bpp/4bpp`, `rgb_line_to_cmyk_intensities`).
+- The tone-curve path (`gamma_select`, the CUPS option `BRGammaSelect` and
+  the RC key `GammaSelect`, module `tone_curve`). The PPD never offered it,
+  and the original filter never applies a tone curve in this mode, so it
+  was the one setting whose output did not follow the original.
+  `extract_blobs.sh` no longer extracts the two gamma curves.
 
 ### Known limitations
 - Fine mode (1200 dpi) is still incomplete (APT compression, Phase 3).
@@ -110,3 +181,7 @@ Normal mode (600 dpi).
   BRColorMatching=Vivid (different colour path).
 - Fine mode emits valid framing but its compression codec is not yet
   byte-identical with the manufacturer's filter.
+
+[Unreleased]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/cl445/brother-hl4150cdn-driver/releases/tag/v1.0.0
