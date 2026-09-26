@@ -26,6 +26,10 @@ not yet byte-identical.
 On a Raspberry Pi 3B+ with the Cython modules and the precomputed
 inverse LUTs, a 131-page job goes through the CUPS filter in about
 133 s (roughly 1 s per page) with a peak memory use of about 64 MB.
+On a 20-page test document with a noisy colour photo on every page and
+the default improve gray (BRGray=ON), the filter takes about 23 s
+instead of 25 s without the improve-gray inverse LUT, and 46 s instead of
+69 s CPU time; Ghostscript alone takes 8 s of that.
 
 ## Requirements
 
@@ -37,9 +41,14 @@ inverse LUTs, a 131-page job goes through the CUPS filter in about
   builds the Cython modules (RLE encoders, colour lookup, dither and a
   band renderer that uses several cores); without them the driver falls
   back to pure Python, which is several times slower.
-- About 130 MB of disk space for the precomputed inverse colour LUTs
-  (Normal and Vivid, 64 MiB each). `install.sh` computes them, which takes
-  about two minutes on a Pi 3.
+- About 260 MB of disk space for the precomputed inverse colour LUTs
+  (Normal and Vivid colour matching, each with and without improve gray;
+  64 MiB each). `install.sh` computes them, which takes about four minutes
+  on a Pi 3. Their file names carry a hash of the colour grids they were
+  computed from, so re-run `install.sh` after `extract_blobs.sh`; until
+  then the filter ignores LUTs built from other grids and interpolates.
+- Linux. `install.sh` refuses to run on macOS, where the CUPS filter and
+  PPD directories are on the SIP-protected system volume.
 - A copy of the official Brother HL-4150CDN LPR driver `.deb`
   (`scripts/extract_blobs.sh` downloads and verifies it; the printer's
   calibration tables are extracted into `src/lut/` and `src/color_data/`
@@ -138,7 +147,7 @@ uv run nox -s lint            # ruff
 uv run nox -s format_check    # ruff format --check
 uv run nox -s typecheck       # pyrefly
 uv run nox -s deps            # deptry
-uv run nox -s tests           # pytest (1109 tests, needs extracted blobs)
+uv run nox -s tests           # pytest (1168 tests, needs extracted blobs)
 ```
 
 The Cython modules are optional in development too; build them in place

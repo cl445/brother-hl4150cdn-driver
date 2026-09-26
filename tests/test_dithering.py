@@ -541,3 +541,59 @@ def test_native_1bpp_dither_matches_numpy(monkeypatch):
             reference = dither.dither_channel_1bpp_arr(strided, y, width, channels["C"])
             monkeypatch.setattr(dither, "HAS_CYTHON_DITHER", True)
             assert native == reference
+
+
+# ---------------------------------------------------------------------------
+# Missing BRCD blobs: Bayer fallback must be loud, but only once
+# ---------------------------------------------------------------------------
+
+
+class TestBayerFallbackWarning:
+    """Missing dither tables change every page, so the fallback warns (once)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_warning_state(self, monkeypatch):
+        import dither
+
+        monkeypatch.setattr(dither, "_bayer_fallback_warned", set())
+
+    def _fallback_warnings(self, caplog):
+        return [r for r in caplog.records if r.name == "dither" and r.levelname == "WARNING"]
+
+    def test_missing_tables_warn_with_hint(self, tmp_path, caplog):
+        from dither import load_dither_tables
+
+        with caplog.at_level("WARNING", logger="dither"):
+            load_dither_tables(str(tmp_path))
+        warnings = self._fallback_warnings(caplog)
+        assert len(warnings) == 1
+        assert "scripts/extract_blobs.sh" in warnings[0].getMessage()
+        assert "Bayer" in warnings[0].getMessage()
+
+    def test_warning_is_logged_once_per_table(self, tmp_path, caplog):
+        from dither import load_dither_tables
+
+        with caplog.at_level("WARNING", logger="dither"):
+            for _ in range(3):
+                load_dither_tables(str(tmp_path))
+                load_dither_tables(str(tmp_path), fine=True)
+        assert len(self._fallback_warnings(caplog)) == 1
+
+        with caplog.at_level("WARNING", logger="dither"):
+            load_dither_tables(str(tmp_path), toner_save=True)
+            load_dither_tables(str(tmp_path), toner_save=True)
+        warnings = self._fallback_warnings(caplog)
+        assert len(warnings) == 2
+        assert "-TS_cache09.bin" in warnings[1].getMessage()
+
+    def test_present_tables_do_not_warn(self, caplog):
+        from pathlib import Path
+
+        from dither import load_dither_tables
+
+        lut_dir = Path(__file__).resolve().parent.parent / "src" / "lut"
+        if not (lut_dir / "0600-k_cache09.bin").exists():
+            pytest.skip("BRCD blobs not extracted")
+        with caplog.at_level("WARNING", logger="dither"):
+            load_dither_tables(str(lut_dir))
+        assert not self._fallback_warnings(caplog)

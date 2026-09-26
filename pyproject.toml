@@ -1,6 +1,6 @@
 [project]
 name = "brother-hl4150cdn-driver"
-version = "1.1.0"
+version = "1.1.1"
 description = "Open-source driver replacement for the Brother HL-4150CDN color laser printer (XL2HB protocol, CUPS integration)"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -34,6 +34,8 @@ pythonpath = ["src", "tests"]
 target-version = "py313"
 line-length = 120
 src = ["src", "tests"]
+# The CUPS filter is a Python script without the .py extension.
+extend-include = ["cups/brhl4150cdn-filter"]
 
 [tool.ruff.lint]
 preview = true   # required for DOC (pydoclint) rules
@@ -166,7 +168,7 @@ extend_exclude = ["noxfile\\.py", "setup_cython\\.py"]
 [tool.pyrefly]
 python-version = "3.13"
 search-path = ["src", "tests"]
-project-includes = ["src/**/*.py", "tests/**/*.py", "noxfile.py"]
+project-includes = ["src/**/*.py", "tests/**/*.py", "noxfile.py", "cups/brhl4150cdn-filter"]
 project-excludes = [".venv/**", ".nox/**", "__pycache__/**"]
 untyped-def-behavior = "check-and-infer-return-type"
 strict-callable-subtyping = true

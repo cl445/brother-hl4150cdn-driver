@@ -12,13 +12,16 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 LIB_DIR="/usr/local/lib/brhl4150cdn"
 VENV_DIR="$LIB_DIR/.venv"
 
-# Detect OS-specific CUPS paths
-CUPS_PPD_DIR="/usr/share/cups/model"
+# CUPS paths (Linux). macOS is not supported: its CUPS only runs filters from
+# /usr/libexec/cups/filter and ships PPDs under /usr/share/cups/model, both on
+# the SIP-protected system volume.
 if [[ "$(uname)" == "Darwin" ]]; then
-    CUPS_FILTER_DIR="/usr/libexec/cups/filter"
-else
-    CUPS_FILTER_DIR="/usr/lib/cups/filter"
+    echo "Error: macOS is not supported by this installer (the CUPS filter and PPD"
+    echo "  directories are SIP-protected). Install the driver on a Linux print server."
+    exit 1
 fi
+CUPS_PPD_DIR="/usr/share/cups/model"
+CUPS_FILTER_DIR="/usr/lib/cups/filter"
 
 ADD_PRINTER=false
 PRINTER_URI=""
@@ -81,8 +84,7 @@ echo "  Python $PY_VERSION: OK"
 
 if ! command -v gs &>/dev/null; then
     echo "Warning: Ghostscript (gs) not found. Install it before printing."
-    echo "  macOS: brew install ghostscript"
-    echo "  Linux: sudo apt install ghostscript"
+    echo "  sudo apt install ghostscript"
 fi
 
 # Create library directory
@@ -114,9 +116,11 @@ python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --quiet "numpy>=2.5.3"  # keep in sync with pyproject.toml
 
 # Precompute the RGB→KCMY inverse LUTs (64 MiB each: Normal and Vivid colour
-# matching). Replaces per-pixel tetrahedral interpolation; roughly 4x faster
-# per page on a Pi 3.
-echo "Precomputing inverse color LUTs (takes about two minutes on a Pi 3)..."
+# matching, each with and without improve gray). Replaces per-pixel tetrahedral
+# interpolation. The file names carry a hash of the colour grids they were
+# computed from; LUTs from older grids (e.g. before extract_blobs.sh) are
+# removed here and ignored by the filter.
+echo "Precomputing inverse color LUTs (takes about four minutes on a Pi 3)..."
 if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" cli.py --precompute-lut); then
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
 fi

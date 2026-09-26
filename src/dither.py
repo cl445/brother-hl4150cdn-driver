@@ -185,7 +185,7 @@ def load_brcd_tables(
     for ch in "KCMY":
         fpath = lut_path / f"{prefix}-{ch.lower()}{suffix}_cache09.bin"
         if not fpath.exists():
-            logger.info("BRCD file not found: %s, falling back to Bayer", fpath)
+            logger.debug("BRCD file not found: %s", fpath)
             return None
         channels[ch] = dither_load_brcd(str(fpath))
     return channels
@@ -217,6 +217,28 @@ def _build_bayer_tables(*, toner_save: bool, width: int = 32, height: int = 32) 
     return {"K": channel, "C": channel, "M": channel, "Y": channel}
 
 
+_bayer_fallback_warned: set[tuple[str, bool]] = set()
+
+
+def _warn_bayer_fallback(lut_dir: str, *, toner_save: bool) -> None:
+    """Warn, once per process and table set, that BRCD tables are missing.
+
+    The Bayer matrix only stands in for the dither tables; the output then
+    differs from the original driver's on every page.
+    """
+    key = (lut_dir, toner_save)
+    if key in _bayer_fallback_warned:
+        return
+    _bayer_fallback_warned.add(key)
+    variant = f"0600-*{_BRCD_SUFFIX[toner_save]}_cache09.bin"
+    logger.warning(
+        "Dither tables %s missing in %s (run scripts/extract_blobs.sh); "
+        "using a generated Bayer matrix, output will differ from the original driver",
+        variant,
+        lut_dir,
+    )
+
+
 def load_dither_tables(
     lut_dir: str | None = None,
     *,
@@ -228,7 +250,7 @@ def load_dither_tables(
     If `lut_dir` is given, BRCD files matching `(fine, toner_save)` are
     tried first. Fine-mode lookup falls through to Normal-mode BRCD if
     the Fine tables are absent. When no BRCD set is found a Bayer matrix
-    is generated as fallback.
+    is generated as fallback (with a one-time warning).
 
     Returns:
         Channel dict keyed by 'K', 'C', 'M', 'Y'.
@@ -242,7 +264,7 @@ def load_dither_tables(
         tables = load_brcd_tables(lut_dir, fine=False, toner_save=toner_save)
         if tables is not None:
             return tables
-        logger.info("BRCD tables not available, using Bayer fallback")
+        _warn_bayer_fallback(lut_dir, toner_save=toner_save)
     return _build_bayer_tables(toner_save=toner_save)
 
 

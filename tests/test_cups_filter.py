@@ -34,6 +34,49 @@ def test_count_ps_pages_reads_dsc(cups_filter, tmp_path, dsc, expected):
     assert cups_filter.count_ps_pages(str(path)) == (expected or 3)
 
 
+_EPS = (
+    b"%%BeginDocument: logo.eps\n%!PS-Adobe-3.0 EPSF-3.0\n%%Pages: 1\n%%BoundingBox: 0 0 10 10\n"
+    b"%%EndComments\nnewpath\n%%Trailer\n%%Pages: 1\n%%EOF\n%%EndDocument\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("job", "expected"),
+    [
+        # (atend) in the header: the job's trailer counts, not the EPS inside it.
+        (
+            b"%!PS-Adobe-3.0\n%%Pages: (atend)\n%%EndComments\n"
+            + _EPS
+            + b"showpage\n" * 4
+            + b"%%Trailer\n%%Pages: 4\n",
+            4,
+        ),
+        # A header count before an embedded EPS.
+        (b"%!PS-Adobe-3.0\n%%Pages: 6\n%%EndComments\n" + _EPS + b"%%Trailer\n%%EOF\n", 6),
+        # CR line ends and a header without %%EndComments.
+        (b"%!PS-Adobe-3.0\r%%Title: x\r%%Pages: 2\rshowpage\r", 2),
+    ],
+)
+def test_count_ps_pages_uses_only_the_job_level_dsc(cups_filter, tmp_path, job, expected):
+    path = tmp_path / "job.ps"
+    path.write_bytes(job)
+    assert cups_filter.count_ps_pages(str(path)) == expected
+
+
+def test_count_ps_pages_ignores_an_embedded_eps_count(cups_filter, tmp_path, monkeypatch):
+    """Header (atend) and no job trailer: the EPS's %%Pages: 1 must not be taken."""
+    path = tmp_path / "job.ps"
+    path.write_bytes(b"%!PS-Adobe-3.0\n%%Pages: (atend)\n%%EndComments\n" + _EPS + b"showpage\n" * 3)
+    monkeypatch.setattr(cups_filter, "find_gs", lambda: "gs")
+
+    def fake_run(cmd, **_kwargs):
+        assert "-sDEVICE=nullpage" in cmd
+        return cups_filter.subprocess.CompletedProcess(cmd, 0, stdout=b"%%BRPAGE%%\n" * 3, stderr=b"")
+
+    monkeypatch.setattr(cups_filter.subprocess, "run", fake_run)
+    assert cups_filter.count_ps_pages(str(path)) == 3
+
+
 def test_count_ps_pages_falls_back_to_ghostscript(cups_filter, tmp_path):
     if cups_filter.shutil.which("gs") is None:
         pytest.skip("Ghostscript not installed")

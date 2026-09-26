@@ -6,6 +6,48 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-09-26
+
+### Upgrading
+- Re-run `cups/install.sh`: it now precomputes four inverse LUTs (Normal
+  and Vivid, each with and without improve gray; about 260 MB, four
+  minutes on a Pi 3) and removes the old ones.
+- Re-assign the PPD to existing queues if you want the Fine choice gone
+  from the print dialog; the filter prints Fine requests in Normal anyway.
+
+### Fixed
+- Jobs with the queue's default improve gray (`BRGray: ON`) had no
+  precomputed inverse LUT and were interpolated per pixel. With the new
+  LUTs a page takes about a third less CPU time on a Pi 3B+; the output
+  is unchanged.
+- If Ghostscript failed in the middle of a job, the printer got a half
+  page and an unterminated session, Ghostscript's messages never reached
+  the CUPS log and the process was not reaped. Pages are now written
+  only once complete; on an error the session and the PJL footer are
+  still closed, Ghostscript is stopped and its stderr is logged as
+  `ERROR:`, and the filter exits with status 1.
+- An inverse LUT computed from the generated fallback grids (e.g.
+  `install.sh` before `extract_blobs.sh`) kept overriding the real grids.
+  LUT file names now carry a hash of the grids they come from; others are
+  ignored with a warning.
+- `count_ps_pages` could take `%%Pages: 1` of an embedded EPS for the job's
+  page count when the header said `(atend)`.
+- A non-numeric `BRHL4150CDN_RENDER_THREADS` crashed the filter; it now
+  falls back to the default with a warning.
+- The CLI read only the first page from stdin, ignored a missing `--rc`
+  file, and `--precompute-lut` wrote the LUTs under names the filter does
+  not read.
+
+### Changed
+- Fine mode (600x2400 dpi) is no longer offered in the PPD, as it has not
+  been verified on the printer. A Fine request is printed in Normal mode
+  with a `WARNING:` in the CUPS log.
+- Missing dither tables (Bayer fallback) are now logged as a warning.
+- `install.sh` and `uninstall.sh` refuse to run on macOS, where the CUPS
+  directories are SIP-protected; that branch never worked.
+- The CUPS filter is now checked by ruff and pyrefly, and `main()` is
+  tested end to end with a fake Ghostscript.
+
 ## [1.1.0] — 2026-09-24
 
 Output now matches the manufacturer's filter byte for byte for every RC
@@ -184,6 +226,7 @@ Normal mode (600 dpi).
 - Fine mode emits valid framing but its compression codec is not yet
   byte-identical with the manufacturer's filter.
 
-[Unreleased]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/cl445/brother-hl4150cdn-driver/releases/tag/v1.0.0

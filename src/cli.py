@@ -1,42 +1,68 @@
-"""Command-line entry point: read PPM from stdin, write XL2HB to stdout."""
+"""Command-line entry point: read PPM pages from stdin, write XL2HB to stdout."""
 
 import argparse
+import itertools
 import logging
 import sys
-import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
 
-from color_lut import INVERSE_LUT_PATH, INVERSE_LUT_TABLES, write_inverse_lut
-from pipeline import filter_page
+from color_lut import INVERSE_LUT_DIR, write_inverse_luts
+from pipeline import filter_pages, is_blank_page
 from ppm import read_ppm
 from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 
 logger = logging.getLogger(__name__)
 
 
-def main() -> None:
-    """CLI entry point: read PPM from stdin, write XL2HB to stdout."""
+def iter_ppm_stream(stream: BinaryIO) -> Iterator[tuple[int, int, bytes]]:
+    """Yield (width, height, pixel_data) for each page of a concatenated P6 stream.
+
+    Pages are read one at a time, so only the current page is held in memory.
+
+    Yields:
+        Page dimensions and packed RGB pixel data.
+    """
+    page_num = 0
+    while (result := read_ppm(stream)) is not None:
+        page_num += 1
+        width, height, maxval, pixel_data = result
+        logger.debug("PPM page %d: %dx%d, maxval=%d", page_num, width, height, maxval)
+        yield width, height, pixel_data
+
+
+def main(argv: list[str] | None = None) -> None:
+    """CLI entry point: read PPM pages from stdin, write XL2HB to stdout.
+
+    All pages of a concatenated PPM stream (as Ghostscript writes it) are
+    rendered into one XL2HB session, like the CUPS filter does.
+    """
     parser = argparse.ArgumentParser(description="Brother HL-4150CDN filter (PPM -> XL2HB)")
     parser.add_argument("--rc", "-r", help="Path to RC file (brhl4150cdnrc)", default=None)
     parser.add_argument("--paper", "-p", help="Paper size (e.g. A4, Letter)", default=None)
     parser.add_argument("--mono", "-m", action="store_true", help="Print monochrome")
     parser.add_argument("--toner-save", "-t", action="store_true", help="Toner save mode")
-    parser.add_argument("--fine", "-f", action="store_true", help="Fine quality (2400 dpi class dithering)")
+    parser.add_argument(
+        "--fine",
+        "-f",
+        action="store_true",
+        help=(
+            "Fine mode (600x2400 dpi, experimental): not byte-identical to the original and not verified on hardware"
+        ),
+    )
     parser.add_argument("--duplex", choices=["none", "long", "short"], default="none")
     parser.add_argument("--debug", "-d", action="store_true", help="Debug output to stderr")
     parser.add_argument(
         "--precompute-lut",
         nargs="?",
-        const=str(INVERSE_LUT_PATH),
+        const=str(INVERSE_LUT_DIR),
         default=None,
-        metavar="PATH",
-        help=(
-            "Precompute the RGB→KCMY inverse LUTs and exit: PATH for Normal colour matching, "
-            f"PATH with an _srgb suffix for Vivid. Default PATH: {INVERSE_LUT_PATH}."
-        ),
+        metavar="DIR",
+        help=f"Precompute the RGB→KCMY inverse LUTs into DIR and exit. Default DIR: {INVERSE_LUT_DIR}.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.precompute_lut is not None:
         logging.basicConfig(
@@ -44,18 +70,12 @@ def main() -> None:
             format="%(levelname)s: %(name)s: %(message)s",
             stream=sys.stderr,
         )
-        base = Path(args.precompute_lut)
-        for table in INVERSE_LUT_TABLES:
-            suffix = "" if table.profile == "rgb" else f"_{table.profile}"
-            target = base.with_name(f"{base.stem}{suffix}{base.suffix}")
-            logger.info("Precomputing %s inverse LUT to %s ...", table.name, target)
-            t0 = time.perf_counter()
-            written = write_inverse_lut(target, table)
-            size_mb = written.stat().st_size / 1024 / 1024
-            logger.info("Wrote %.1f MiB to %s in %.1fs", size_mb, written, time.perf_counter() - t0)
+        write_inverse_luts(Path(args.precompute_lut))
         return
 
-    settings = PrintSettings.from_rc_file(args.rc) if args.rc and Path(args.rc).exists() else PrintSettings()
+    if args.rc is not None and not Path(args.rc).is_file():
+        parser.error(f"RC file not found: {args.rc}")
+    settings = PrintSettings.from_rc_file(args.rc) if args.rc is not None else PrintSettings()
 
     if args.paper:
         settings.page_size = PageSize(args.paper)
@@ -78,14 +98,30 @@ def main() -> None:
 
     logger.debug("Settings: %s", settings)
 
-    result = read_ppm(sys.stdin.buffer)
-    if result is None:
+    pages = iter_ppm_stream(sys.stdin.buffer)
+    first = next(pages, None)
+    if first is None:
         logger.error("No PPM data on stdin")
         sys.exit(1)
-    width, height, maxval, pixel_data = result
-    logger.debug("PPM: %dx%d, maxval=%d", width, height, maxval)
+    pages = itertools.chain([first], pages)
 
-    filter_page(width, height, pixel_data, settings, sys.stdout.buffer)
+    page_count = None
+    if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE:
+        # A page's position in the reversed job decides its duplex side,
+        # so the whole job has to be read before rendering starts.
+        page_list = list(pages)
+        page_count = len(page_list)
+        pages = iter(page_list)
+    elif settings.skip_blank and settings.duplex == DuplexMode.NONE:
+        pages = (page for page in pages if not is_blank_page(page[2]))
+
+    first = next(pages, None)
+    if first is None:
+        logger.info("All pages blank, nothing to print")
+        return
+    output = sys.stdout.buffer
+    filter_pages(itertools.chain([first], pages), settings, output, page_count=page_count)
+    output.flush()
 
 
 if __name__ == "__main__":

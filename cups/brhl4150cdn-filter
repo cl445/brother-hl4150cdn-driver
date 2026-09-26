@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-CUPS filter for the Brother HL-4150CDN.
+"""CUPS filter for the Brother HL-4150CDN.
 
 Receives PostScript from CUPS, rasterizes it with Ghostscript and streams
 the pages through the XL2HB pipeline (pipeline.filter_pages).
@@ -9,6 +8,7 @@ Usage (called by CUPS):
     brhl4150cdn-filter job-id user title copies options [filename]
 """
 
+import contextlib
 import itertools
 import logging
 import os
@@ -17,16 +17,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+from typing import BinaryIO, cast
 
 # Installed, the modules live next to this script in /usr/local/lib/brhl4150cdn/
 # (the CUPS wrapper also sets PYTHONPATH); in the repository they are in src/.
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
-sys.path.insert(0, _SRC_DIR if os.path.isdir(_SRC_DIR) else _SCRIPT_DIR)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_SRC_DIR = _SCRIPT_DIR.parent / "src"
+sys.path.insert(0, str(_SRC_DIR if _SRC_DIR.is_dir() else _SCRIPT_DIR))
 
 from page_stream import iter_ppm_pages  # noqa: E402
-from pipeline import collect_rows, filter_pages, is_blank_page  # noqa: E402
-from settings import DuplexMode, PrintSettings, read_ppd_defaults  # noqa: E402
+from pipeline import PageData, collect_rows, filter_pages, is_blank_page  # noqa: E402
+from settings import DuplexMode, PrintSettings, Resolution, read_ppd_defaults  # noqa: E402
 from xl2hb import PAPER_SIZES  # noqa: E402
 
 # The printable area starts 100 px (at 600 dpi) from the physical page edge;
@@ -58,6 +61,10 @@ PAPER_POINTS = {
     "EnvChou3": (340, 666),
 }
 
+# Seconds to wait for Ghostscript to exit on its own after the job failed
+# (it has usually closed its output already) before it is killed.
+GS_EXIT_GRACE = 2.0
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +72,8 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 logger = logging.getLogger("brhl4150cdn-filter")
+
+Page = tuple[int, int, PageData]
 
 
 def find_gs() -> str:
@@ -77,7 +86,7 @@ def find_gs() -> str:
     if gs is None:
         # CUPS runs filters with a minimal PATH; try the usual install prefixes.
         for alt in ["/opt/homebrew/bin/gs", "/usr/local/bin/gs"]:
-            if os.path.isfile(alt):
+            if Path(alt).is_file():
                 gs = alt
                 break
     if gs is None:
@@ -87,7 +96,11 @@ def find_gs() -> str:
 
 
 def build_gs_command(input_path: str, page_size: str) -> list[str]:
-    """Build the Ghostscript command for rasterizing PS to PPM."""
+    """Build the Ghostscript command for rasterizing PS to PPM.
+
+    Returns:
+        The argument vector; `input_path` "-" reads the job from stdin.
+    """
     cmd = [
         find_gs(),
         "-sDEVICE=ppmraw",
@@ -104,48 +117,93 @@ def build_gs_command(input_path: str, page_size: str) -> list[str]:
     return cmd
 
 
-_DSC_PAGES = re.compile(rb"^%%Pages:[ \t]*(\d+)", re.MULTILINE)
+_DSC_LINE_END = re.compile(rb"\r\n|\r|\n")
+_DSC_PAGES = re.compile(rb"%%Pages:[ \t]*(\d+|\(atend\))")
+_DSC_SCAN_BYTES = 65536
+
+
+def _dsc_header_pages(head: bytes) -> bytes | None:
+    """Return the value of the header's ``%%Pages:`` comment, if any.
+
+    The DSC header is the leading run of comment lines up to
+    ``%%EndComments``. Anything after it, such as an embedded EPS with its
+    own ``%%Pages: 1``, does not describe the job.
+    """
+    for line in _DSC_LINE_END.split(head):
+        if not line.startswith(b"%") or line.startswith((b"%%EndComments", b"%%Begin")):
+            break
+        match = _DSC_PAGES.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _dsc_trailer_pages(tail: bytes) -> int | None:
+    """Return the ``%%Pages:`` count of the job's trailer, if any.
+
+    Only a ``%%Trailer`` after the last embedded document (which ends
+    with ``%%EndDocument``) is the job's own; an embedded EPS brings its
+    own trailer.
+    """
+    trailer_at = tail.find(b"%%Trailer", tail.rfind(b"%%EndDocument") + 1)
+    if trailer_at < 0:
+        return None
+    counts = [value for value in _DSC_PAGES.findall(tail[trailer_at:]) if value.isdigit()]
+    return int(counts[-1]) if counts else None
 
 
 def count_ps_pages(input_path: str) -> int:
     """Count the pages of a PostScript job.
 
-    Uses the DSC ``%%Pages:`` comment when present (pdftops writes it in
-    the trailer, so this is instant); otherwise lets Ghostscript interpret
-    the job on the null device and counts EndPage calls, which takes
-    ~15 s for 130 pages on a Pi 3.
+    Uses the DSC ``%%Pages:`` comment of the header, or of the trailer when
+    the header defers it with ``(atend)`` (pdftops does), which is instant.
+    Otherwise Ghostscript interprets the job on the null device and the
+    EndPage calls are counted, which takes ~15 s for 130 pages on a Pi 3.
 
     Returns:
         Number of pages the job produces.
     """
-    with open(input_path, "rb") as f:
-        head = f.read(65536)
+    with Path(input_path).open("rb") as f:
+        head = f.read(_DSC_SCAN_BYTES)
         f.seek(0, os.SEEK_END)
-        f.seek(max(0, f.tell() - 65536))
+        f.seek(max(0, f.tell() - _DSC_SCAN_BYTES))
         tail = f.read()
-    # A header value wins unless it says (atend); the trailer's last one otherwise.
-    for chunk, pick in ((head, 0), (tail, -1)):
-        found = _DSC_PAGES.findall(chunk)
-        if found:
-            return int(found[pick])
+
+    header_pages = _dsc_header_pages(head)
+    if header_pages is not None and header_pages.isdigit():
+        return int(header_pages)
+    trailer_pages = _dsc_trailer_pages(tail)
+    if trailer_pages is not None:
+        return trailer_pages
 
     logger.info("no DSC page count, counting pages with Ghostscript")
     cmd = [
         find_gs(),
-        "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=nullpage", "-r72",
-        "-c", "<< /EndPage { exch pop 2 ne dup { (%%BRPAGE%%\\n) print flush } if } >> setpagedevice",
-        "-f", input_path,
+        "-q",
+        "-dSAFER",
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-sDEVICE=nullpage",
+        "-r72",
+        "-c",
+        "<< /EndPage { exch pop 2 ne dup { (%%BRPAGE%%\\n) print flush } if } >> setpagedevice",
+        "-f",
+        input_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, check=True)
+    # The command is fixed apart from the gs path and our own spool file.
+    result = subprocess.run(cmd, capture_output=True, check=True)  # noqa: S603
     return result.stdout.count(b"%%BRPAGE%%")
 
 
-def iter_printable_pages(stream, page_size: str):
+def iter_printable_pages(stream: BinaryIO, page_size: str) -> Iterator[Page]:
     """Yield (width, height, row_blocks) per GS page, cut to the printable area.
 
     Pages are read on a background thread in blocks of scanlines (see
     page_stream), so Ghostscript keeps rasterising while a page renders
     and no page-sized buffer is allocated.
+
+    Yields:
+        Printable width and height, and the page's row blocks.
     """
     target_w, target_h = PAPER_SIZES[page_size]
     window = (*PRINTABLE_OFFSET, target_w, target_h)
@@ -154,8 +212,12 @@ def iter_printable_pages(stream, page_size: str):
         yield target_w, target_h, blocks
 
 
-def drop_blank_pages(pages):
-    """Collect each page into one buffer and skip the pure-white ones."""
+def drop_blank_pages(pages: Iterable[Page]) -> Iterator[Page]:
+    """Collect each page into one buffer and skip the pure-white ones.
+
+    Yields:
+        The pages that are not blank, as whole-page buffers.
+    """
     for width, height, data in pages:
         rows = collect_rows(data, width, height)
         if is_blank_page(rows):
@@ -164,9 +226,146 @@ def drop_blank_pages(pages):
         yield width, height, rows
 
 
+class PageCounter:
+    """Counts the pages taken from an iterable, even if iteration fails."""
+
+    def __init__(self, pages: Iterable[Page]) -> None:
+        """Wrap `pages`; `count` starts at zero."""
+        self._pages = pages
+        self.count = 0
+
+    def __iter__(self) -> Iterator[Page]:
+        """Yield the wrapped pages, counting each one.
+
+        Yields:
+            The wrapped pages.
+        """
+        for page in self._pages:
+            self.count += 1
+            yield page
+
+
+def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, expected_pages: int | None, output: BinaryIO) -> int:
+    """Render Ghostscript's PPM stream into one XL2HB job on `output`.
+
+    Each page is rendered and sent as soon as it is read, like Brother's
+    filter, so only the current page is held in RAM. Reverse order spools
+    rendered pages to disk instead (see filter_pages). Nothing is written
+    when Ghostscript produces no page. If the stream breaks off, the
+    exception propagates with the job's complete pages already written and
+    the session closed (see filter_pages).
+
+    Returns:
+        Number of pages read from Ghostscript.
+    """
+    counter = PageCounter(iter_printable_pages(gs_stdout, settings.page_size))
+    pages: Iterable[Page] = counter
+    if settings.skip_blank and settings.duplex == DuplexMode.NONE:
+        pages = drop_blank_pages(pages)
+    pages = iter(pages)
+    try:
+        first = next(pages, None)
+        if first is not None:
+            filter_pages(itertools.chain([first], pages), settings, output, page_count=expected_pages)
+    except Exception as exc:
+        exc.add_note(f"while reading page {counter.count} from Ghostscript")
+        raise
+    finally:
+        with contextlib.suppress(OSError):
+            output.flush()
+    return counter.count
+
+
+def stop_gs(proc: subprocess.Popen[bytes], timeout: float) -> int | None:
+    """Give Ghostscript `timeout` seconds to exit, then kill it.
+
+    Returns:
+        Its exit status, or None if it had to be killed.
+    """
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        return None
+
+
+def log_gs_stderr(stderr_file: BinaryIO, level: int) -> None:
+    """Log what Ghostscript wrote to stderr, one CUPS log line per line."""
+    stderr_file.seek(0)
+    for line in stderr_file.read().decode("utf-8", errors="replace").splitlines():
+        if line.strip():
+            logger.log(level, "GS: %s", line.rstrip())
+
+
+def print_job(input_path: str, settings: PrintSettings, expected_pages: int | None, output: BinaryIO) -> int:
+    """Run Ghostscript on `input_path` and send its pages to `output`.
+
+    Returns:
+        The filter's exit status: 0 on success, 1 on any failure.
+    """
+    gs_cmd = build_gs_command(input_path, settings.page_size)
+    logger.info("running: %s", " ".join(gs_cmd))
+
+    # Ghostscript's stderr goes to a file: a pipe nobody reads while the
+    # pages render would block it once it filled up.
+    with tempfile.TemporaryFile() as gs_stderr:
+        # The command is fixed apart from the gs path and the job file CUPS gave us.
+        gs_proc = subprocess.Popen(gs_cmd, stdout=subprocess.PIPE, stderr=gs_stderr)  # noqa: S603
+        gs_stdout = cast("BinaryIO", gs_proc.stdout)  # a pipe: stdout=PIPE
+        try:
+            try:
+                page_count = send_pages(gs_stdout, settings, expected_pages, output)
+            except Exception as exc:
+                status = stop_gs(gs_proc, GS_EXIT_GRACE)
+                if status:
+                    # Ghostscript died and its output broke off.
+                    logger.error("Ghostscript failed with exit status %d: %s", status, exc)
+                    for note in getattr(exc, "__notes__", ()):
+                        logger.error("%s", note)
+                    log_gs_stderr(gs_stderr, logging.ERROR)
+                else:
+                    logger.exception("job aborted")
+                    log_gs_stderr(gs_stderr, logging.INFO)
+                return 1
+
+            status = gs_proc.wait()
+            log_gs_stderr(gs_stderr, logging.ERROR if status else logging.INFO)
+            if status:
+                logger.error("Ghostscript exited with status %d", status)
+                return 1
+            if page_count == 0:
+                logger.error("No pages produced by Ghostscript")
+                return 1
+            logger.info("total pages: %d", page_count)
+            return 0
+        finally:
+            # Reap Ghostscript on every path, including interrupts.
+            if gs_proc.poll() is None:
+                gs_proc.kill()
+                gs_proc.wait()
+            gs_stdout.close()
+
+
+def spool_stdin() -> Path:
+    """Copy the job from stdin to a temporary file.
+
+    Returns:
+        Path of the file; the caller deletes it.
+    """
+    fd, name = tempfile.mkstemp(prefix="brhl4150cdn-", suffix=".ps")
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as spool:
+            shutil.copyfileobj(sys.stdin.buffer, spool)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
 def main() -> None:
-    # Parse CUPS filter arguments
-    # Usage: filter job-id user title copies options [filename]
+    """Run as CUPS calls a filter: ``job-id user title copies options [filename]``."""
     if len(sys.argv) < 6:
         logger.error("Usage: %s job-id user title copies options [filename]", sys.argv[0])
         sys.exit(1)
@@ -185,9 +384,20 @@ def main() -> None:
     ppd_path = os.environ.get("PPD")
     ppd_defaults = read_ppd_defaults(ppd_path) if ppd_path else {}
     settings = PrintSettings.from_cups_options(options_str, copies, ppd_defaults)
-    logger.info("settings: page_size=%s duplex=%s resolution=%s mono=%s color_matching=%s gray=%s toner_save=%s",
-                settings.page_size, settings.duplex, settings.resolution, settings.mono_color,
-                settings.color_matching, settings.improve_gray, settings.toner_save)
+    if settings.resolution == Resolution.FINE:
+        # A queue set up with an older PPD can still ask for it.
+        logger.warning("Fine mode is not verified on the printer yet, printing in Normal mode (600 dpi)")
+        settings.resolution = Resolution.NORMAL
+    logger.info(
+        "settings: page_size=%s duplex=%s resolution=%s mono=%s color_matching=%s gray=%s toner_save=%s",
+        settings.page_size,
+        settings.duplex,
+        settings.resolution,
+        settings.mono_color,
+        settings.color_matching,
+        settings.improve_gray,
+        settings.toner_save,
+    )
 
     # Reversed long-edge duplex needs the page count up front: a page's
     # position in the reversed job decides whether it is a back side.
@@ -196,83 +406,28 @@ def main() -> None:
     # Ghostscript reads the job straight from stdin, so it starts
     # rasterising while pdftops is still producing PostScript. Only
     # counting pages needs the whole job in a file first.
-    tmp_input = None
-    if input_file is None and needs_page_count:
-        tmp_input = tempfile.NamedTemporaryFile(suffix=".ps", delete=False)
-        try:
-            shutil.copyfileobj(sys.stdin.buffer, tmp_input)
-            tmp_input.close()
-            input_file = tmp_input.name
-        except Exception:
-            os.unlink(tmp_input.name)
-            raise
-
+    spooled = spool_stdin() if input_file is None and needs_page_count else None
+    if spooled is not None:
+        input_file = str(spooled)
     try:
         expected_pages = None
-        if needs_page_count:
-            expected_pages = count_ps_pages(input_file)
+        if needs_page_count and input_file is not None:
+            try:
+                expected_pages = count_ps_pages(input_file)
+            except subprocess.CalledProcessError as exc:
+                logger.error("Ghostscript could not count the pages (exit status %d)", exc.returncode)
+                for line in exc.stderr.decode("utf-8", errors="replace").splitlines():
+                    logger.error("GS: %s", line)
+                sys.exit(1)
             logger.info("reverse long-edge duplex: %d pages", expected_pages)
 
-        # Run Ghostscript: PS -> PPM stream ("-" reads the inherited stdin).
-        # Its stderr goes to a file: a pipe nobody reads while the pages
-        # render would block Ghostscript once it filled up.
-        gs_cmd = build_gs_command(input_file or "-", settings.page_size)
-        logger.info("running: %s", ' '.join(gs_cmd))
-
-        gs_stderr_file = tempfile.TemporaryFile()
-        gs_proc = subprocess.Popen(
-            gs_cmd,
-            stdout=subprocess.PIPE,
-            stderr=gs_stderr_file,
-        )
-
-        # Stream pages from GS into one XL2HB session, like Brother's filter:
-        # each page is rendered and sent as soon as it is read, so only the
-        # current page is held in RAM. Reverse order spools rendered pages
-        # to disk instead (see filter_pages).
-        page_count = 0
-
-        def counted(it):
-            nonlocal page_count
-            for page in it:
-                page_count += 1
-                yield page
-
-        pages = counted(iter_printable_pages(gs_proc.stdout, settings.page_size))
-        if settings.skip_blank and settings.duplex == DuplexMode.NONE:
-            pages = drop_blank_pages(pages)
-
-        first = next(pages, None)
-        if first is not None:
-            output = sys.stdout.buffer
-            filter_pages(
-                itertools.chain([first], pages),
-                settings,
-                output,
-                page_count=expected_pages,
-            )
-            output.flush()
-
-        gs_proc.wait()
-        gs_stderr_file.seek(0)
-        gs_stderr = gs_stderr_file.read().decode("utf-8", errors="replace").strip()
-        gs_stderr_file.close()
-        if gs_stderr:
-            logger.info("GS stderr: %s", gs_stderr)
-        if gs_proc.returncode != 0:
-            logger.error("Ghostscript exited with code %d", gs_proc.returncode)
-            sys.exit(1)
-
-        if page_count == 0:
-            logger.error("No pages produced by Ghostscript")
-            sys.exit(1)
-
-        logger.info("total pages: %d", page_count)
-        logger.info("done")
-
+        status = print_job(input_file or "-", settings, expected_pages, sys.stdout.buffer)
     finally:
-        if tmp_input:
-            os.unlink(tmp_input.name)
+        if spooled:
+            spooled.unlink(missing_ok=True)
+    if status == 0:
+        logger.info("done")
+    sys.exit(status)
 
 
 if __name__ == "__main__":

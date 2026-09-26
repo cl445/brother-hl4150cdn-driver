@@ -6,7 +6,9 @@ interpolation tables. Which of the 18 grids applies is decided like
 """
 
 import functools
+import hashlib
 import logging
+import time
 from collections.abc import Buffer
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,9 +79,15 @@ class ColorTable:
 
 DEFAULT_TABLE = ColorTable()
 
-# Tables with a precomputed inverse LUT (install.sh writes both); every
-# other table is interpolated per pixel.
-INVERSE_LUT_TABLES: tuple[ColorTable, ...] = (ColorTable("rgb"), ColorTable("srgb"))
+# Tables with a precomputed inverse LUT (install.sh writes all four): Normal
+# and Vivid colour matching, each with and without improve gray (the PPD
+# default is BRGray=ON). Every other table is interpolated per pixel.
+INVERSE_LUT_TABLES: tuple[ColorTable, ...] = (
+    ColorTable("rgb"),
+    ColorTable("rgb", improve_gray=True),
+    ColorTable("srgb"),
+    ColorTable("srgb", improve_gray=True),
+)
 
 
 def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
@@ -149,11 +157,14 @@ def _load_interp_tables() -> npt.NDArray[np.uint8]:
 # Ink for pure black (R=G=B=0) unless the table asks for rich black.
 _K_PRESET = np.array([0, 0, 0, 255], dtype=np.int32)
 
-# Precomputed full RGB→KCMY lookup table.
-# Last axis order is K, C, M, Y in pixel-brightness convention
-# (0 = full ink, 255 = no ink).
-INVERSE_LUT_PATH = _DATA_DIR / "inverse_lut.npy"
+# Precomputed full RGB→KCMY lookup tables, one file per table in
+# INVERSE_LUT_DIR (see `inverse_lut_path`). Last axis order is K, C, M, Y in
+# pixel-brightness convention (0 = full ink, 255 = no ink).
+INVERSE_LUT_DIR = _DATA_DIR
 _INVERSE_LUT_SHAPE = (256, 256, 256, 4)
+# Part of the source digest: bump when the interpolation itself changes, so
+# inverse LUTs computed by the old code are no longer used.
+_INVERSE_LUT_FORMAT = 1
 
 
 @functools.lru_cache(maxsize=8)
@@ -193,18 +204,70 @@ def interp_arrays(
     )
 
 
-def inverse_lut_path(table: ColorTable = DEFAULT_TABLE) -> Path | None:
-    """Where the inverse LUT of `table` is installed, next to `INVERSE_LUT_PATH`.
+@functools.lru_cache(maxsize=len(INVERSE_LUT_TABLES))
+def source_digest(table: ColorTable = DEFAULT_TABLE) -> str:
+    """Hash of everything the inverse LUT of `table` is computed from.
+
+    Covers the grid and the interpolation weights as loaded (the extracted
+    blobs, or the generated fallbacks when they are missing), the black ink
+    and `_INVERSE_LUT_FORMAT`. An inverse LUT computed before
+    `scripts/extract_blobs.sh` thus no longer matches once the real grids
+    are in place. Costs one read of the 39 KB grid, once per process.
 
     Returns:
-        `INVERSE_LUT_PATH` for the rgb default table, a sibling file for the
-        srgb one, None for tables without a precomputed inverse LUT.
+        The first 16 hex digits of the SHA-256.
+    """
+    lut, interp = _load_data(table)
+    digest = hashlib.sha256(f"inverse-lut-v{_INVERSE_LUT_FORMAT}:{table.name}\n".encode())
+    digest.update(np.ascontiguousarray(lut, dtype="<i4").tobytes())
+    digest.update(np.ascontiguousarray(interp, dtype=np.uint8).tobytes())
+    digest.update(black_ink(table, lut).astype("<i4").tobytes())
+    return digest.hexdigest()[:16]
+
+
+def inverse_lut_path(table: ColorTable = DEFAULT_TABLE, directory: Path | None = None) -> Path | None:
+    """Where the inverse LUT of `table` is installed: ``inverse_lut_<name>-<digest>.npy``.
+
+    The name carries `source_digest`, so a file computed from other grid
+    data is simply not found.
+
+    Args:
+        table: the colour table.
+        directory: where to look; `INVERSE_LUT_DIR` by default.
+
+    Returns:
+        The path, or None for tables without a precomputed inverse LUT.
     """
     if table not in INVERSE_LUT_TABLES:
         return None
-    if table.profile == "rgb":
-        return INVERSE_LUT_PATH
-    return INVERSE_LUT_PATH.with_name(f"inverse_lut_{table.profile}.npy")
+    return _digest_path(table, INVERSE_LUT_DIR if directory is None else directory)
+
+
+def _digest_path(table: ColorTable, directory: Path) -> Path:
+    """``<directory>/inverse_lut_<name>-<source digest>.npy``.
+
+    Returns:
+        The path; see `inverse_lut_path`.
+    """
+    return directory / f"inverse_lut_{table.name}-{source_digest(table)}.npy"
+
+
+def _stale_inverse_luts(table: ColorTable, directory: Path) -> list[Path]:
+    """Inverse LUT files for `table` in `directory` whose name has another source digest.
+
+    Includes the files without a digest from before it was recorded
+    (``inverse_lut.npy``, ``inverse_lut_srgb.npy``).
+
+    Returns:
+        Sorted paths.
+    """
+    current = _digest_path(table, directory)
+    stale = [p for p in directory.glob(f"inverse_lut_{table.name}-*.npy") if p != current]
+    if table.variant == "default" and not table.improve_gray:
+        legacy = directory / ("inverse_lut.npy" if table.profile == "rgb" else f"inverse_lut_{table.profile}.npy")
+        if legacy.exists():
+            stale.append(legacy)
+    return sorted(stale)
 
 
 @functools.lru_cache(maxsize=len(INVERSE_LUT_TABLES))
@@ -216,12 +279,24 @@ def inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | No
     only the pages for colours actually on the page are read, and the OS
     page cache shares them between jobs.
 
+    Only the file for the current `source_digest` is used. One computed
+    from other grid data (e.g. from the generated fallback grid, before
+    `scripts/extract_blobs.sh`) is ignored with a warning.
+
     Returns:
         Array of shape (256, 256, 256, 4) uint8, or None when the cache
-        file is missing or has an unexpected shape.
+        file is missing, stale or has an unexpected shape.
     """
     path = inverse_lut_path(table)
-    if path is None or not path.exists():
+    if path is None:
+        return None
+    if not path.exists():
+        if stale := _stale_inverse_luts(table, path.parent):
+            logger.warning(
+                "Inverse LUT %s was computed from other colour grid data, ignoring it; "
+                "re-run cups/install.sh (or write_inverse_luts) to recompute",
+                ", ".join(p.name for p in stale),
+            )
         return None
     try:
         arr = np.load(path, mmap_mode="r", allow_pickle=False)
@@ -260,6 +335,9 @@ def precompute_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.
 def write_inverse_lut(path: Path | None = None, table: ColorTable = DEFAULT_TABLE) -> Path:
     """Precompute the inverse LUT of `table` and save it to ``path`` (default `inverse_lut_path`).
 
+    Written to a temporary file and renamed, so a job running meanwhile
+    never maps a half-written LUT.
+
     Returns:
         The path the array was written to.
 
@@ -272,8 +350,42 @@ def write_inverse_lut(path: Path | None = None, table: ColorTable = DEFAULT_TABL
         raise ValueError(msg)
     target.parent.mkdir(parents=True, exist_ok=True)
     arr = precompute_inverse_lut(table)
-    np.save(target, arr, allow_pickle=False)
+    tmp = target.with_name(f".{target.name}.tmp")
+    try:
+        with tmp.open("wb") as f:
+            np.save(f, arr, allow_pickle=False)
+        tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
     return target
+
+
+def write_inverse_luts(directory: Path | None = None) -> list[Path]:
+    """Write the inverse LUTs of all `INVERSE_LUT_TABLES` and remove stale ones.
+
+    What `cups/install.sh` runs. Stale files are those of these tables with
+    another source digest, plus the digest-less ones from older versions.
+
+    Args:
+        directory: target directory; `INVERSE_LUT_DIR` by default.
+
+    Returns:
+        The written paths.
+    """
+    base = INVERSE_LUT_DIR if directory is None else directory
+    written = []
+    for table in INVERSE_LUT_TABLES:
+        target = _digest_path(table, base)
+        logger.info("Precomputing %s inverse LUT to %s ...", table.name, target)
+        t0 = time.perf_counter()
+        write_inverse_lut(target, table)
+        logger.info("Wrote %.1f MiB in %.1fs", target.stat().st_size / 1024 / 1024, time.perf_counter() - t0)
+        written.append(target)
+    for table in INVERSE_LUT_TABLES:
+        for stale in _stale_inverse_luts(table, base):
+            logger.info("Removing stale inverse LUT %s", stale)
+            stale.unlink(missing_ok=True)
+    return written
 
 
 _NDArrayU8 = npt.NDArray[np.uint8]

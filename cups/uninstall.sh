@@ -7,13 +7,13 @@ set -euo pipefail
 # Installation paths
 LIB_DIR="/usr/local/lib/brhl4150cdn"
 
-# Detect OS-specific CUPS paths
-CUPS_PPD_DIR="/usr/share/cups/model"
+# CUPS paths (Linux; install.sh does not support macOS)
 if [[ "$(uname)" == "Darwin" ]]; then
-    CUPS_FILTER_DIR="/usr/libexec/cups/filter"
-else
-    CUPS_FILTER_DIR="/usr/lib/cups/filter"
+    echo "Error: macOS is not supported (install.sh never installs there)."
+    exit 1
 fi
+CUPS_PPD_DIR="/usr/share/cups/model"
+CUPS_FILTER_DIR="/usr/lib/cups/filter"
 
 REMOVE_PRINTER=false
 

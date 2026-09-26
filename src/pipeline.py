@@ -5,6 +5,8 @@ whole job (simplex or duplex) inside one XL2HB session, as the
 manufacturer's filter does.
 """
 
+import contextlib
+import io
 import logging
 import os
 import tempfile
@@ -362,10 +364,15 @@ def _render_threads() -> int:
     Returns:
         Thread count, >= 0.
     """
+    default = max(1, min(3, (os.cpu_count() or 1) - 1))
     configured = os.environ.get("BRHL4150CDN_RENDER_THREADS")
-    if configured is not None:
+    if configured is None:
+        return default
+    try:
         return max(0, int(configured))
-    return max(1, min(3, (os.cpu_count() or 1) - 1))
+    except ValueError:
+        logger.warning("ignoring non-numeric BRHL4150CDN_RENDER_THREADS=%r, using %d threads", configured, default)
+        return default
 
 
 @cache
@@ -600,6 +607,37 @@ def filter_page(
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
 
 
+def _render_pages_forward(
+    pages: Iterable[tuple[int, int, PageData]],
+    settings: PrintSettings,
+    channels: dict[str, DitherChannel],
+    output: BinaryIO,
+) -> None:
+    """Render pages in input order; with duplex every second page is a back side.
+
+    Each page is rendered into memory (its compressed XL2HB, typically
+    well under 10 MB) and written to `output` only once it is complete, so
+    a failure while reading or rendering a page never leaves a half page
+    in the printer data stream.
+    """
+    duplex = settings.duplex != DuplexMode.NONE
+    page_buf = io.BytesIO()
+    for index, (width, height, pixel_data) in enumerate(pages):
+        page_buf.seek(0)
+        page_buf.truncate()
+        _render_page(
+            XL2HBWriter(page_buf),
+            width,
+            height,
+            pixel_data,
+            settings,
+            channels,
+            back_side=duplex and index % 2 == 1,
+        )
+        with page_buf.getbuffer() as page:
+            output.write(page)
+
+
 def _render_pages_reversed(
     pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
@@ -658,6 +696,11 @@ def filter_pages(
     input order, spooled to a temporary file and emitted last page first,
     so memory use does not grow with the job.
 
+    If reading or rendering a page fails, the exception propagates after
+    the session has been closed and the PJL footer written. `output` then
+    holds only complete pages: those rendered before the failure in input
+    order, none at all in reverse order (their duplex sides would be wrong).
+
     Args:
         pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings of the job
@@ -696,16 +739,25 @@ def filter_pages(
     w.write_begin_session()
     w.write_open_data_source()
 
-    channels = _init_channels(settings)
+    try:
+        channels = _init_channels(settings)
+        if settings.reverse:
+            _render_pages_reversed(pages, settings, channels, output, page_count)
+        else:
+            _render_pages_forward(pages, settings, channels, output)
+    except Exception:
+        # Only whole pages have reached `output` (see the two render
+        # helpers), so the session can still be closed: the printer prints
+        # the pages it got and ends the job instead of waiting for the rest
+        # of a page. If `output` itself failed there is nothing more to do.
+        with contextlib.suppress(OSError):
+            _end_session(w, output)
+        raise
+    _end_session(w, output)
 
-    duplex = settings.duplex != DuplexMode.NONE
-    if settings.reverse:
-        _render_pages_reversed(pages, settings, channels, output, page_count)
-    else:
-        for index, (width, height, pixel_data) in enumerate(pages):
-            _render_page(w, width, height, pixel_data, settings, channels, back_side=duplex and index % 2 == 1)
 
+def _end_session(w: XL2HBWriter, output: BinaryIO) -> None:
+    """Close the data source and the session, then write the PJL footer."""
     w.write_close_data_source()
     w.write_end_session()
-
     output.write(generate_pjl_footer())

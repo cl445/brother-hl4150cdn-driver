@@ -9,8 +9,8 @@ import nox
 nox.options.default_venv_backend = "uv"
 
 PYTHON = "3.13"
-SOURCES = ["src", "tests", "scripts", "noxfile.py", "setup_cython.py"]
-TYPECHECK_SOURCES = ["src", "tests", "noxfile.py"]
+SOURCES = ["src", "tests", "scripts", "noxfile.py", "setup_cython.py", "cups/brhl4150cdn-filter"]
+TYPECHECK_SOURCES = ["src", "tests", "noxfile.py", "cups/brhl4150cdn-filter"]
 
 
 @nox.session(python=PYTHON)

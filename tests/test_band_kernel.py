@@ -39,17 +39,17 @@ def no_inverse_lut(monkeypatch) -> None:
 
 
 @pytest.fixture(scope="module")
-def real_lut_path(tmp_path_factory):
-    """Both inverse LUTs; the Vivid one sits next to the Normal one, as install.sh writes them."""
+def real_lut_dir(tmp_path_factory):
+    """All inverse LUTs (Normal and Vivid, with and without improve gray), as install.sh writes them."""
     lut_dir = tmp_path_factory.mktemp("lut")
-    color_lut.write_inverse_lut(lut_dir / "inverse_lut_srgb.npy", color_lut.ColorTable("srgb"))
-    return color_lut.write_inverse_lut(lut_dir / "inverse_lut.npy")
+    color_lut.write_inverse_luts(lut_dir)
+    return lut_dir
 
 
 @pytest.fixture
-def real_lut(monkeypatch, real_lut_path):
-    """The real inverse LUT, as installed by install.sh."""
-    monkeypatch.setattr(color_lut, "INVERSE_LUT_PATH", real_lut_path)
+def real_lut(monkeypatch, real_lut_dir):
+    """The real inverse LUTs, as installed by install.sh."""
+    monkeypatch.setattr(color_lut, "INVERSE_LUT_DIR", real_lut_dir)
     color_lut.inverse_lut.cache_clear()
     yield
     color_lut.inverse_lut.cache_clear()
