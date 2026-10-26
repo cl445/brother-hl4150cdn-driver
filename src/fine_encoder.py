@@ -109,7 +109,7 @@ def compress_rle_preencode(data: bytes) -> bytes:
                         run_white -= 3
                         _flush_white_run()
                         run_white = 3
-                    output.append(((run_white * 8 - 8) & 0xFF) | ((hi_nibble >> 5) - 1) | 0xA0)
+                    output.append((run_white * 8) | ((hi_nibble >> 5) - 1) | 0xA0)
                     run_white = 0
                     continue
                 if run_black != 0:
@@ -466,6 +466,12 @@ def compress_pattern_encode(data: bytes) -> bytes:
                 pattern_mode = 4
                 has_pattern = True
                 match_count = 4
+            elif stride3_c_len == 4:
+                # Checked before stride-3 alternating (0x0805139c, Ghidra
+                # line 9813): emit two literals instead of a mode-3 pattern.
+                for _ in range(2):
+                    output.append(ring[pattern_start])
+                    pattern_start += 1
             elif stride2_len == 4:
                 pattern_mode = 3
                 has_pattern = True
@@ -475,10 +481,7 @@ def compress_pattern_encode(data: bytes) -> bytes:
                 do_literal_copy = False
                 lit_count = 2
 
-                if stride3_c_len == 4 if stride2_len >= 2 else False:
-                    do_literal_copy = True
-                    lit_count = 2
-                elif stride3_alt_len >= 2:
+                if stride3_alt_len >= 2:
                     lit_count = stride3_alt_len
                     if stride3_alt_len > 2:
                         pattern_mode = 5

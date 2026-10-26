@@ -9,6 +9,8 @@ import pytest
 
 from brother_decode import (
     decode_c_plane,
+    decode_fine_plane,
+    decode_fine_stage2,
     decode_m_plane,
     decode_plane,
 )
@@ -433,6 +435,29 @@ class TestFinePatternEncode:
     def test_empty_input(self):
         result = compress_pattern_encode(b"")
         assert result == b""
+
+
+class TestFineCodecAgainstBinary:
+    """Vectors computed by brhl4150cdnfilter itself (scripts/native_codec.py)."""
+
+    def test_white_run_before_high_nibble_byte(self):
+        """Two white bytes then 0x40 fold into one 0xA0-class code carrying the run of 2."""
+        assert compress_rle_preencode(bytes([0x00, 0x00, 0x40, 0x11, 0x11, 0x11])) == bytes.fromhex("b112")
+
+    def test_stride3_third_byte_beats_alternating_pattern(self):
+        """A window with b0 and b2 both repeating every 3 bytes starts with two literals, not mode 3."""
+        data = bytes.fromhex("4051474052474053474054474055474056")
+        assert compress_pattern_encode(data) == bytes.fromhex("40510d0247405253545556")
+
+    def test_decode_original_cyan_line(self):
+        """A solid-cyan C line as the original filter encodes it decodes to one full 4bpp row."""
+        row = decode_fine_plane(bytes.fromhex("d307ffd72fcb11"))
+        assert row == bytes.fromhex("fffff6") + bytes.fromhex("0000fffff6") * 475 + bytes(2)
+        assert encode_fine_plane(row) == bytes.fromhex("d307ffd72fcb11")
+
+    def test_decode_stage2_inverts_vector(self):
+        data = bytes.fromhex("4051474052474053474054474055474056")
+        assert decode_fine_stage2(compress_pattern_encode(data)) == data
 
 
 class TestEncodeFine:

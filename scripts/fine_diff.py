@@ -36,8 +36,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 import pipeline  # noqa: E402
+from brother_decode import decode_fine_plane  # noqa: E402
 from extract_fixtures import PLANE_NAMES, parse_xl2hb_capture  # noqa: E402
-from fine_encoder import compress_pattern_encode, compress_rle_preencode  # noqa: E402
+from fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
 from settings import PrintSettings, Resolution  # noqa: E402
 
 BROTHER_DIR = ROOT / ".brother-blobs" / "extracted" / "usr" / "local" / "Brother"
@@ -49,6 +50,7 @@ PAPERINF = "/usr/local/Brother/Printer/hl4150cdn/inf/paperinfij2"
 
 # A4 at 600 dpi as the original reads it; rows missing at EOF print black there.
 A4_W, A4_H = 4760, 6812
+FINE_ROW_BYTES = A4_W // 2  # 4bpp
 
 
 # ---------------------------------------------------------------------------
@@ -296,58 +298,104 @@ def compare(expected: bytes, actual: bytes, calls: dict[int, list], show: int, d
 
     all_ok = True
     for plane in range(4):
-        exp_entries = [e for b in exp.blocks if b.plane_id == plane for e in b.entries]
-        act_entries = [e for b in act.blocks if b.plane_id == plane for e in b.entries]
-        recorded = calls.get(plane, [])
-        n = min(len(exp_entries), len(act_entries))
-        bad = [i for i in range(n) if exp_entries[i] != act_entries[i]]
-        name = PLANE_NAMES[plane]
-        status = f"{name}: entries original {len(exp_entries)}, python {len(act_entries)}, mismatching {len(bad)}"
-        if not bad and len(exp_entries) == len(act_entries):
-            print(status + "  ok")
-            continue
-        all_ok = False
-        if bad:
-            exp_bytes = sum(len(exp_entries[i]) for i in bad)
-            act_bytes = sum(len(act_entries[i]) for i in bad)
-            status += f" (bytes in those: original {exp_bytes}, python {act_bytes})"
-        print(status)
-        for i in bad[:show]:
-            report_entry(plane, i, exp_entries[i], act_entries[i], recorded[i] if i < len(recorded) else None)
-        if dump is not None and bad:
-            dump_entries(dump, plane, bad, exp_entries, act_entries, recorded)
+        all_ok &= compare_plane(plane, by_line(exp, plane), by_line(act, plane), calls.get(plane, []), show, dump)
     return all_ok
 
 
-def report_entry(plane: int, idx: int, exp: bytes, act: bytes, call: tuple | None) -> None:
-    """Print one mismatching entry with our encoder input and Stage-1 output."""
-    line = call[0] if call else "?"
-    at = first_diff(exp, act)
-    print(f"  {PLANE_NAMES[plane]} entry {idx} (page line {line}): ", end="")
-    print(f"len original {len(exp)}, python {len(act)}, first diff at {at}")
-    print(f"    original  {hex_window(exp, at)}")
-    print(f"    python    {hex_window(act, at)}")
-    if call:
-        stage1 = compress_rle_preencode(call[1])
-        assert compress_pattern_encode(stage1) == act, "recorded call does not reproduce the entry"
-        nonzero = next((i for i, v in enumerate(call[1]) if v), 0)
-        print(f"    4bpp in   len {len(call[1])}, first non-zero at {nonzero}: {hex_window(call[1], nonzero + 8)}")
-        print(f"    stage 1   len {len(stage1)}: {hex_window(stage1, at)}")
+def by_line(capture, plane: int) -> dict[int, bytes]:
+    """Entries of one plane keyed by page line; a block's entries are consecutive lines."""
+    return {
+        block.start_line + i: entry
+        for block in capture.blocks
+        if block.plane_id == plane
+        for i, entry in enumerate(block.entries)
+    }
 
 
-def dump_entries(dump: Path, plane: int, bad: list[int], exp: list[bytes], act: list[bytes], recorded: list) -> None:
-    """Save mismatching entries as npz: 4bpp input, our output, the original's output."""
+def quantise(data: bytes) -> bytes:
+    """The Stage-1 quantisation: clear the LSB of every nibble that is not 0xF."""
+    arr = np.frombuffer(data, np.uint8)
+    hi, lo = arr >> 4, arr & 0xF
+    hi = np.where(hi == 0xF, hi, hi & 0xE)
+    lo = np.where(lo == 0xF, lo, lo & 0xE)
+    return ((hi << 4) | lo).astype(np.uint8).tobytes()
+
+
+def compare_plane(
+    plane: int, exp: dict[int, bytes], act: dict[int, bytes], recorded: list, show: int, dump: Path | None
+) -> bool:
+    """Compare one plane line by line: encoded bytes, decoded 4bpp data, and the encoder port.
+
+    Returns:
+        True if every line of the plane is byte-identical.
+    """
+    name = PLANE_NAMES[plane]
+    inputs = {line: data for line, data, _ in recorded}
+    lines = sorted(exp.keys() | act.keys())
+    bad = [line for line in lines if exp.get(line) != act.get(line)]
+    if not bad:
+        print(f"{name}: {len(lines)} lines, all identical")
+        return True
+
+    decoded = {}
+    undecodable = []
+    for line, entry in exp.items():
+        try:
+            decoded[line] = decode_fine_plane(entry)
+        except (ValueError, KeyError):
+            undecodable.append(line)
+    blank = bytes(FINE_ROW_BYTES)
+    # 4bpp data as the encoder sees it after quantisation; a missing entry is a blank line.
+    exp_px = {line: decoded.get(line, blank) for line in lines}
+    act_px = {line: quantise(inputs[line]) if line in inputs else blank for line in lines}
+    dither_bad = [line for line in lines if exp_px[line] != act_px[line]]
+    encoder_bad = [line for line in decoded if encode_fine_plane(decoded[line]) != exp[line]]
+    wrong_len = [line for line in decoded if len(decoded[line]) != FINE_ROW_BYTES]
+
+    print(f"{name}: {len(lines)} lines, {len(bad)} differ")
+    print(f"    only original {len(exp.keys() - act.keys())}, only python {len(act.keys() - exp.keys())}")
+    print(f"    decoder: {len(decoded)} of {len(exp)} original lines decoded", end="")
+    print(f", {len(wrong_len)} with a length other than {FINE_ROW_BYTES}" if wrong_len else "")
+    print(f"    dither:  {len(lines) - len(dither_bad)} of {len(lines)} lines match after quantisation")
+    print(f"    encoder: {len(decoded) - len(encoder_bad)} of {len(decoded)} original lines re-encode identically")
+    for line in undecodable[:show]:
+        print(f"    undecodable line {line}: {hex_window(exp[line], 0)}")
+    for line in dither_bad[:show]:
+        at = first_diff(exp_px[line], act_px[line])
+        print(f"    dither line {line}, first diff at byte {at} (pixel {2 * at}):")
+        print(f"      original {hex_window(exp_px[line], at, 24)}")
+        print(f"      python   {hex_window(act_px[line], at, 24)}")
+    for line in encoder_bad[:show]:
+        ours = encode_fine_plane(decoded[line])
+        at = first_diff(exp[line], ours)
+        print(f"    encoder line {line}, len original {len(exp[line])}, re-encoded {len(ours)}, first diff at {at}:")
+        print(f"      original   {hex_window(exp[line], at)}")
+        print(f"      re-encoded {hex_window(ours, at)}")
+        print(f"      stage 1    {hex_window(compress_rle_preencode(decoded[line]), at)}")
+    if dump is not None:
+        dump_plane(dump, plane, lines, exp, act, exp_px, act_px)
+    return False
+
+
+def dump_plane(dump: Path, plane: int, lines: list[int], exp, act, exp_px, act_px) -> None:
+    """Save a plane as npz: per line the 4bpp data of both drivers and both encoded entries."""
     dump.mkdir(parents=True, exist_ok=True)
-    rows = [i for i in bad if i < len(recorded)]
     path = dump / f"plane_{PLANE_NAMES[plane]}.npz"
+
+    def column(values: list[bytes]) -> npt.NDArray:
+        out = np.empty(len(values), dtype=object)
+        out[:] = [np.frombuffer(v, np.uint8) for v in values]
+        return out
+
     np.savez_compressed(
         path,
-        lines=np.array([recorded[i][0] for i in rows]),
-        inputs=np.array([np.frombuffer(recorded[i][1], np.uint8) for i in rows], dtype=object),
-        python=np.array([np.frombuffer(act[i], np.uint8) for i in rows], dtype=object),
-        original=np.array([np.frombuffer(exp[i], np.uint8) for i in rows], dtype=object),
+        lines=np.array(lines),
+        original_px=np.array([np.frombuffer(exp_px[line], np.uint8) for line in lines]),
+        python_px=np.array([np.frombuffer(act_px[line], np.uint8) for line in lines]),
+        original=column([exp.get(line, b"") for line in lines]),
+        python=column([act.get(line, b"") for line in lines]),
     )
-    print(f"    dumped {len(rows)} entries to {path}")
+    print(f"    dumped {len(lines)} lines to {path}")
 
 
 def main() -> int:
@@ -359,7 +407,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0, help="seed for the noise pattern")
     parser.add_argument("--rc", action="append", default=[], metavar="KEY=VALUE", help="override an rc setting")
     parser.add_argument("--show", type=int, default=3, help="mismatching entries to show per plane (default 3)")
-    parser.add_argument("--dump", type=Path, help="directory to save mismatching entries to")
+    parser.add_argument("--dump", type=Path, help="directory to save the per-line comparison of differing planes to")
     parser.add_argument("--save", type=Path, help="directory to save both XL2HB streams to")
     args = parser.parse_args()
 
