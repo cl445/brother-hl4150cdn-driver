@@ -1,22 +1,30 @@
 """Differential harness for Fine mode: original filter vs. the Python pipeline.
 
-Renders a test page, prints it with Brother's brhl4150cdnfilter (i386, in
-Docker) and with `pipeline.filter_page`, then compares the two XL2HB
-streams: PJL header, block layout, and every compressed scanline entry per
-plane. For each mismatching entry it shows the 4bpp line our encoder got,
-our Stage-1 and Stage-2 output and the original's bytes, and can dump them
-for offline work on `fine_encoder`.
+Renders a test page (or job), prints it with Brother's brhl4150cdnfilter
+(i386, in Docker) and with `pipeline.filter_pages`, then compares the two
+XL2HB streams: PJL header, block layout, and every compressed scanline
+entry per plane. It decodes the original's entries
+(`brother_decode.decode_fine_plane`) and checks two things separately:
+whether our dithered 4bpp lines match the original's, and whether
+`encode_fine_plane` re-encodes the original's lines to the original's
+bytes. `--dump` saves both sides per line as npz. Multi-page jobs and
+Normal mode (`--rc BRResolution=Normal`) get the whole-stream check and the
+offset of the first difference only.
 
-The original's output is cached by a hash of page and rc file, so reruns
+The original's output is cached by a hash of pages and rc file, so reruns
 only cost the Python side.
 
     uv run python scripts/fine_diff.py solid:0,255,255 --lines 8
     uv run python scripts/fine_diff.py hramp --lines 64 --dump build/fine-diff
     uv run python scripts/fine_diff.py noise --rc Saturation=20
+    uv run python scripts/fine_diff.py edges --paper Letter
+    uv run python scripts/fine_diff.py bars --pages 4 --rc Duplex=DuplexNoTumble
 
 Patterns: white, black, solid:R,G,B, hramp (gray ramp across the width),
 steps (16 gray steps across the width), bars (C/M/Y/R/G/B/K/gray rows),
-noise (seeded random RGB), file:<path.ppm>.
+noise (seeded random RGB), edges (whole page: noise at the top, a ramp at
+the bottom, a bar on the right edge), file:<path.ppm> (must match the
+paper size).
 
 Needs Docker and the blobs from scripts/extract_blobs.sh.
 """
@@ -40,6 +48,7 @@ from brother_decode import decode_fine_plane  # noqa: E402
 from extract_fixtures import PLANE_NAMES, parse_xl2hb_capture  # noqa: E402
 from fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
 from settings import PrintSettings, Resolution  # noqa: E402
+from xl2hb import PAPER_SIZES  # noqa: E402
 
 BROTHER_DIR = ROOT / ".brother-blobs" / "extracted" / "usr" / "local" / "Brother"
 RC_TEMPLATE = BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "brhl4150cdnrc"
@@ -49,8 +58,8 @@ FILTER = "/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
 PAPERINF = "/usr/local/Brother/Printer/hl4150cdn/inf/paperinfij2"
 
 # A4 at 600 dpi as the original reads it; rows missing at EOF print black there.
-A4_W, A4_H = 4760, 6812
-FINE_ROW_BYTES = A4_W // 2  # 4bpp
+A4_W, A4_H = PAPER_SIZES["A4"]
+FINE_ROW_BYTES = A4_W // 2  # 4bpp, A4
 
 
 # ---------------------------------------------------------------------------
@@ -58,27 +67,37 @@ FINE_ROW_BYTES = A4_W // 2  # 4bpp
 # ---------------------------------------------------------------------------
 
 
-def make_page(pattern: str, top: int, lines: int, seed: int) -> npt.NDArray[np.uint8]:
-    """Return an A4 (height, width, 3) page: white, with `pattern` in rows top..top+lines.
+def make_page(
+    pattern: str, top: int, lines: int, seed: int, size: tuple[int, int] = (A4_W, A4_H)
+) -> npt.NDArray[np.uint8]:
+    """Return a (height, width, 3) page of `size`: white, with `pattern` in rows top..top+lines.
 
     Raises:
         SystemExit: For an unknown pattern or a file of the wrong size.
     """
+    width, height = size
     if pattern.startswith("file:"):
-        return read_ppm(Path(pattern[5:]))
-    page = np.full((A4_H, A4_W, 3), 255, np.uint8)
+        return read_ppm(Path(pattern[5:]), size)
+    page = np.full((height, width, 3), 255, np.uint8)
     band = page[top : top + lines]
     n = band.shape[0]
-    if pattern == "white":
+    if pattern == "edges":
+        # Same page as tests/test_full_pipeline.py's paper-size captures.
+        y, x = np.mgrid[0:60, 0:width].astype(np.uint32)
+        for ch in range(3):
+            page[20:80, :, ch] = ((x * 2654435761 + y * 40503 + ch * 97 + 1) >> 13) & 255
+        page[height - 60 :] = ((np.arange(width) * 7 + 1) & 255).astype(np.uint8)[None, :, None]
+        page[:, width - 30 :] = (0, 90, 200)
+    elif pattern == "white":
         pass
     elif pattern == "black":
         band[:] = 0
     elif pattern.startswith("solid:"):
         band[:] = [int(v) for v in pattern[6:].split(",")]
     elif pattern == "hramp":
-        band[:] = (np.arange(A4_W) * 256 // A4_W).astype(np.uint8)[None, :, None]
+        band[:] = (np.arange(width) * 256 // width).astype(np.uint8)[None, :, None]
     elif pattern == "steps":
-        band[:] = (np.arange(A4_W) * 16 // A4_W * 17).astype(np.uint8)[None, :, None]
+        band[:] = (np.arange(width) * 16 // width * 17).astype(np.uint8)[None, :, None]
     elif pattern == "bars":
         colours = [(0, 255, 255), (255, 0, 255), (255, 255, 0), (255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 0, 0)]
         colours.append((128, 128, 128))
@@ -92,12 +111,13 @@ def make_page(pattern: str, top: int, lines: int, seed: int) -> npt.NDArray[np.u
     return page
 
 
-def read_ppm(path: Path) -> npt.NDArray[np.uint8]:
-    """Read a binary A4 PPM (P6, maxval 255).
+def read_ppm(path: Path, size: tuple[int, int] = (A4_W, A4_H)) -> npt.NDArray[np.uint8]:
+    """Read a binary PPM (P6, maxval 255) of `size` (width, height).
 
     Raises:
-        SystemExit: If the file is not a 4760x6812 P6 image.
+        SystemExit: If the file is not a P6 image of that size.
     """
+    width, height = size
     data = path.read_bytes()
     fields: list[bytes] = []
     pos = 0
@@ -112,10 +132,10 @@ def read_ppm(path: Path) -> npt.NDArray[np.uint8]:
             end += 1
         fields.append(data[pos:end])
         pos = end
-    if fields[0] != b"P6" or (int(fields[1]), int(fields[2])) != (A4_W, A4_H) or fields[3] != b"255":
-        msg = f"{path}: need a {A4_W}x{A4_H} P6 PPM with maxval 255"
+    if fields[0] != b"P6" or (int(fields[1]), int(fields[2])) != (width, height) or fields[3] != b"255":
+        msg = f"{path}: need a {width}x{height} P6 PPM with maxval 255"
         raise SystemExit(msg)
-    return np.frombuffer(data, np.uint8, A4_W * A4_H * 3, pos + 1).reshape(A4_H, A4_W, 3)
+    return np.frombuffer(data, np.uint8, width * height * 3, pos + 1).reshape(height, width, 3)
 
 
 def ppm_bytes(page: npt.NDArray[np.uint8]) -> bytes:
@@ -190,7 +210,7 @@ def run_original(ppm: bytes, rc: str) -> bytes:
     return cached.read_bytes()
 
 
-def run_python(page: npt.NDArray[np.uint8], settings: PrintSettings) -> tuple[bytes, dict[int, list]]:
+def run_python(pages: list[npt.NDArray[np.uint8]], settings: PrintSettings) -> tuple[bytes, dict[int, list]]:
     """Run the Python pipeline, recording every Fine encoder call.
 
     Wraps the Fine entries of `pipeline._DITHER_FNS` and `_PLANE_ENCODERS`
@@ -229,7 +249,8 @@ def run_python(page: npt.NDArray[np.uint8], settings: PrintSettings) -> tuple[by
         plane_encoders[plane] = recording_encoder(plane)
     try:
         out = io.BytesIO()
-        pipeline.filter_page(A4_W, A4_H, page, settings, out)
+        job = [(page.shape[1], page.shape[0], page) for page in pages]
+        pipeline.filter_pages(job, settings, out, page_count=len(job))
     finally:
         dither_fns[True] = dither
         plane_encoders.update(encoders)
@@ -263,12 +284,20 @@ def block_layout(capture) -> list[tuple[str, int, int, int]]:
     ]
 
 
-def compare(expected: bytes, actual: bytes, calls: dict[int, list], show: int, dump: Path | None) -> bool:
+def compare(
+    expected: bytes, actual: bytes, calls: dict[int, list], show: int, dump: Path | None, *, per_line: bool = True
+) -> bool:
     """Print a report of the differences; return True if the streams are identical."""
     print(f"size: original {len(expected)}, python {len(actual)}")
     if expected == actual:
         print("IDENTICAL")
         return True
+    at = first_diff(expected, actual)
+    print(f"first difference at byte {at}:")
+    print(f"  original {hex_window(expected, at, 24)}")
+    print(f"  python   {hex_window(actual, at, 24)}")
+    if not per_line:
+        return False
 
     exp, act = parse_xl2hb_capture(expected, "original"), parse_xl2hb_capture(actual, "python")
     print("PJL header:", "same" if exp.pjl_header == act.pjl_header else "DIFFERENT")
@@ -296,9 +325,13 @@ def compare(expected: bytes, actual: bytes, calls: dict[int, list], show: int, d
     if headers_differ:
         print(f"plane headers: {headers_differ} blocks differ in the 14-byte header")
 
+    # Row width in bytes from the original's first plane header (+4, big-endian).
+    row_bytes = int.from_bytes(exp.blocks[0].expected_blob[4:6], "big") if exp.blocks else FINE_ROW_BYTES
     all_ok = True
     for plane in range(4):
-        all_ok &= compare_plane(plane, by_line(exp, plane), by_line(act, plane), calls.get(plane, []), show, dump)
+        all_ok &= compare_plane(
+            plane, by_line(exp, plane), by_line(act, plane), calls.get(plane, []), show, dump, row_bytes
+        )
     return all_ok
 
 
@@ -322,7 +355,13 @@ def quantise(data: bytes) -> bytes:
 
 
 def compare_plane(
-    plane: int, exp: dict[int, bytes], act: dict[int, bytes], recorded: list, show: int, dump: Path | None
+    plane: int,
+    exp: dict[int, bytes],
+    act: dict[int, bytes],
+    recorded: list,
+    show: int,
+    dump: Path | None,
+    row_bytes: int = FINE_ROW_BYTES,
 ) -> bool:
     """Compare one plane line by line: encoded bytes, decoded 4bpp data, and the encoder port.
 
@@ -344,18 +383,18 @@ def compare_plane(
             decoded[line] = decode_fine_plane(entry)
         except (ValueError, KeyError):
             undecodable.append(line)
-    blank = bytes(FINE_ROW_BYTES)
+    blank = bytes(row_bytes)
     # 4bpp data as the encoder sees it after quantisation; a missing entry is a blank line.
     exp_px = {line: decoded.get(line, blank) for line in lines}
     act_px = {line: quantise(inputs[line]) if line in inputs else blank for line in lines}
     dither_bad = [line for line in lines if exp_px[line] != act_px[line]]
     encoder_bad = [line for line in decoded if encode_fine_plane(decoded[line]) != exp[line]]
-    wrong_len = [line for line in decoded if len(decoded[line]) != FINE_ROW_BYTES]
+    wrong_len = [line for line in decoded if len(decoded[line]) != row_bytes]
 
     print(f"{name}: {len(lines)} lines, {len(bad)} differ")
     print(f"    only original {len(exp.keys() - act.keys())}, only python {len(act.keys() - exp.keys())}")
     print(f"    decoder: {len(decoded)} of {len(exp)} original lines decoded", end="")
-    print(f", {len(wrong_len)} with a length other than {FINE_ROW_BYTES}" if wrong_len else "")
+    print(f", {len(wrong_len)} with a length other than {row_bytes}" if wrong_len else "")
     print(f"    dither:  {len(lines) - len(dither_bad)} of {len(lines)} lines match after quantisation")
     print(f"    encoder: {len(decoded) - len(encoder_bad)} of {len(decoded)} original lines re-encode identically")
     for line in undecodable[:show]:
@@ -409,10 +448,13 @@ def main() -> int:
     parser.add_argument("--show", type=int, default=3, help="mismatching entries to show per plane (default 3)")
     parser.add_argument("--dump", type=Path, help="directory to save the per-line comparison of differing planes to")
     parser.add_argument("--save", type=Path, help="directory to save both XL2HB streams to")
+    parser.add_argument("--paper", default="A4", choices=sorted(PAPER_SIZES), help="paper size (default A4)")
+    parser.add_argument("--pages", type=int, default=1, help="pages in the job; each shifts the pattern down")
     args = parser.parse_args()
 
-    page = make_page(args.pattern, args.top, args.lines, args.seed)
-    rc = make_rc(args.rc)
+    size = PAPER_SIZES[args.paper]
+    pages = [make_page(args.pattern, args.top + 37 * i, args.lines, args.seed + i, size) for i in range(args.pages)]
+    rc = make_rc([f"PageSize={args.paper}", *args.rc])
     # Both drivers read the same rc file.
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     rc_path = CACHE_DIR / "last.rc"
@@ -421,13 +463,14 @@ def main() -> int:
     if settings.resolution != Resolution.FINE:
         print("note: rc is not set to Fine, comparing Normal mode")
 
-    expected = run_original(ppm_bytes(page), rc)
-    actual, calls = run_python(page, settings)
+    expected = run_original(b"".join(map(ppm_bytes, pages)), rc)
+    actual, calls = run_python(pages, settings)
     if args.save:
         args.save.mkdir(parents=True, exist_ok=True)
         (args.save / "original.xl2hb").write_bytes(expected)
         (args.save / "python.xl2hb").write_bytes(actual)
-    return 0 if compare(expected, actual, calls, args.show, args.dump) else 1
+    per_line = args.pages == 1 and settings.resolution == Resolution.FINE
+    return 0 if compare(expected, actual, calls, args.show, args.dump, per_line=per_line) else 1
 
 
 if __name__ == "__main__":

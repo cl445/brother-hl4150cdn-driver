@@ -324,12 +324,13 @@ def get_image_dimensions(page_size: str) -> tuple[int, int]:
 def get_image_dimensions_fine(page_size: str) -> tuple[int, int]:
     """Return (source_width, source_height) for Fine mode BeginImage.
 
-    Fine mode uses the raw paper width without 32-pixel rounding
-    (A4: 4760, not 4768). Height is the same as Normal.
-    Verified from captures: Fine A4 = (4760, 6808).
+    Fine mode rounds the paper width up to 8 pixels instead of 32
+    (raster_encode.c:352): A4 4760 stays 4760 (Normal 4768), Letter 4900
+    becomes 4904. Height is the same as Normal. Verified against
+    brhl4150cdnfilter for all 21 paper sizes.
     """
     pw, _ = PAPER_SIZES[page_size]
-    return pw, image_height(page_size)
+    return (pw + 7) & ~7, image_height(page_size)
 
 
 # ---------------------------------------------------------------------------
