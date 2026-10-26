@@ -56,6 +56,13 @@ try:
 except ImportError:
     HAS_BAND_KERNEL = False
 
+try:
+    from _fine_fast import render_band_fine  # type: ignore[import-not-found]
+
+    HAS_FINE_BAND_KERNEL = True
+except ImportError:
+    HAS_FINE_BAND_KERNEL = False
+
 logger = logging.getLogger(__name__)
 
 # Per-mode dither dispatcher (intensity ndarray, line_idx, sw, channel) -> packed bytes.
@@ -241,11 +248,36 @@ def _fine_overrun_planes(row: npt.NDArray[np.uint8], width: int, inks: tuple[npt
     Returns:
         True if byte 0 (pixels 0 and 1) of M, Y and K must be zeroed.
     """
-    if width < 2 or width // 2 != (width + 7) // 8 * 4:
+    if not _fine_overrun_possible(width):
         return False
     if any(arr[width - 1] != 255 for arr in inks):
         return False
     return bool(np.array_equal(row[3 * width - 6 : 3 * width - 3], row[3 * width - 3 : 3 * width]))
+
+
+def _fine_overrun_possible(width: int) -> bool:
+    """Whether a row of `width` pixels ends exactly at the end of its plane buffer (see `_fine_overrun_planes`).
+
+    Returns:
+        True if the overrun byte can land in the next plane.
+    """
+    return width >= 2 and width // 2 == (width + 7) // 8 * 4
+
+
+def _fine_overrun_rows(band: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
+    """The RGB part of `_fine_overrun_planes` for every row of `band`.
+
+    `render_band_fine` adds the no-ink test of the last pixel. The test
+    looks at the input pixels, before saturation and the input remap.
+
+    Returns:
+        One uint8 flag per row: the geometry allows the overrun and the last
+        two input pixels are equal.
+    """
+    if not _fine_overrun_possible(width):
+        return np.zeros(band.shape[0], dtype=np.uint8)
+    tail = band[:, 3 * width - 6 : 3 * width]
+    return (tail[:, :3] == tail[:, 3:]).all(axis=1).view(np.uint8)
 
 
 def _clear_first_byte(data: bytes) -> bytes:
@@ -263,8 +295,9 @@ def _encode_lines(
 ) -> Iterator[LineCodes]:
     """Colour-convert, dither and encode the page one scanline at a time.
 
-    Reference path for Fine mode, for installs without the native band
-    kernel, and for dither channels without a threshold matrix.
+    Reference path for the native band kernels; used on installs without
+    them and for dither channels they do not cover (Normal channels without
+    a threshold matrix, Fine channels without nibble tables).
 
     Yields:
         Encoded planes of each input row, top to bottom.
@@ -363,16 +396,19 @@ def _band_kernel_colour(
 ) -> _KernelColour | None:
     """Return the colour arguments for `render_band`, or None if it cannot render the page.
 
-    The kernel covers Normal mode with threshold-matrix dither channels and
-    needs the native module. It gathers through the installed inverse LUT of
-    `table` when there is one and interpolates the grid otherwise.
+    The kernels cover Normal mode with threshold-matrix dither channels
+    (`render_band`) and Fine mode with BRCD nibble tables
+    (`render_band_fine`); each needs its native module. Both gather through
+    the installed inverse LUT of `table` when there is one and interpolate
+    the grid otherwise. `render_band_fine` takes the same colour arguments.
 
     Returns:
         The kernel's colour arguments, or None for the per-line path.
     """
-    if not HAS_BAND_KERNEL or is_fine:
-        return None
-    if any(channel.threshold_matrix is None for channel in channels.values()):
+    if is_fine:
+        if not HAS_FINE_BAND_KERNEL or any(channel.nibble_levels is None for channel in channels.values()):
+            return None
+    elif not HAS_BAND_KERNEL or any(channel.threshold_matrix is None for channel in channels.values()):
         return None
     inverse = color_lut.inverse_lut(table)
     if inverse is not None:
@@ -427,6 +463,8 @@ def _encode_lines_banded(
     colour: _ColourSetup,
     channels: dict[str, DitherChannel],
     kernel_colour: _KernelColour,
+    *,
+    is_fine: bool,
 ) -> Iterator[LineCodes]:
     """Like `_encode_lines`, but whole bands at a time in the native kernel.
 
@@ -437,8 +475,11 @@ def _encode_lines_banded(
     Yields:
         Encoded planes of each input row, top to bottom.
     """
-    # Tile the thresholds up front; the render threads only read them.
-    thresholds = tuple(channels[c].tiled_thresholds(sw) for c in "KCMY")
+    # Prepare the dither tables up front; the render threads only read them.
+    if is_fine:
+        tables = tuple(np.ascontiguousarray(channels[c].nibble_levels) for c in "KCMY")
+    else:
+        tables = tuple(channels[c].tiled_thresholds(sw) for c in "KCMY")
 
     def encode(band: npt.NDArray[np.uint8], first_line: int) -> list[LineCodes]:
         n = band.shape[0]
@@ -447,7 +488,11 @@ def _encode_lines_banded(
         if colour.adjusts_rgb:
             rgb = _page_rows(_adjust_rgb(np.ascontiguousarray(band), n * width, colour), width, n)
         lengths = np.empty((n, 4), dtype=np.int32)
-        data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, *thresholds, lengths)
+        if is_fine:
+            overrun = _fine_overrun_rows(band, width)
+            data = render_band_fine(rgb, skip, overrun, width, first_line, sw, *kernel_colour, *tables, lengths)
+        else:
+            data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, *tables, lengths)
         codes: list[LineCodes] = []
         pos = 0
         for k_len, c_len, m_len, y_len in lengths.tolist():
@@ -562,7 +607,7 @@ def _render_page(
     if mono:
         lines = _encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
     elif kernel_colour is not None:
-        lines = _encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour)
+        lines = _encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour, is_fine=is_fine)
     else:
         lines = _encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
 

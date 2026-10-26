@@ -7,7 +7,18 @@
   are reserved as pattern headers.
 * :func:`encode_fine_plane` — runs both stages back-to-back; returns
   empty bytes for an all-zero scanline.
+
+The functions here are the reference implementation. `encode_fine_plane`
+uses the native `_fine_fast` codec when it is built and falls back to
+:func:`encode_fine_plane_py` otherwise.
 """
+
+try:
+    from _fine_fast import encode_fine_plane as _encode_fine_plane_native  # type: ignore[import-not-found]
+
+    HAS_CYTHON_FINE = True
+except ImportError:
+    HAS_CYTHON_FINE = False
 
 
 def compress_rle_preencode(data: bytes) -> bytes:
@@ -581,6 +592,17 @@ def compress_pattern_encode(data: bytes) -> bytes:
 
 def encode_fine_plane(data: bytes) -> bytes:
     """Encode a single Fine-mode scanline through both compression stages.
+
+    Returns:
+        Compressed bytes, or empty bytes if the scanline is all-zero.
+    """
+    if HAS_CYTHON_FINE:
+        return _encode_fine_plane_native(data)
+    return encode_fine_plane_py(data)
+
+
+def encode_fine_plane_py(data: bytes) -> bytes:
+    """Pure-Python :func:`encode_fine_plane`, the reference for the native codec.
 
     Returns:
         Compressed bytes, or empty bytes if the scanline is all-zero.

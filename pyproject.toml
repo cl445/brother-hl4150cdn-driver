@@ -156,7 +156,7 @@ known_first_party = [
     "dither", "fine_encoder", "page_stream", "pipeline", "plane_encoders", "ppm",
     "rle", "saturation", "settings", "transforms", "xl2hb",
     # Optional Cython modules built by setup_cython.py (pure-Python fallback).
-    "_band_fast", "_color_fast", "_dither_fast", "_rle_fast",
+    "_band_fast", "_color_fast", "_dither_fast", "_fine_fast", "_rle_fast",
 ]
 # Treat the `test` and `dev` extras as dev groups so their entries
 # (pytest, ruff, ...) are not required to be imported from main code.

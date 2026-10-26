@@ -4,12 +4,15 @@ Loads the i386 ELF's PT_LOAD segments into Unicorn and calls a function
 with the cdecl convention, so self-contained routines of the original
 (no calls, no syscalls) can serve as a reference for their Python ports.
 
-    uv run --with unicorn python scripts/native_codec.py [N]
+    uv run --with unicorn python scripts/native_codec.py [N] [--cython]
 
 compares `fine_encoder` against the binary on N random scanlines
-(default 2000) and prints the first mismatch per stage.
+(default 2000) and prints the first mismatch per stage. With --cython it
+checks the native `_fine_fast` codec instead (build it first, see
+setup_cython.py).
 """
 
+import importlib
 import random
 import struct
 import sys
@@ -104,27 +107,32 @@ def random_line(rng: random.Random, n: int = 2380) -> bytes:
 
 def main() -> int:
     """Fuzz both Fine codec stages against the binary."""
-    count = int(sys.argv[1]) if len(sys.argv) > 1 else 2000
+    args = [a for a in sys.argv[1:] if a != "--cython"]
+    count = int(args[0]) if args else 2000
+    rle_preencode, pattern_encode = compress_rle_preencode, compress_pattern_encode
+    if "--cython" in sys.argv[1:]:
+        fast = importlib.import_module("_fine_fast")
+        rle_preencode, pattern_encode = fast.rle_preencode, fast.pattern_encode
     native = NativeFilter()
     rng = random.Random(1)  # noqa: S311 - reproducible test data
     bad = {"stage 1": 0, "stage 2": 0}
     for i in range(count):
         line = random_line(rng)
         s1 = native.rle_preencode(line)
-        if compress_rle_preencode(line) != s1:
+        if rle_preencode(line) != s1:
             if not bad["stage 1"]:
                 print(f"stage 1 differs on case {i}: input {line[:24].hex(' ')} ...")
             bad["stage 1"] += 1
         s2 = native.pattern_encode(s1)
-        ours = compress_pattern_encode(s1)
+        ours = pattern_encode(s1)
         if ours != s2:
             if not bad["stage 2"]:
                 at = next(
                     (j for j, (a, b) in enumerate(zip(ours, s2, strict=False)) if a != b), min(len(ours), len(s2))
                 )
-                print(f"stage 2 differs on case {i} at byte {at} (len native {len(s2)}, python {len(ours)})")
+                print(f"stage 2 differs on case {i} at byte {at} (len native {len(s2)}, ours {len(ours)})")
                 print(f"  native {s2[max(0, at - 8) : at + 12].hex(' ')}")
-                print(f"  python {ours[max(0, at - 8) : at + 12].hex(' ')}")
+                print(f"  ours   {ours[max(0, at - 8) : at + 12].hex(' ')}")
             bad["stage 2"] += 1
     for stage, n in bad.items():
         print(f"{stage}: {count - n} of {count} identical")

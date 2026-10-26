@@ -38,9 +38,10 @@ instead of 25 s without the improve-gray inverse LUT, and 46 s instead of
 - CUPS
 - Optional, for speed: a C compiler and the Python headers (Debian:
   `sudo apt install build-essential python3-dev`). `install.sh` then
-  builds the Cython modules (RLE encoders, colour lookup, dither and a
-  band renderer that uses several cores); without them the driver falls
-  back to pure Python, which is several times slower.
+  builds the Cython modules (RLE encoders, colour lookup, dither, the
+  Fine codec and band renderers that use several cores); without them
+  the driver falls back to pure Python, which is several times slower
+  (Fine mode about 30 times).
 - About 260 MB of disk space for the precomputed inverse colour LUTs
   (Normal and Vivid colour matching, each with and without improve gray;
   64 MiB each). `install.sh` computes them, which takes about four minutes

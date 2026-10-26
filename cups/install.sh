@@ -125,8 +125,9 @@ if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" cli.py --pr
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
 fi
 
-# Optional Cython build of the RLE encoders, the colour-LUT gather and the band
-# renderer (colour + dither + RLE per band, renders a page on several cores).
+# Optional Cython build of the RLE encoders, the colour-LUT gather, the band
+# renderer (colour + dither + RLE per band, renders a page on several cores)
+# and its Fine mode counterpart with the Fine codec.
 # Needs a C compiler and the Python headers (Debian: python3-dev); pure-Python
 # fallback otherwise.
 echo "Building Cython acceleration..."

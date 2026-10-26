@@ -31,6 +31,13 @@ try:
 except ImportError:
     HAS_CYTHON_DITHER = False
 
+try:
+    from _fine_fast import dither_row_4bpp  # type: ignore[import-not-found]
+
+    HAS_CYTHON_DITHER_4BPP = True
+except ImportError:
+    HAS_CYTHON_DITHER_4BPP = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -370,6 +377,8 @@ def dither_channel_4bpp_arr(
 
     if channel.nibble_levels is not None:
         # Plain table lookup, as dither_ordered_4ch_4bpp: levels[ink][y % h][x % w].
+        if HAS_CYTHON_DITHER_4BPP:
+            return dither_row_4bpp(row_arr, channel.nibble_levels, y, width)
         cols = np.arange(width) % channel.width
         levels = channel.nibble_levels[255 - row_arr[:width], y % channel.height, cols]
         return _nibble_pack(levels, width)
