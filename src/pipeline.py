@@ -170,6 +170,24 @@ def is_blank_page(pixel_data: PageBuffer) -> bool:
     return arr.size == 0 or int(arr.min()) == 255
 
 
+def chain_peeked(
+    first: tuple[int, int, PageData], rest: Iterator[tuple[int, int, PageData]]
+) -> Iterator[tuple[int, int, PageData]]:
+    """Yield a page taken off a job with `next()`, then the rest of the job.
+
+    Unlike `itertools.chain([first], rest)`, which keeps its arguments and
+    so the first page for the whole job, this lets go of `first` once it
+    has been handed out. That matters for whole-page buffers (~100 MB for
+    A4).
+
+    Yields:
+        `first`, then the pages of `rest`.
+    """
+    yield first
+    del first
+    yield from rest
+
+
 def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tuple[int, int, PageBuffer]]:
     """Skip the pure-white pages of a job (BRSkipBlank).
 
@@ -186,6 +204,9 @@ def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tup
             logger.info("skipping blank page")
             continue
         yield width, height, rows
+        # Drop the page (and the input it may be a view of) before the next
+        # one is collected, so that only one whole page is held at a time.
+        del rows, data
 
 
 def _flip_vertical(rows: npt.NDArray[np.uint8], paper_h: int) -> npt.NDArray[np.uint8]:
@@ -712,7 +733,11 @@ def _render_pages(
     """
     duplex = settings.duplex != DuplexMode.NONE
     page_buf = io.BytesIO()
-    for index, (width, height, pixel_data) in enumerate(pages):
+    # A counter instead of enumerate(): enumerate keeps the last (index,
+    # page) pair until the next page has been read, which would hold two
+    # whole-page buffers at once.
+    index = 0
+    for width, height, pixel_data in pages:
         page_buf.seek(0)
         page_buf.truncate()
         _render_page(
@@ -724,8 +749,12 @@ def _render_pages(
             channels,
             back_side=duplex and index % 2 == 1,
         )
+        # Release the page's raster before the next page is read; with
+        # whole-page buffers (skip blank, flipped pages) two would add up.
+        del pixel_data
         with page_buf.getbuffer() as page:
             output.write(page)
+        index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
 
 
 def filter_pages(

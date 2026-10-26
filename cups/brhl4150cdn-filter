@@ -9,7 +9,6 @@ Usage (called by CUPS):
 """
 
 import contextlib
-import itertools
 import logging
 import os
 import shutil
@@ -27,7 +26,7 @@ _SRC_DIR = _SCRIPT_DIR.parent / "src"
 sys.path.insert(0, str(_SRC_DIR if _SRC_DIR.is_dir() else _SCRIPT_DIR))
 
 from page_stream import iter_ppm_pages  # noqa: E402
-from pipeline import PageData, drop_blank_pages, filter_pages  # noqa: E402
+from pipeline import PageData, chain_peeked, drop_blank_pages, filter_pages  # noqa: E402
 from settings import PrintSettings, Resolution, read_ppd_defaults  # noqa: E402
 from xl2hb import PAPER_SIZES  # noqa: E402
 
@@ -172,7 +171,9 @@ def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO) -
     try:
         first = next(pages, None)
         if first is not None:
-            filter_pages(itertools.chain([first], pages), settings, output)
+            pages = chain_peeked(first, pages)
+            del first
+            filter_pages(pages, settings, output)
     except Exception as exc:
         exc.add_note(f"while reading page {counter.count} from Ghostscript")
         raise

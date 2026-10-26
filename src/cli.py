@@ -1,7 +1,6 @@
 """Command-line entry point: read PPM pages from stdin, write XL2HB to stdout."""
 
 import argparse
-import itertools
 import logging
 import sys
 from collections.abc import Iterator
@@ -9,7 +8,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from color_lut import INVERSE_LUT_DIR, write_inverse_luts
-from pipeline import drop_blank_pages, filter_pages
+from pipeline import chain_peeked, drop_blank_pages, filter_pages
 from ppm import read_ppm
 from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 
@@ -101,7 +100,8 @@ def main(argv: list[str] | None = None) -> None:
     if first is None:
         logger.error("No PPM data on stdin")
         sys.exit(1)
-    pages = itertools.chain([first], pages)
+    pages = chain_peeked(first, pages)
+    del first
 
     if settings.skip_blank:
         pages = drop_blank_pages(pages)
@@ -110,8 +110,10 @@ def main(argv: list[str] | None = None) -> None:
     if first is None:
         logger.info("All pages blank, nothing to print")
         return
+    pages = chain_peeked(first, pages)
+    del first
     output = sys.stdout.buffer
-    filter_pages(itertools.chain([first], pages), settings, output)
+    filter_pages(pages, settings, output)
     output.flush()
 
 

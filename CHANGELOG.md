@@ -19,6 +19,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   original sends for the `MediaType=BOND` that Brother's CUPS wrapper
   writes. The earlier `Regular` came from a probe with the wrong rc
   spelling.
+- Jobs that hand whole pages to the renderer held up to three A4 rasters
+  (~100 MB each) at once: the page peeked to detect an empty job stayed
+  referenced by `itertools.chain` for the whole job, and `enumerate` and
+  the blank-page filter kept the previous page while the next was read.
+  The CUPS filter with skip blank now peaks at about 170 MB instead of
+  340 MB (Linux, A4), the CLI at about 230 MB instead of 320 MB.
 - Negative brightness shifted one step too little: the shift is
   `brightness * 255 >> 7`, which rounds down, not toward zero
   (Brightness=-20 shifts by 40, not 39). Affects Normal mode too.
