@@ -150,7 +150,7 @@ uv run nox -s lint            # ruff
 uv run nox -s format_check    # ruff format --check
 uv run nox -s typecheck       # pyrefly
 uv run nox -s deps            # deptry
-uv run nox -s tests           # pytest (1213 tests, needs extracted blobs)
+uv run nox -s tests           # pytest (1223 tests, needs extracted blobs)
 ```
 
 The Cython modules are optional in development too; build them in place
@@ -165,6 +165,37 @@ captures from the manufacturer's filter — pytest decompresses them on
 demand. Adding a new capture-based test is two steps: drop a fresh
 capture into `tests/fixtures/<name>.xl2hb.zst` and reference it from a
 parametrized test (`tests/test_full_pipeline.py` has the existing pattern).
+
+### Comparing with the manufacturer's filter
+
+Byte identity is checked against the original filter itself, which runs
+under Docker (`--platform linux/386`). After `./scripts/extract_blobs.sh`,
+three scripts in `scripts/` do the comparing:
+
+```bash
+# Render a test page or job with both drivers and diff the XL2HB streams.
+uv run python scripts/fine_diff.py hramp --lines 64 --rc Brightness=-20
+uv run python scripts/fine_diff.py edges --paper Letter
+uv run python scripts/fine_diff.py bars --pages 4 --rc Duplex=DuplexNoTumble --rc BRReverse=ON
+
+# Fuzz the Fine codec against the binary's own functions (Unicorn CPU emulator).
+uv run --with unicorn python scripts/native_codec.py 20000 [--cython]
+
+# Trace the original's Fine dither under gdb: its CMYK input and 4bpp output per line.
+uv run python scripts/trace_dither.py solid:128,128,128 --lines 4
+```
+
+`fine_diff.py` defaults to Fine mode on A4 (`--rc BRResolution=Normal` for
+Normal). It prints `IDENTICAL` or the first differing byte; for a
+single-page Fine job it also decodes the original's scanlines and reports,
+per plane, whether the dithered data or the encoder differs. The
+original's output is cached in `build/fine-diff-cache/`, so reruns only
+cost the Python side. `--save DIR` keeps both streams, `--dump DIR` the
+per-line comparison. Run any script with `--help` for the test patterns
+and options.
+
+`trace_dither.py` builds a Docker image with qemu-user and gdb on first
+use, as Docker Desktop's i386 emulation does not support ptrace.
 
 ## License
 
