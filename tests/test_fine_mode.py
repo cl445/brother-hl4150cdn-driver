@@ -13,23 +13,24 @@ import pytest
 
 from fixture_utils import assert_matches_fixture
 from pipeline import filter_page
-from settings import MonoColor, PrintSettings, Resolution
+from settings import MonoColor, PageSize, PrintSettings, Resolution
+from xl2hb import PAPER_SIZES
 
-A4_W, A4_H = 4760, 6812
 TOP = 100
 
 
-def fine_test_page(kind: str, lines: int) -> np.ndarray:
-    """A4 page, white except for `lines` rows of `kind` from row TOP.
+def fine_test_page(kind: str, lines: int, page_size: str = "A4") -> np.ndarray:
+    """Page of `page_size`, white except for `lines` rows of `kind` from row TOP.
 
     Returns:
-        (A4_H, A4_W, 3) uint8 RGB page.
+        (height, width, 3) uint8 RGB page.
     """
-    page = np.full((A4_H, A4_W, 3), 255, np.uint8)
+    width, height = PAPER_SIZES[page_size]
+    page = np.full((height, width, 3), 255, np.uint8)
     band = page[TOP : TOP + lines]
     if kind == "hramp":
         # Black on the left, white on the right: the row ends in a no-ink run.
-        band[:] = (np.arange(A4_W) * 256 // A4_W).astype(np.uint8)[None, :, None]
+        band[:] = (np.arange(width) * 256 // width).astype(np.uint8)[None, :, None]
     elif kind == "bars":
         colours = [(0, 255, 255), (255, 0, 255), (255, 255, 0), (255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 0, 0)]
         colours.append((128, 128, 128))
@@ -50,6 +51,9 @@ FINE_CASES = {
     "fine_toner_save": ("hramp", 8, {"toner_save": True}, ["TonerSaveMode=ON"]),
     "fine_mono": ("bars", 16, {"mono_color": MonoColor.MONO}, ["BRMonoColor=Mono"]),
     "fine_brightness_n20": ("hramp", 8, {"brightness": -20}, ["Brightness=-20"]),
+    # Widths that are not a multiple of 8 pixels: rows are padded to 8 (Letter 4900 -> 4904).
+    "fine_letter": ("bars", 16, {"page_size": PageSize.LETTER}, ["PageSize=Letter"]),
+    "fine_postcard": ("hramp", 8, {"page_size": PageSize("Postcard")}, ["PageSize=Postcard"]),
 }
 
 # Normal mode, same pages: negative brightness rounds its shift down.
@@ -62,8 +66,9 @@ NORMAL_CASES = {
 def _render(kind: str, lines: int, overrides: dict, *, fine: bool) -> bytes:
     resolution = Resolution.FINE if fine else Resolution.NORMAL
     settings = PrintSettings(resolution=resolution, **overrides)
+    page = fine_test_page(kind, lines, settings.page_size)
     out = io.BytesIO()
-    filter_page(A4_W, A4_H, fine_test_page(kind, lines), settings, out)
+    filter_page(page.shape[1], page.shape[0], page, settings, out)
     return out.getvalue()
 
 
