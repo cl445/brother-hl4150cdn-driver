@@ -56,6 +56,20 @@ class DitherChannel:
 
     # Threshold matrix tiled to the target page width, keyed by width.
     _tiled_cache: dict[int, npt.NDArray[np.uint8]] = field(default_factory=dict, init=False, repr=False)
+    # Column of the nibble matrix for every pixel of a row, keyed by row width.
+    _column_cache: dict[int, npt.NDArray[np.intp]] = field(default_factory=dict, init=False, repr=False)
+
+    def matrix_columns(self, width: int) -> npt.NDArray[np.intp]:
+        """Return `x % self.width` for x in range(width), cached per width.
+
+        Returns:
+            Array of `width` column indices into the matrix.
+        """
+        cached = self._column_cache.get(width)
+        if cached is None:
+            cached = np.arange(width) % self.width
+            self._column_cache[width] = cached
+        return cached
 
     def tiled_thresholds(self, width: int) -> npt.NDArray[np.uint8]:
         """Return the threshold matrix tiled to `width`, cached per width.
@@ -164,7 +178,8 @@ def dither_load_brcd(path: str, *, nibbles: bool = False) -> DitherChannel:
         DitherChannel with the threshold matrix or, with `nibbles`, the per-level nibbles.
 
     Raises:
-        ValueError: If the magic bytes are wrong or pattern data is truncated.
+        ValueError: If the magic bytes are wrong, pattern data is truncated, or a
+            Fine table's width is not a whole number of bytes.
     """
     with Path(path).open("rb") as f:
         magic = f.read(4)
@@ -182,6 +197,9 @@ def dither_load_brcd(path: str, *, nibbles: bool = False) -> DitherChannel:
                 raise ValueError(msg)
             patterns.append(pat)
     if nibbles:
+        if width % 8:
+            msg = f"Fine BRCD width must be a multiple of 8 bits, got {width} in {path}"
+            raise ValueError(msg)
         cols = width >> 3
         levels = np.frombuffer(b"".join(patterns), dtype=np.uint8).reshape(256, row_bytes)
         levels = levels[:, : height * cols].reshape(256, height, cols).copy()
@@ -379,8 +397,7 @@ def dither_channel_4bpp_arr(
         # Plain table lookup, as dither_ordered_4ch_4bpp: levels[ink][y % h][x % w].
         if HAS_CYTHON_DITHER_4BPP:
             return dither_row_4bpp(row_arr, channel.nibble_levels, y, width)
-        cols = np.arange(width) % channel.width
-        levels = channel.nibble_levels[255 - row_arr[:width], y % channel.height, cols]
+        levels = channel.nibble_levels[255 - row_arr[:width], y % channel.height, channel.matrix_columns(width)]
         return _nibble_pack(levels, width)
 
     ink = (255 - row_arr[:width]).astype(np.int32)

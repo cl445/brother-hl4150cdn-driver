@@ -7,12 +7,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
-- Reverse print (`BRReverse=ON`) turns every page by 180 degrees and
-  keeps the page order, as the manufacturer's filter does; before, it
-  reversed the page order. Long-edge duplex jobs therefore no longer need
-  the page count up front: the CUPS filter streams them from stdin like
-  any other job instead of spooling them and counting their pages, and
-  `filter_pages` has lost its `page_count` argument.
+- Reverse print (`BRReverse=ON`) keeps the page order and sends every page
+  bottom-up with the page marker the manufacturer's filter uses for it;
+  before, it reversed the page order. On paper this should come out turned
+  by 180 degrees, which has not been checked on the printer yet.
+  Long-edge duplex jobs therefore no longer need the page count up front:
+  the CUPS filter streams them from stdin like any other job instead of
+  spooling them and counting their pages, and `filter_pages` has lost its
+  `page_count` argument.
 - Skip blank pages (`BRSkipBlank=ON`) also works in duplex; the next page
   takes the blank one's side, as in the original.
 - Bond paper is sent as media type `Transparency`, which is what the

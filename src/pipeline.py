@@ -200,13 +200,14 @@ def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tup
     """
     for width, height, data in pages:
         rows = collect_rows(data, width, height)
+        # `rows` may be a view of `data`; drop both, blank or not, before
+        # the next page is collected, so that only one whole page is held.
+        del data
         if is_blank_page(rows):
             logger.info("skipping blank page")
-            continue
-        yield width, height, rows
-        # Drop the page (and the input it may be a view of) before the next
-        # one is collected, so that only one whole page is held at a time.
-        del rows, data
+        else:
+            yield width, height, rows
+        del rows
 
 
 def _flip_vertical(rows: npt.NDArray[np.uint8], paper_h: int) -> npt.NDArray[np.uint8]:
@@ -286,11 +287,9 @@ def _fine_overrun_planes(row: npt.NDArray[np.uint8], width: int, inks: tuple[npt
     Returns:
         True if byte 0 (pixels 0 and 1) of M, Y and K must be zeroed.
     """
-    if not _fine_overrun_possible(width):
-        return False
     if any(arr[width - 1] != 255 for arr in inks):
         return False
-    return bool(np.array_equal(row[3 * width - 6 : 3 * width - 3], row[3 * width - 3 : 3 * width]))
+    return bool(_fine_overrun_rows(row[None, :], width)[0])
 
 
 def _fine_overrun_possible(width: int) -> bool:
@@ -305,8 +304,9 @@ def _fine_overrun_possible(width: int) -> bool:
 def _fine_overrun_rows(band: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
     """The RGB part of `_fine_overrun_planes` for every row of `band`.
 
-    `render_band_fine` adds the no-ink test of the last pixel. The test
-    looks at the input pixels, before saturation and the input remap.
+    `_fine_overrun_planes` and `render_band_fine` add the no-ink test of
+    the last pixel. The test looks at the input pixels, before saturation
+    and the input remap.
 
     Returns:
         One uint8 flag per row: the geometry allows the overrun and the last
@@ -589,10 +589,10 @@ def _render_page(
         sw, sh = get_image_dimensions(page_size)
         bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
 
-    # Long-edge back pages are marked and sent mirrored top-to-bottom.
-    # BRReverse (rotate 180 degrees) makes Brother's filter read every page
-    # bottom-up with the same marker, so on a long-edge back page the two
-    # flips cancel out (verified against captures).
+    # Long-edge back pages are sent bottom-up (rows mirrored, columns not)
+    # with the back-side marker. BRReverse makes Brother's filter send every
+    # page that way, so on a long-edge back page the two cancel out
+    # (verified against captures).
     flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
     if flip:
         blocks: RowBlocks = (_flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
@@ -765,8 +765,9 @@ def filter_pages(
     """Render a job's pages inside a single XL2HB session.
 
     Pages are consumed lazily in input order; with duplex, every second
-    page is a back side. `settings.reverse` keeps the page order and turns
-    each page by 180 degrees, as Brother's filter does.
+    page is a back side. `settings.reverse` keeps the page order and sends
+    each page bottom-up with the back-side marker, as Brother's filter does.
+    `settings.skip_blank` drops pure-white pages before sides are assigned.
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
@@ -777,6 +778,10 @@ def filter_pages(
         settings: PrintSettings of the job
         output: writable binary stream
     """
+    if settings.skip_blank:
+        # Idempotent: callers that drop blanks first to detect an empty job
+        # hand over whole-page buffers, which are only viewed again here.
+        pages = drop_blank_pages(pages)
     # PJL header always reports 600 dpi; Fine mode differs only in dithering.
     color = settings.mono_color != MonoColor.MONO
     pjl = generate_pjl_header(

@@ -24,13 +24,14 @@ class _Page(np.ndarray):
     """ndarray subclass, so that the test can hold weak references to pages."""
 
 
-def _pages(count: int, alive: list) -> Iterator[tuple[int, int, np.ndarray]]:
-    """Yield `count` inked pages; before each one, check the previous pages are gone."""
+def _pages(count: int, alive: list, blank: frozenset[int] = frozenset()) -> Iterator[tuple[int, int, np.ndarray]]:
+    """Yield `count` pages, those in `blank` pure white; before each one, check the previous pages are gone."""
     for i in range(count):
         gc.collect()
         assert all(ref() is None for ref in alive), f"page {len(alive)} still referenced while reading page {i + 1}"
         page = np.full((H, W * 3), 255, np.uint8).view(_Page)
-        page[10:20] = i * 20
+        if i not in blank:
+            page[10:20] = i * 20
         alive.append(weakref.ref(page))
         yield W, H, page
         del page
@@ -42,11 +43,13 @@ def _pages(count: int, alive: list) -> Iterator[tuple[int, int, np.ndarray]]:
 def test_previous_page_is_released_before_the_next_is_read(duplex, skip_blank, reverse):
     alive: list = []
     settings = PrintSettings(duplex=duplex, skip_blank=skip_blank, reverse=reverse)
-    pages = _pages(4, alive)
+    # Pages 2 and 3 are blank: with skip blank, a dropped page must not
+    # linger either while the next one is read.
+    pages = _pages(5, alive, blank=frozenset({1, 2}))
     first = next(pages)
     pages = chain_peeked(first, pages)
     del first
     if skip_blank:
         pages = drop_blank_pages(pages)
     filter_pages(pages, settings, io.BytesIO())
-    assert len(alive) == 4
+    assert len(alive) == 5

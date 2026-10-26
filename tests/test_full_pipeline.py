@@ -637,13 +637,19 @@ def test_reverse_job_matches_brother_capture(fixture, duplex):
     assert_matches_fixture(fixture, out.getvalue())
 
 
-def test_skip_blank_in_duplex_matches_brother_capture():
-    """A blank page is dropped before sides are assigned: the next page takes its side."""
+@pytest.mark.parametrize("pre_drop", [True, False], ids=["dropped-by-caller", "dropped-by-filter_pages"])
+def test_skip_blank_in_duplex_matches_brother_capture(pre_drop):
+    """A blank page is dropped before sides are assigned: the next page takes its side.
+
+    filter_pages drops blank pages itself; callers that dropped them first
+    (to detect an empty job) get the same output.
+    """
     a, b, c, _ = _duplex_test_pages()
     white = (_A4_W, _A4_H, b"\xff" * (_A4_W * _A4_H * 3))
     settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE, skip_blank=True)
+    pages = [a, white, b, c]
     out = io.BytesIO()
-    filter_pages(drop_blank_pages([a, white, b, c]), settings, out)
+    filter_pages(drop_blank_pages(pages) if pre_drop else pages, settings, out)
     assert_matches_fixture("skip_blank_long_edge", out.getvalue())
 
 
