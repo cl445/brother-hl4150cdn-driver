@@ -160,13 +160,14 @@ IMAGING_HEIGHT_PT = {
 # depth, band config, and PJL APTMODE differ.
 
 # MediaType strings (each name is prefixed with 'd' on the wire), as
-# brhl4150cdnfilter writes them; it sends Bond paper as Regular.
+# brhl4150cdnfilter writes them for the rc values Brother's CUPS wrapper
+# passes (MediaType=BOND, Env, ...). It sends Bond paper as Transparency.
 MEDIA_TYPE_STRINGS = {
     "Plain": b"dRegular",
     "Thin": b"dThin",
     "Thick": b"dThick",
     "Thicker": b"dThick2",
-    "Bond": b"dRegular",
+    "Bond": b"dTransparency",
     "Envelope": b"dEnvelopes",
     "EnvThin": b"dEnvthin",
     "EnvThick": b"dEnvthick",

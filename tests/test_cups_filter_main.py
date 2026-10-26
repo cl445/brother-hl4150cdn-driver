@@ -126,13 +126,11 @@ def test_usage_error_without_cups_arguments(fake_gs):
     assert result.stdout == b""
 
 
-def test_reverse_long_edge_spools_stdin_and_counts_pages(fake_gs):
+def test_reverse_long_edge_streams_the_job_from_stdin(fake_gs):
+    """Reverse turns pages in place, so the job needs neither spooling nor a page count."""
     result = _run(fake_gs, options=f"{_OPTIONS} Duplex=DuplexNoTumble BRReverse=ON", pages=2)
     assert result.returncode == 0, result.stderr.decode()
-    spool = _gs_call(fake_gs)["args"][-1]
-    assert spool != "-"
-    assert not Path(spool).exists(), "the spooled job is deleted"
-    assert b"reverse long-edge duplex: 2 pages" in result.stderr
+    assert _gs_call(fake_gs)["args"][-1] == "-"
     assert result.stdout.endswith(bytes([OP_END_SESSION]) + generate_pjl_footer())
 
 
@@ -160,14 +158,13 @@ def test_gs_failure_mid_job_sends_only_complete_pages(fake_gs):
     assert "Traceback" not in stderr
 
 
-def test_gs_failure_mid_job_in_reverse_order_sends_no_pages(fake_gs):
-    """Spooled pages would come out with the wrong duplex sides; the session is closed empty."""
+def test_gs_failure_mid_job_in_reverse_order_sends_only_complete_pages(fake_gs):
     options = f"{_OPTIONS} BRReverse=ON"
-    result = _run(fake_gs, options=options, pages=1, mode="truncate")
-    assert result.returncode == 1
-    empty_job = io.BytesIO()
-    filter_pages([], PrintSettings.from_cups_options(options), empty_job)
-    assert result.stdout == empty_job.getvalue()
+    complete = _run(fake_gs, options=options, pages=1)
+    assert complete.returncode == 0
+    broken = _run(fake_gs, options=options, pages=1, mode="truncate")
+    assert broken.returncode == 1
+    assert broken.stdout == complete.stdout
 
 
 def test_fine_resolution_prints_in_normal_mode(fake_gs):

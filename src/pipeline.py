@@ -9,7 +9,6 @@ import contextlib
 import io
 import logging
 import os
-import tempfile
 from collections import deque
 from collections.abc import Buffer, Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -169,6 +168,24 @@ def is_blank_page(pixel_data: PageBuffer) -> bool:
     """
     arr = pixel_data if isinstance(pixel_data, np.ndarray) else np.frombuffer(pixel_data, dtype=np.uint8)
     return arr.size == 0 or int(arr.min()) == 255
+
+
+def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tuple[int, int, PageBuffer]]:
+    """Skip the pure-white pages of a job (BRSkipBlank).
+
+    Brother's filter drops them before sides are assigned, in simplex and
+    duplex alike: the next page takes the blank one's place (verified
+    against captures). Each page is collected into one buffer to be tested.
+
+    Yields:
+        The pages that are not blank, as whole-page buffers.
+    """
+    for width, height, data in pages:
+        rows = collect_rows(data, width, height)
+        if is_blank_page(rows):
+            logger.info("skipping blank page")
+            continue
+        yield width, height, rows
 
 
 def _flip_vertical(rows: npt.NDArray[np.uint8], paper_h: int) -> npt.NDArray[np.uint8]:
@@ -535,7 +552,7 @@ def _render_page(
     Handles: BeginPage -> scanline loop -> flush -> EndPage. `back_side`
     marks the second page of a duplex sheet. Scanlines are read as views
     into `pixel_data`, which may also be a stream of row blocks; only
-    long-edge back pages are collected into one buffer to be mirrored.
+    flipped pages are collected into one buffer to be mirrored.
 
     Raises:
         ValueError: If `pixel_data` has fewer than `height` rows.
@@ -552,8 +569,11 @@ def _render_page(
         bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
 
     # Long-edge back pages are marked and sent mirrored top-to-bottom.
-    flip_back = back_side and settings.duplex == DuplexMode.NO_TUMBLE
-    if flip_back:
+    # BRReverse (rotate 180 degrees) makes Brother's filter read every page
+    # bottom-up with the same marker, so on a long-edge back page the two
+    # flips cancel out (verified against captures).
+    flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+    if flip:
         blocks: RowBlocks = (_flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
         height = paper_h
     elif isinstance(pixel_data, _BUFFER_TYPES):
@@ -566,7 +586,7 @@ def _render_page(
         media_source=MEDIA_SOURCE[settings.input_slot],
         media_type=settings.media_type,
         duplex_mode=DUPLEX_MAP.get(settings.duplex),
-        back_side_marker=flip_back,
+        back_side_marker=flip,
     )
     w.write_set_page_origin()
     mono = settings.mono_color == MonoColor.MONO
@@ -671,13 +691,13 @@ def filter_page(
     if settings.skip_blank and is_blank_page(pixel_data):
         return
 
-    filter_pages([(width, height, pixel_data)], settings, output, page_count=1)
+    filter_pages([(width, height, pixel_data)], settings, output)
 
     _, paper_h = PAPER_SIZES[settings.page_size]
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
 
 
-def _render_pages_forward(
+def _render_pages(
     pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
@@ -708,83 +728,26 @@ def _render_pages_forward(
             output.write(page)
 
 
-def _render_pages_reversed(
-    pages: Iterable[tuple[int, int, PageData]],
-    settings: PrintSettings,
-    channels: dict[str, DitherChannel],
-    output: BinaryIO,
-    page_count: int | None,
-) -> None:
-    """Render pages in input order and write them to `output` last page first.
-
-    Each rendered page (BeginPage..EndPage) goes to a temporary file, so
-    only one raster page is in memory at a time. Page `i` of `n` ends up at
-    position `n - 1 - i`, which decides its duplex side exactly as if the
-    rasters had been reversed before rendering.
-    """
-    duplex = settings.duplex != DuplexMode.NONE
-    spans: list[tuple[int, int]] = []
-    with tempfile.TemporaryFile(prefix="brhl4150cdn-reverse-") as spool:
-        for index, (width, height, pixel_data) in enumerate(pages):
-            # Without page_count the side is unknown; that is only allowed
-            # when it does not change the output (simplex, short-edge duplex).
-            back_side = duplex and page_count is not None and (page_count - 1 - index) % 2 == 1
-            start = spool.tell()
-            _render_page(
-                XL2HBWriter(spool),
-                width,
-                height,
-                pixel_data,
-                settings,
-                channels,
-                back_side=back_side,
-            )
-            spans.append((start, spool.tell() - start))
-
-        if page_count is not None and len(spans) != page_count:
-            logger.error(
-                "Expected %d pages but rendered %d; duplex sides of the reversed job may be wrong",
-                page_count,
-                len(spans),
-            )
-
-        for start, length in reversed(spans):
-            spool.seek(start)
-            output.write(spool.read(length))
-
-
 def filter_pages(
     pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
     output: BinaryIO,
-    page_count: int | None = None,
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
-    Pages are consumed lazily; with duplex, every second page is a back side.
-    With `settings.reverse` the pages are still rendered one at a time in
-    input order, spooled to a temporary file and emitted last page first,
-    so memory use does not grow with the job.
+    Pages are consumed lazily in input order; with duplex, every second
+    page is a back side. `settings.reverse` keeps the page order and turns
+    each page by 180 degrees, as Brother's filter does.
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
-    holds only complete pages: those rendered before the failure in input
-    order, none at all in reverse order (their duplex sides would be wrong).
+    holds only the complete pages rendered before the failure.
 
     Args:
         pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings of the job
         output: writable binary stream
-        page_count: number of pages in `pages`. Required for reverse order
-            with long-edge duplex, where a page's position in the reversed
-            job decides whether it is a mirrored back side.
-
-    Raises:
-        ValueError: If reverse long-edge duplex is requested without `page_count`.
     """
-    if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE and page_count is None:
-        msg = "page_count is required for reverse order with long-edge duplex"
-        raise ValueError(msg)
     # PJL header always reports 600 dpi; Fine mode differs only in dithering.
     color = settings.mono_color != MonoColor.MONO
     pjl = generate_pjl_header(
@@ -811,15 +774,12 @@ def filter_pages(
 
     try:
         channels = _init_channels(settings)
-        if settings.reverse:
-            _render_pages_reversed(pages, settings, channels, output, page_count)
-        else:
-            _render_pages_forward(pages, settings, channels, output)
+        _render_pages(pages, settings, channels, output)
     except Exception:
-        # Only whole pages have reached `output` (see the two render
-        # helpers), so the session can still be closed: the printer prints
-        # the pages it got and ends the job instead of waiting for the rest
-        # of a page. If `output` itself failed there is nothing more to do.
+        # Only whole pages have reached `output` (see _render_pages), so
+        # the session can still be closed: the printer prints the pages it
+        # got and ends the job instead of waiting for the rest of a page.
+        # If `output` itself failed there is nothing more to do.
         with contextlib.suppress(OSError):
             _end_session(w, output)
         raise

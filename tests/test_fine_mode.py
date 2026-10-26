@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 
 from fixture_utils import assert_matches_fixture
-from pipeline import filter_page
-from settings import MonoColor, PageSize, PrintSettings, Resolution
+from pipeline import filter_page, filter_pages
+from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 from xl2hb import PAPER_SIZES
 
 TOP = 100
@@ -82,3 +82,12 @@ def test_fine_page_matches_original(name):
 def test_normal_negative_brightness_matches_original(name):
     kind, lines, overrides, _ = NORMAL_CASES[name]
     assert_matches_fixture(name, _render(kind, lines, overrides, fine=False))
+
+
+def test_fine_reverse_long_edge_job_matches_original():
+    """Reverse with long-edge duplex in Fine mode: pages 1 and 3 are flipped, page 2 is not."""
+    pages = [fine_test_page(kind, 16) for kind in ("hramp", "bars", "noise")]
+    settings = PrintSettings(resolution=Resolution.FINE, duplex=DuplexMode.NO_TUMBLE, reverse=True)
+    out = io.BytesIO()
+    filter_pages([(page.shape[1], page.shape[0], page) for page in pages], settings, out)
+    assert_matches_fixture("fine_reverse3_long_edge", out.getvalue())

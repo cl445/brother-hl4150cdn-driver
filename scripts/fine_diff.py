@@ -143,8 +143,17 @@ def ppm_bytes(page: npt.NDArray[np.uint8]) -> bytes:
     return b"P6\n%d %d\n255\n" % (page.shape[1], page.shape[0]) + page.tobytes()
 
 
-def make_rc(overrides: list[str]) -> str:
+# rc values this driver spells differently from Brother's CUPS wrapper
+# (brhl4150cdnfunc); the original treats an unknown value as the default.
+BROTHER_RC_VALUES = {"MediaType": {"Bond": "BOND", "Envelope": "Env"}}
+
+
+def make_rc(overrides: list[str], *, brother_spelling: bool = True) -> str:
     """Return the default rc file with Fine, A4 and the given Key=Value overrides.
+
+    Overrides use this driver's PPD spellings. With `brother_spelling` they
+    are written as Brother's CUPS wrapper writes them (MediaType=BOND, Env),
+    for the original; without, as PrintSettings reads them.
 
     Raises:
         SystemExit: If an override is not Key=Value or names an unknown key.
@@ -155,7 +164,7 @@ def make_rc(overrides: list[str]) -> str:
         if not sep:
             msg = f"--rc expects Key=Value, got {item!r}"
             raise SystemExit(msg)
-        values[key] = value
+        values[key] = BROTHER_RC_VALUES.get(key, {}).get(value, value) if brother_spelling else value
     lines = []
     for template_line in RC_TEMPLATE.read_text().splitlines():
         key, sep, _ = template_line.partition("=")
@@ -249,8 +258,12 @@ def run_python(pages: list[npt.NDArray[np.uint8]], settings: PrintSettings) -> t
         plane_encoders[plane] = recording_encoder(plane)
     try:
         out = io.BytesIO()
-        job = [(page.shape[1], page.shape[0], page) for page in pages]
-        pipeline.filter_pages(job, settings, out, page_count=len(job))
+        job: list[tuple[int, int, pipeline.PageData]] = [(page.shape[1], page.shape[0], page) for page in pages]
+        if settings.skip_blank:
+            job = list(pipeline.drop_blank_pages(job))
+        # Production prints nothing at all when every page is blank.
+        if job:
+            pipeline.filter_pages(job, settings, out)
     finally:
         dither_fns[True] = dither
         plane_encoders.update(encoders)
@@ -454,17 +467,26 @@ def main() -> int:
 
     size = PAPER_SIZES[args.paper]
     pages = [make_page(args.pattern, args.top + 37 * i, args.lines, args.seed + i, size) for i in range(args.pages)]
-    rc = make_rc([f"PageSize={args.paper}", *args.rc])
-    # Both drivers read the same rc file.
+    overrides = [f"PageSize={args.paper}", *args.rc]
+    # The same settings, each driver with its own spelling of the values.
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     rc_path = CACHE_DIR / "last.rc"
-    rc_path.write_text(rc)
+    rc_path.write_text(make_rc(overrides, brother_spelling=False))
     settings = PrintSettings.from_rc_file(str(rc_path))
     if settings.resolution != Resolution.FINE:
         print("note: rc is not set to Fine, comparing Normal mode")
 
-    expected = run_original(b"".join(map(ppm_bytes, pages)), rc)
+    expected = run_original(b"".join(map(ppm_bytes, pages)), make_rc(overrides))
     actual, calls = run_python(pages, settings)
+    if not actual:
+        # Every page was skipped as blank: compare the original's empty
+        # session with the one filter_pages would write for no pages.
+        empty = io.BytesIO()
+        pipeline.filter_pages([], settings, empty)
+        same = expected == empty.getvalue()
+        print(f"all pages blank: python prints nothing; original {len(expected)} bytes,", end=" ")
+        print("an empty session" if same else "NOT an empty session")
+        return 0 if same else 1
     if args.save:
         args.save.mkdir(parents=True, exist_ok=True)
         (args.save / "original.xl2hb").write_bytes(expected)

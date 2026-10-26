@@ -20,8 +20,10 @@ Envelope #4; for all 21 sizes the page header values match the original.
 Correctness is established by byte-level comparison against captures from
 the manufacturer's filter.
 
-Fine mode (1200 dpi) emits valid framing; the compressed band data is
-not yet byte-identical.
+Fine mode (600x2400 dpi) matches the manufacturer's filter byte for byte
+on the CLI (`--fine`), but has not been checked on the printer yet. Until
+then the PPD does not offer it and the CUPS filter prints Fine requests
+in Normal mode.
 
 On a Raspberry Pi 3B+ with the Cython modules and the precomputed
 inverse LUTs, a 131-page job goes through the CUPS filter in about
@@ -104,7 +106,7 @@ Pass them as `-o key=value` to `lp` / `lpr` for scripting.
 |---|---|---|
 | `PageSize` | A4, Letter, Legal, Executive, A5, PRA5Rotated (A5 long edge), A6, ISOB5, ISOB6, JISB5, JISB6, Postcard, EnvDL, EnvPRC5Rotated (DL long edge), EnvC5, Env10 (Com-10), EnvMonarch, Br3x5, FanFoldGermanLegal (Folio), EnvYou4 (Envelope #4), EnvChou3 (Envelope MAX) | |
 | `BRMediaType` | Plain, Thin, Thick, Thicker, Bond, Envelope, EnvThin, EnvThick, Recycled, Postcard, Label, Glossy | Glossy uses the glossy colour tables |
-| `BRResolution` | 600dpi (Normal), 600x2400dpi (Fine) | Fine mode is incomplete (see Status) |
+| `BRResolution` | 600dpi (Normal) | Fine (600x2400dpi) is CLI-only for now (see Status) |
 | `BRMonoColor` | Auto, FullColor, Mono | |
 | `Duplex` | None, DuplexNoTumble, DuplexTumble | Tumble = short edge; IPP `sides` works too |
 | `BRColorMatching` | Normal, Vivid, None | Each selects its own colour tables |
@@ -113,8 +115,8 @@ Pass them as `-o key=value` to `lp` / `lpr` for scripting.
 | `BRImproveOutput` | OFF, BRLessPaperCurl, BRFixIntensity | |
 | `BRInputSlot` | AutoSelect, Tray1, Tray2, MPTray | |
 | `BRTonerSaveMode` | OFF, ON | Toner-save dither and colour tables |
-| `BRSkipBlank` | OFF, ON | |
-| `BRReverse` | OFF, ON | Reverse page order |
+| `BRSkipBlank` | OFF, ON | Drops pure-white pages, in duplex too |
+| `BRReverse` | OFF, ON | Rotate each page by 180 degrees; page order is kept |
 | `BRBrightness` | -20 … 20 | |
 | `BRContrast` | -20 … 20 | |
 | `BRSaturation` | -20 … 20 | |
@@ -148,7 +150,7 @@ uv run nox -s lint            # ruff
 uv run nox -s format_check    # ruff format --check
 uv run nox -s typecheck       # pyrefly
 uv run nox -s deps            # deptry
-uv run nox -s tests           # pytest (1168 tests, needs extracted blobs)
+uv run nox -s tests           # pytest (1213 tests, needs extracted blobs)
 ```
 
 The Cython modules are optional in development too; build them in place

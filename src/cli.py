@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from color_lut import INVERSE_LUT_DIR, write_inverse_luts
-from pipeline import filter_pages, is_blank_page
+from pipeline import drop_blank_pages, filter_pages
 from ppm import read_ppm
 from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 
@@ -47,9 +47,7 @@ def main(argv: list[str] | None = None) -> None:
         "--fine",
         "-f",
         action="store_true",
-        help=(
-            "Fine mode (600x2400 dpi, experimental): not byte-identical to the original and not verified on hardware"
-        ),
+        help="Fine mode (600x2400 dpi): byte-identical to the original filter, not verified on the printer yet",
     )
     parser.add_argument("--duplex", choices=["none", "long", "short"], default="none")
     parser.add_argument("--debug", "-d", action="store_true", help="Debug output to stderr")
@@ -105,22 +103,15 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     pages = itertools.chain([first], pages)
 
-    page_count = None
-    if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE:
-        # A page's position in the reversed job decides its duplex side,
-        # so the whole job has to be read before rendering starts.
-        page_list = list(pages)
-        page_count = len(page_list)
-        pages = iter(page_list)
-    elif settings.skip_blank and settings.duplex == DuplexMode.NONE:
-        pages = (page for page in pages if not is_blank_page(page[2]))
+    if settings.skip_blank:
+        pages = drop_blank_pages(pages)
 
     first = next(pages, None)
     if first is None:
         logger.info("All pages blank, nothing to print")
         return
     output = sys.stdout.buffer
-    filter_pages(itertools.chain([first], pages), settings, output, page_count=page_count)
+    filter_pages(itertools.chain([first], pages), settings, output)
     output.flush()
 
 

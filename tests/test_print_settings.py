@@ -211,7 +211,7 @@ class TestMediaTypes:
             ("Thin", b"dThin"),
             ("Thick", b"dThick"),
             ("Thicker", b"dThick2"),
-            ("Bond", b"dRegular"),
+            ("Bond", b"dTransparency"),
             ("Envelope", b"dEnvelopes"),
             ("EnvThin", b"dEnvthin"),
             ("EnvThick", b"dEnvthick"),
