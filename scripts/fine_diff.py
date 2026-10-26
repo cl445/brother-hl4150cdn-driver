@@ -219,17 +219,21 @@ def run_original(ppm: bytes, rc: str) -> bytes:
     return cached.read_bytes()
 
 
-def run_python(pages: list[npt.NDArray[np.uint8]], settings: PrintSettings) -> tuple[bytes, dict[int, list]]:
-    """Run the Python pipeline, recording every Fine encoder call.
+def run_python(
+    pages: list[npt.NDArray[np.uint8]], settings: PrintSettings, *, record: bool = False
+) -> tuple[bytes, dict[int, list]]:
+    """Run the Python pipeline as production does, or per line recording every Fine encoder call.
 
-    Wraps the Fine entries of `pipeline._DITHER_FNS` and `_PLANE_ENCODERS`
-    for the duration of the call. The dither call for a plane immediately
-    precedes its encoder call, which is how each encoder input gets its
-    line index.
+    Without `record` the job takes the production path (the native Fine
+    band kernel when it is built). With `record` the band kernel is
+    switched off and the Fine entries of `pipeline._DITHER_FNS` and
+    `_PLANE_ENCODERS` are wrapped for the duration of the call; the dither
+    call for a plane immediately precedes its encoder call, which is how
+    each encoder input gets its line index.
 
     Returns:
         (XL2HB output, {plane: [(line, 4bpp input, Stage-2 output), ...]}) with
-        only the non-empty outputs, in emission order.
+        only the non-empty outputs, in emission order; empty without `record`.
     """
     calls: dict[int, list] = defaultdict(list)
     current = {"line": -1, "plane": 0}
@@ -253,9 +257,13 @@ def run_python(pages: list[npt.NDArray[np.uint8]], settings: PrintSettings) -> t
 
         return encode
 
-    dither_fns[True] = recording_dither
-    for plane in encoders:
-        plane_encoders[plane] = recording_encoder(plane)
+    has_kernel = pipeline.HAS_FINE_BAND_KERNEL
+    if record:
+        # The band kernel bypasses the hooks; the per-line path is its reference.
+        pipeline.HAS_FINE_BAND_KERNEL = False
+        dither_fns[True] = recording_dither
+        for plane in encoders:
+            plane_encoders[plane] = recording_encoder(plane)
     try:
         out = io.BytesIO()
         job: list[tuple[int, int, pipeline.PageData]] = [(page.shape[1], page.shape[0], page) for page in pages]
@@ -265,6 +273,7 @@ def run_python(pages: list[npt.NDArray[np.uint8]], settings: PrintSettings) -> t
         if job:
             pipeline.filter_pages(job, settings, out)
     finally:
+        pipeline.HAS_FINE_BAND_KERNEL = has_kernel
         dither_fns[True] = dither
         plane_encoders.update(encoders)
     return out.getvalue(), calls
@@ -477,7 +486,7 @@ def main() -> int:
         print("note: rc is not set to Fine, comparing Normal mode")
 
     expected = run_original(b"".join(map(ppm_bytes, pages)), make_rc(overrides))
-    actual, calls = run_python(pages, settings)
+    actual, _ = run_python(pages, settings)
     if not actual:
         # Every page was skipped as blank: compare the original's empty
         # session with the one filter_pages would write for no pages.
@@ -492,6 +501,15 @@ def main() -> int:
         (args.save / "original.xl2hb").write_bytes(expected)
         (args.save / "python.xl2hb").write_bytes(actual)
     per_line = args.pages == 1 and settings.resolution == Resolution.FINE
+    calls: dict[int, list] = {}
+    if per_line and actual != expected:
+        # Re-render per line to see each encoder's input; it must match the kernel's output.
+        recorded, calls = run_python(pages, settings, record=True)
+        if recorded != actual:
+            at = first_diff(recorded, actual)
+            print(f"WARNING: the per-line path differs from the band kernel at byte {at};")
+            print("         the comparison below is for the per-line path")
+            actual = recorded
     return 0 if compare(expected, actual, calls, args.show, args.dump, per_line=per_line) else 1
 
 

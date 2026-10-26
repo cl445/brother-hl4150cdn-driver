@@ -12,6 +12,7 @@ checks the native `_fine_fast` codec instead (build it first, see
 setup_cython.py).
 """
 
+import argparse
 import importlib
 import random
 import struct
@@ -107,14 +108,18 @@ def random_line(rng: random.Random, n: int = 2380) -> bytes:
 
 def main() -> int:
     """Fuzz both Fine codec stages against the binary."""
-    args = [a for a in sys.argv[1:] if a != "--cython"]
-    count = int(args[0]) if args else 2000
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("count", nargs="?", type=int, default=2000, help="random scanlines to test (default 2000)")
+    parser.add_argument("--cython", action="store_true", help="test the _fine_fast codec instead of fine_encoder")
+    parser.add_argument("--seed", type=int, default=1, help="seed for the random scanlines (default 1)")
+    args = parser.parse_args()
+    count = args.count
     rle_preencode, pattern_encode = compress_rle_preencode, compress_pattern_encode
-    if "--cython" in sys.argv[1:]:
+    if args.cython:
         fast = importlib.import_module("_fine_fast")
         rle_preencode, pattern_encode = fast.rle_preencode, fast.pattern_encode
     native = NativeFilter()
-    rng = random.Random(1)  # noqa: S311 - reproducible test data
+    rng = random.Random(args.seed)  # noqa: S311 - reproducible test data
     bad = {"stage 1": 0, "stage 2": 0}
     for i in range(count):
         line = random_line(rng)
