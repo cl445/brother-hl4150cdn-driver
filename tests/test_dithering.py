@@ -244,6 +244,7 @@ class TestBRCDTables:
         ch = dither_load_brcd(k_path)
         assert ch.width == 32
         assert ch.height == 32
+        assert ch.threshold_matrix is not None
         assert ch.threshold_matrix.shape == (32, 32)
         # ink=0 (white) places no dots, full ink (black) fills every position.
         assert dither_channel_1bpp(bytes([255] * 32), 0, 32, ch) == bytes(4)
@@ -259,6 +260,7 @@ class TestBRCDTables:
         assert "M" in channels
         assert "Y" in channels
         for ch in channels.values():
+            assert ch.threshold_matrix is not None
             assert ch.threshold_matrix.shape == (32, 32)
             assert ch.width == 32
             assert ch.height == 32

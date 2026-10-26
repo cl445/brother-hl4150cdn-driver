@@ -157,7 +157,12 @@ known_first_party = [
     "rle", "saturation", "settings", "transforms", "xl2hb",
     # Optional Cython modules built by setup_cython.py (pure-Python fallback).
     "_band_fast", "_color_fast", "_dither_fast", "_fine_fast", "_rle_fast",
+    # Test helpers and harness scripts the RE scripts import from tests/ and scripts/.
+    "brother_decode", "extract_fixtures", "fine_diff",
 ]
+# RE scripts only: unicorn comes in via `uv run --with unicorn`, and `gdb` is
+# the module of gdb's embedded Python (scripts/trace_dither_gdb.py).
+per_rule_ignores = { DEP001 = ["unicorn", "gdb"] }
 # Treat the `test` and `dev` extras as dev groups so their entries
 # (pytest, ruff, ...) are not required to be imported from main code.
 optional_dependencies_dev_groups = ["test", "dev"]
