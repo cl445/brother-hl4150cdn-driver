@@ -20,10 +20,9 @@ Envelope #4; for all 21 sizes the page header values match the original.
 Correctness is established by byte-level comparison against captures from
 the manufacturer's filter.
 
-Fine mode (600x2400 dpi) matches the manufacturer's filter byte for byte
-on the CLI (`--fine`), but has not been checked on the printer yet. Until
-then the PPD does not offer it and the CUPS filter prints Fine requests
-in Normal mode.
+Fine mode (600x2400 dpi) matches the manufacturer's filter byte for byte.
+The PPD offers it as Print Quality "Fine (2400 dpi class)", Brother's own
+wording, but it has not been checked on the printer yet.
 
 On a Raspberry Pi 3B+ with the Cython modules and the precomputed
 inverse LUTs, a 131-page job goes through the CUPS filter in about
@@ -106,7 +105,7 @@ Pass them as `-o key=value` to `lp` / `lpr` for scripting.
 |---|---|---|
 | `PageSize` | A4, Letter, Legal, Executive, A5, PRA5Rotated (A5 long edge), A6, ISOB5, ISOB6, JISB5, JISB6, Postcard, EnvDL, EnvPRC5Rotated (DL long edge), EnvC5, Env10 (Com-10), EnvMonarch, Br3x5, FanFoldGermanLegal (Folio), EnvYou4 (Envelope #4), EnvChou3 (Envelope MAX) | |
 | `BRMediaType` | Plain, Thin, Thick, Thicker, Bond, Envelope, EnvThin, EnvThick, Recycled, Postcard, Label, Glossy | Glossy uses the glossy colour tables |
-| `BRResolution` | 600dpi (Normal) | Fine (600x2400dpi) is CLI-only for now (see Status) |
+| `BRResolution` | 600dpi (Normal), 600x2400dpi (Fine) | Fine is not yet checked on the printer (see Status) |
 | `BRMonoColor` | Auto, FullColor, Mono | |
 | `Duplex` | None, DuplexNoTumble, DuplexTumble | Tumble = short edge; IPP `sides` works too |
 | `BRColorMatching` | Normal, Vivid, None | Each selects its own colour tables |

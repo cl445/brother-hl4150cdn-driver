@@ -163,6 +163,7 @@
 *OrderDependency: 14 AnySetup *BRResolution
 *DefaultBRResolution: 600dpi
 *BRResolution 600dpi/Normal (600 x 600dpi): 	"          "
+*BRResolution 600x2400dpi/Fine (2400 dpi class): 	"          "
 *CloseUI: *BRResolution
 
 *%=== MonoOrColor ================================

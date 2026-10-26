@@ -6,6 +6,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrading
+- Re-assign the PPD to existing queues to get the Fine choice into the
+  print dialog (see Upgrading in the README).
+
 ### Fixed
 - Reverse print (`BRReverse=ON`) keeps the page order and sends every page
   bottom-up with the page marker the manufacturer's filter uses for it;
@@ -42,9 +46,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the CLI for all 21 paper sizes and in duplex: the Fine codec, the 4bpp
   dither tables and the original's dither overrun are reproduced, and the
   image width is rounded up to 8 pixels as in the original. A native band
-  kernel renders an A4 Fine page in well under a second. The PPD and the
-  CUPS filter still print Fine requests in Normal mode until Fine has
-  been checked on the printer.
+  kernel renders an A4 Fine page in well under a second. The PPD offers it
+  again as "Fine (2400 dpi class)" and the CUPS filter prints it instead
+  of falling back to Normal; it has not been checked on the printer yet.
 - `scripts/fine_diff.py` compares any job with the original filter in
   Docker, writing the rc for the original with Brother's spellings
   (`BOND`, `Env`); `scripts/trace_dither.py` traces the original's Fine
