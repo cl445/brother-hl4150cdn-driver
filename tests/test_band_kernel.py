@@ -149,12 +149,17 @@ def test_kernel_reports_short_pages(monkeypatch):
         filter_pages([(_A4_W, 500, iter([rows]))], PrintSettings(), io.BytesIO())
 
 
-def test_fine_mode_keeps_per_line_path(monkeypatch):
+def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
     from settings import Resolution
 
-    channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
-    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, channels, is_fine=True) is None
-    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, channels, is_fine=False) is not None
+    fine_channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
+    # Without the Fine kernel (_fine_fast, see test_cython_fine.py) Fine renders per line.
+    monkeypatch.setattr(pipeline, "HAS_FINE_BAND_KERNEL", False)
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=True) is None
+    # Fine channels hold per-level nibbles, not the threshold matrix the Normal kernel needs.
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=False) is None
+    normal_channels = pipeline._init_channels(PrintSettings())
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, normal_channels, is_fine=False) is not None
 
 
 def test_render_threads_from_environment(monkeypatch):

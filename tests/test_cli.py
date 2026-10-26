@@ -6,6 +6,7 @@ import sys
 import pytest
 
 import cli
+from fixture_utils import assert_matches_fixture
 from pipeline import filter_pages
 from settings import PrintSettings
 
@@ -78,10 +79,28 @@ def test_cli_reads_existing_rc_file(monkeypatch, tmp_path):
     assert out != default.getvalue()
 
 
-def test_cli_fine_help_marks_mode_experimental(monkeypatch, capsys):
+def test_cli_fine_help_says_mode_is_not_verified_on_the_printer(monkeypatch, capsys):
     monkeypatch.setenv("COLUMNS", "500")  # no line wrapping inside words
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     help_text = " ".join(capsys.readouterr().out.split())
-    assert "experimental" in help_text
-    assert "not byte-identical" in help_text
+    assert "not verified on the printer" in help_text
+
+
+def test_cli_skips_blank_pages_in_duplex(monkeypatch, tmp_path):
+    """Brother's filter drops blank pages in duplex too; compared with its capture."""
+    from test_full_pipeline import _duplex_test_pages
+
+    a, b, c, _ = _duplex_test_pages()
+    white = (a[0], a[1], b"\xff" * len(a[2]))
+    stream = b"".join(b"P6\n%d %d\n255\n" % (w, h) + data for w, h, data in (a, white, b, c))
+    rc = tmp_path / "brhl4150cdnrc"
+    rc.write_text("[hl4150cdn]\nBRSkipBlank=ON\n")
+    out = _run_cli(monkeypatch, ["--rc", str(rc), "--duplex", "long"], stream)
+    assert_matches_fixture("skip_blank_long_edge", out)
+
+
+def test_cli_prints_nothing_when_every_page_is_blank(monkeypatch, tmp_path):
+    rc = tmp_path / "brhl4150cdnrc"
+    rc.write_text("[hl4150cdn]\nBRSkipBlank=ON\nDuplex=DuplexNoTumble\n")
+    assert _run_cli(monkeypatch, ["--rc", str(rc)], _ppm(8, 4, (255, 255, 255)) * 3) == b""

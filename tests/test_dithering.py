@@ -244,6 +244,7 @@ class TestBRCDTables:
         ch = dither_load_brcd(k_path)
         assert ch.width == 32
         assert ch.height == 32
+        assert ch.threshold_matrix is not None
         assert ch.threshold_matrix.shape == (32, 32)
         # ink=0 (white) places no dots, full ink (black) fills every position.
         assert dither_channel_1bpp(bytes([255] * 32), 0, 32, ch) == bytes(4)
@@ -259,6 +260,7 @@ class TestBRCDTables:
         assert "M" in channels
         assert "Y" in channels
         for ch in channels.values():
+            assert ch.threshold_matrix is not None
             assert ch.threshold_matrix.shape == (32, 32)
             assert ch.width == 32
             assert ch.height == 32
@@ -449,6 +451,20 @@ class TestCaptureVerification:
 
 class TestFineBRCDTables:
     """Fine mode uses different BRCD cache files with different matrix dimensions."""
+
+    def test_nibble_table_width_must_be_whole_bytes(self, tmp_path):
+        """A Fine table is one byte per pixel; a width in bits that is not a multiple of 8 is rejected."""
+        import struct
+
+        from dither import dither_load_brcd
+
+        width, height = 12, 2
+        row_bytes = (width * height + 7) // 8
+        path = tmp_path / "odd.bin"
+        path.write_bytes(b"BRCD1\0" + struct.pack("<HH", width, height) + bytes(256 * row_bytes))
+        dither_load_brcd(str(path))  # fine as a 1bpp table
+        with pytest.raises(ValueError, match="multiple of 8"):
+            dither_load_brcd(str(path), nibbles=True)
 
     def test_load_fine_brcd_channels(self):
         """Should load all 4 Fine BRCD channels."""

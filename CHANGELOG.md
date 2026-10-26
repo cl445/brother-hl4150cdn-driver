@@ -6,6 +6,44 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Reverse print (`BRReverse=ON`) keeps the page order and sends every page
+  bottom-up with the page marker the manufacturer's filter uses for it;
+  before, it reversed the page order. On paper this should come out turned
+  by 180 degrees, which has not been checked on the printer yet.
+  Long-edge duplex jobs therefore no longer need the page count up front:
+  the CUPS filter streams them from stdin like any other job instead of
+  spooling them and counting their pages, and `filter_pages` has lost its
+  `page_count` argument.
+- Skip blank pages (`BRSkipBlank=ON`) also works in duplex; the next page
+  takes the blank one's side, as in the original.
+- Bond paper is sent as media type `Transparency`, which is what the
+  original sends for the `MediaType=BOND` that Brother's CUPS wrapper
+  writes. The earlier `Regular` came from a probe with the wrong rc
+  spelling.
+- Jobs that hand whole pages to the renderer held up to three A4 rasters
+  (~100 MB each) at once: the page peeked to detect an empty job stayed
+  referenced by `itertools.chain` for the whole job, and `enumerate` and
+  the blank-page filter kept the previous page while the next was read.
+  The CUPS filter with skip blank now peaks at about 170 MB instead of
+  340 MB (Linux, A4), the CLI at about 230 MB instead of 320 MB.
+- Negative brightness shifted one step too little: the shift is
+  `brightness * 255 >> 7`, which rounds down, not toward zero
+  (Brightness=-20 shifts by 40, not 39). Affects Normal mode too.
+
+### Changed
+- Fine mode (600x2400 dpi) is byte-identical to the original filter on
+  the CLI for all 21 paper sizes and in duplex: the Fine codec, the 4bpp
+  dither tables and the original's dither overrun are reproduced, and the
+  image width is rounded up to 8 pixels as in the original. A native band
+  kernel renders an A4 Fine page in well under a second. The PPD and the
+  CUPS filter still print Fine requests in Normal mode until Fine has
+  been checked on the printer.
+- `scripts/fine_diff.py` compares any job with the original filter in
+  Docker, writing the rc for the original with Brother's spellings
+  (`BOND`, `Env`); `scripts/trace_dither.py` traces the original's Fine
+  dither under gdb.
+
 ## [1.1.1] — 2026-09-26
 
 ### Upgrading
@@ -122,7 +160,7 @@ second instead of close to three minutes.
   Before, it was always 1, and Tray1/Tray2 added a `@PJL SET SOURCETRAY` line
   the original never sends.
 - Media type names on the wire match the original (`Thick2`, `Envelopes`,
-  `Envthick`, Bond as `Regular`). The media types EnvThin and Postcard were
+  `Envthick`). The media types EnvThin and Postcard were
   added, and Brother's own spellings (`BOND`, `Env`, `PostCard`) are accepted.
 - Paper sizes other than A4 match the original: the source height follows
   the original's band height, `min(ImagingArea height, paper height) in

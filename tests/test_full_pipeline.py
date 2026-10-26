@@ -24,6 +24,7 @@ from brfilter import (
     read_ppm,
 )
 from fixture_utils import assert_matches_fixture, read_fixture
+from pipeline import drop_blank_pages
 from xl2hb import PAPER_SIZES
 
 # ---------------------------------------------------------------------------
@@ -621,24 +622,35 @@ def test_duplex_job_matches_brother_capture(fixture, duplex):
     assert_matches_fixture(fixture, out.getvalue())
 
 
-@pytest.mark.parametrize("duplex", ["None", "DuplexNoTumble", "DuplexTumble"])
-@pytest.mark.parametrize("n_pages", [3, 4])
-def test_reverse_matches_reversed_input(duplex, n_pages):
-    """Reverse order renders forward and spools, but must equal rendering the reversed pages."""
-    pages = _duplex_test_pages()[:n_pages]
-    expected = io.BytesIO()
-    filter_pages(pages[::-1], PrintSettings(duplex=DuplexMode(duplex)), expected)
-
+@pytest.mark.parametrize(
+    ("fixture", "duplex"),
+    [
+        ("reverse4_none", "None"),
+        ("reverse4_long_edge", "DuplexNoTumble"),
+        ("reverse4_short_edge", "DuplexTumble"),
+    ],
+)
+def test_reverse_job_matches_brother_capture(fixture, duplex):
+    """BRReverse keeps the page order and sends every page bottom-up, back sides included."""
     out = io.BytesIO()
-    settings = PrintSettings(duplex=DuplexMode(duplex), reverse=True)
-    filter_pages(iter(pages), settings, out, page_count=n_pages)
-    assert out.getvalue() == expected.getvalue()
+    filter_pages(_duplex_test_pages(), PrintSettings(duplex=DuplexMode(duplex), reverse=True), out)
+    assert_matches_fixture(fixture, out.getvalue())
 
 
-def test_reverse_long_edge_requires_page_count():
-    settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE, reverse=True)
-    with pytest.raises(ValueError, match="page_count"):
-        filter_pages(iter(_duplex_test_pages()), settings, io.BytesIO())
+@pytest.mark.parametrize("pre_drop", [True, False], ids=["dropped-by-caller", "dropped-by-filter_pages"])
+def test_skip_blank_in_duplex_matches_brother_capture(pre_drop):
+    """A blank page is dropped before sides are assigned: the next page takes its side.
+
+    filter_pages drops blank pages itself; callers that dropped them first
+    (to detect an empty job) get the same output.
+    """
+    a, b, c, _ = _duplex_test_pages()
+    white = (_A4_W, _A4_H, b"\xff" * (_A4_W * _A4_H * 3))
+    settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE, skip_blank=True)
+    pages = [a, white, b, c]
+    out = io.BytesIO()
+    filter_pages(drop_blank_pages(pages) if pre_drop else pages, settings, out)
+    assert_matches_fixture("skip_blank_long_edge", out.getvalue())
 
 
 def _as_row_blocks(pixel_data: bytes, width: int, height: int, block_rows: int):

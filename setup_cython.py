@@ -7,7 +7,7 @@ Build in place with
 from Cython.Build import cythonize
 from setuptools import Extension, setup
 
-_MODULES = ("_rle_fast", "_dither_fast", "_band_fast", "_color_fast")
+_MODULES = ("_rle_fast", "_dither_fast", "_band_fast", "_color_fast", "_fine_fast")
 
 setup(
     name="brother-hl4150cdn-cython",

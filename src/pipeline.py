@@ -9,7 +9,6 @@ import contextlib
 import io
 import logging
 import os
-import tempfile
 from collections import deque
 from collections.abc import Buffer, Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -55,6 +54,13 @@ try:
     HAS_BAND_KERNEL = True
 except ImportError:
     HAS_BAND_KERNEL = False
+
+try:
+    from _fine_fast import render_band_fine  # type: ignore[import-not-found]
+
+    HAS_FINE_BAND_KERNEL = True
+except ImportError:
+    HAS_FINE_BAND_KERNEL = False
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +170,46 @@ def is_blank_page(pixel_data: PageBuffer) -> bool:
     return arr.size == 0 or int(arr.min()) == 255
 
 
+def chain_peeked(
+    first: tuple[int, int, PageData], rest: Iterator[tuple[int, int, PageData]]
+) -> Iterator[tuple[int, int, PageData]]:
+    """Yield a page taken off a job with `next()`, then the rest of the job.
+
+    Unlike `itertools.chain([first], rest)`, which keeps its arguments and
+    so the first page for the whole job, this lets go of `first` once it
+    has been handed out. That matters for whole-page buffers (~100 MB for
+    A4).
+
+    Yields:
+        `first`, then the pages of `rest`.
+    """
+    yield first
+    del first
+    yield from rest
+
+
+def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tuple[int, int, PageBuffer]]:
+    """Skip the pure-white pages of a job (BRSkipBlank).
+
+    Brother's filter drops them before sides are assigned, in simplex and
+    duplex alike: the next page takes the blank one's place (verified
+    against captures). Each page is collected into one buffer to be tested.
+
+    Yields:
+        The pages that are not blank, as whole-page buffers.
+    """
+    for width, height, data in pages:
+        rows = collect_rows(data, width, height)
+        # `rows` may be a view of `data`; drop both, blank or not, before
+        # the next page is collected, so that only one whole page is held.
+        del data
+        if is_blank_page(rows):
+            logger.info("skipping blank page")
+        else:
+            yield width, height, rows
+        del rows
+
+
 def _flip_vertical(rows: npt.NDArray[np.uint8], paper_h: int) -> npt.NDArray[np.uint8]:
     """Mirror page rows top-to-bottom over the full paper height.
 
@@ -228,6 +274,54 @@ def _adjust_rgb(rgb: Buffer, pixels: int, colour: _ColourSetup) -> Buffer:
     return rgb
 
 
+def _fine_overrun_planes(row: npt.NDArray[np.uint8], width: int, inks: tuple[npt.NDArray[np.uint8], ...]) -> bool:
+    """Whether the original's Fine dither clears byte 0 of the M, Y and K rows.
+
+    `dither_ordered_4ch_4bpp` @ 08061404 fills a run without ink (all four
+    channels zero, at least 2 identical RGB pixels) with memset and then
+    writes one more zero byte after it. When that run ends the line, the
+    byte lies just past the row buffer; the buffers are contiguous in the
+    order C, M, Y, K, ceil(width / 8) * 4 bytes apart, so it is byte 0 of
+    the next plane. `inks` are the K, C, M, Y rows (255 = no ink).
+
+    Returns:
+        True if byte 0 (pixels 0 and 1) of M, Y and K must be zeroed.
+    """
+    if any(arr[width - 1] != 255 for arr in inks):
+        return False
+    return bool(_fine_overrun_rows(row[None, :], width)[0])
+
+
+def _fine_overrun_possible(width: int) -> bool:
+    """Whether a row of `width` pixels ends exactly at the end of its plane buffer (see `_fine_overrun_planes`).
+
+    Returns:
+        True if the overrun byte can land in the next plane.
+    """
+    return width >= 2 and width // 2 == (width + 7) // 8 * 4
+
+
+def _fine_overrun_rows(band: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
+    """The RGB part of `_fine_overrun_planes` for every row of `band`.
+
+    `_fine_overrun_planes` and `render_band_fine` add the no-ink test of
+    the last pixel. The test looks at the input pixels, before saturation
+    and the input remap.
+
+    Returns:
+        One uint8 flag per row: the geometry allows the overrun and the last
+        two input pixels are equal.
+    """
+    if not _fine_overrun_possible(width):
+        return np.zeros(band.shape[0], dtype=np.uint8)
+    tail = band[:, 3 * width - 6 : 3 * width]
+    return (tail[:, :3] == tail[:, 3:]).all(axis=1).view(np.uint8)
+
+
+def _clear_first_byte(data: bytes) -> bytes:
+    return b"\x00" + data[1:]
+
+
 def _encode_lines(
     blocks: RowBlocks,
     width: int,
@@ -239,8 +333,9 @@ def _encode_lines(
 ) -> Iterator[LineCodes]:
     """Colour-convert, dither and encode the page one scanline at a time.
 
-    Reference path for Fine mode, for installs without the native band
-    kernel, and for dither channels without a threshold matrix.
+    Reference path for the native band kernels; used on installs without
+    them and for dither channels they do not cover (Normal channels without
+    a threshold matrix, Fine channels without nibble tables).
 
     Yields:
         Encoded planes of each input row, top to bottom.
@@ -260,12 +355,13 @@ def _encode_lines(
             c_arr = np.concatenate((c_arr, pad_arr))
             m_arr = np.concatenate((m_arr, pad_arr))
             y_arr = np.concatenate((y_arr, pad_arr))
-        yield (
-            encoders[0](dither_fn(k_arr, line_idx, sw, channels["K"])),
-            encoders[1](dither_fn(c_arr, line_idx, sw, channels["C"])),
-            encoders[2](dither_fn(m_arr, line_idx, sw, channels["M"])),
-            encoders[3](dither_fn(y_arr, line_idx, sw, channels["Y"])),
-        )
+        k_dots = dither_fn(k_arr, line_idx, sw, channels["K"])
+        c_dots = dither_fn(c_arr, line_idx, sw, channels["C"])
+        m_dots = dither_fn(m_arr, line_idx, sw, channels["M"])
+        y_dots = dither_fn(y_arr, line_idx, sw, channels["Y"])
+        if is_fine and _fine_overrun_planes(row, width, (k_arr, c_arr, m_arr, y_arr)):
+            k_dots, m_dots, y_dots = map(_clear_first_byte, (k_dots, m_dots, y_dots))
+        yield encoders[0](k_dots), encoders[1](c_dots), encoders[2](m_dots), encoders[3](y_dots)
 
 
 def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
@@ -338,16 +434,19 @@ def _band_kernel_colour(
 ) -> _KernelColour | None:
     """Return the colour arguments for `render_band`, or None if it cannot render the page.
 
-    The kernel covers Normal mode with threshold-matrix dither channels and
-    needs the native module. It gathers through the installed inverse LUT of
-    `table` when there is one and interpolates the grid otherwise.
+    The kernels cover Normal mode with threshold-matrix dither channels
+    (`render_band`) and Fine mode with BRCD nibble tables
+    (`render_band_fine`); each needs its native module. Both gather through
+    the installed inverse LUT of `table` when there is one and interpolate
+    the grid otherwise. `render_band_fine` takes the same colour arguments.
 
     Returns:
         The kernel's colour arguments, or None for the per-line path.
     """
-    if not HAS_BAND_KERNEL or is_fine:
-        return None
-    if any(channel.threshold_matrix is None for channel in channels.values()):
+    if is_fine:
+        if not HAS_FINE_BAND_KERNEL or any(channel.nibble_levels is None for channel in channels.values()):
+            return None
+    elif not HAS_BAND_KERNEL or any(channel.threshold_matrix is None for channel in channels.values()):
         return None
     inverse = color_lut.inverse_lut(table)
     if inverse is not None:
@@ -402,6 +501,8 @@ def _encode_lines_banded(
     colour: _ColourSetup,
     channels: dict[str, DitherChannel],
     kernel_colour: _KernelColour,
+    *,
+    is_fine: bool,
 ) -> Iterator[LineCodes]:
     """Like `_encode_lines`, but whole bands at a time in the native kernel.
 
@@ -412,8 +513,11 @@ def _encode_lines_banded(
     Yields:
         Encoded planes of each input row, top to bottom.
     """
-    # Tile the thresholds up front; the render threads only read them.
-    thresholds = tuple(channels[c].tiled_thresholds(sw) for c in "KCMY")
+    # Prepare the dither tables up front; the render threads only read them.
+    if is_fine:
+        tables = tuple(np.ascontiguousarray(channels[c].nibble_levels) for c in "KCMY")
+    else:
+        tables = tuple(channels[c].tiled_thresholds(sw) for c in "KCMY")
 
     def encode(band: npt.NDArray[np.uint8], first_line: int) -> list[LineCodes]:
         n = band.shape[0]
@@ -422,7 +526,11 @@ def _encode_lines_banded(
         if colour.adjusts_rgb:
             rgb = _page_rows(_adjust_rgb(np.ascontiguousarray(band), n * width, colour), width, n)
         lengths = np.empty((n, 4), dtype=np.int32)
-        data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, *thresholds, lengths)
+        if is_fine:
+            overrun = _fine_overrun_rows(band, width)
+            data = render_band_fine(rgb, skip, overrun, width, first_line, sw, *kernel_colour, *tables, lengths)
+        else:
+            data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, *tables, lengths)
         codes: list[LineCodes] = []
         pos = 0
         for k_len, c_len, m_len, y_len in lengths.tolist():
@@ -465,7 +573,7 @@ def _render_page(
     Handles: BeginPage -> scanline loop -> flush -> EndPage. `back_side`
     marks the second page of a duplex sheet. Scanlines are read as views
     into `pixel_data`, which may also be a stream of row blocks; only
-    long-edge back pages are collected into one buffer to be mirrored.
+    flipped pages are collected into one buffer to be mirrored.
 
     Raises:
         ValueError: If `pixel_data` has fewer than `height` rows.
@@ -481,9 +589,12 @@ def _render_page(
         sw, sh = get_image_dimensions(page_size)
         bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
 
-    # Long-edge back pages are marked and sent mirrored top-to-bottom.
-    flip_back = back_side and settings.duplex == DuplexMode.NO_TUMBLE
-    if flip_back:
+    # Long-edge back pages are sent bottom-up (rows mirrored, columns not)
+    # with the back-side marker. BRReverse makes Brother's filter send every
+    # page that way, so on a long-edge back page the two cancel out
+    # (verified against captures).
+    flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+    if flip:
         blocks: RowBlocks = (_flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
         height = paper_h
     elif isinstance(pixel_data, _BUFFER_TYPES):
@@ -496,7 +607,7 @@ def _render_page(
         media_source=MEDIA_SOURCE[settings.input_slot],
         media_type=settings.media_type,
         duplex_mode=DUPLEX_MAP.get(settings.duplex),
-        back_side_marker=flip_back,
+        back_side_marker=flip,
     )
     w.write_set_page_origin()
     mono = settings.mono_color == MonoColor.MONO
@@ -537,7 +648,7 @@ def _render_page(
     if mono:
         lines = _encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
     elif kernel_colour is not None:
-        lines = _encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour)
+        lines = _encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour, is_fine=is_fine)
     else:
         lines = _encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
 
@@ -601,13 +712,13 @@ def filter_page(
     if settings.skip_blank and is_blank_page(pixel_data):
         return
 
-    filter_pages([(width, height, pixel_data)], settings, output, page_count=1)
+    filter_pages([(width, height, pixel_data)], settings, output)
 
     _, paper_h = PAPER_SIZES[settings.page_size]
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
 
 
-def _render_pages_forward(
+def _render_pages(
     pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
@@ -622,7 +733,11 @@ def _render_pages_forward(
     """
     duplex = settings.duplex != DuplexMode.NONE
     page_buf = io.BytesIO()
-    for index, (width, height, pixel_data) in enumerate(pages):
+    # A counter instead of enumerate(): enumerate keeps the last (index,
+    # page) pair until the next page has been read, which would hold two
+    # whole-page buffers at once.
+    index = 0
+    for width, height, pixel_data in pages:
         page_buf.seek(0)
         page_buf.truncate()
         _render_page(
@@ -634,87 +749,39 @@ def _render_pages_forward(
             channels,
             back_side=duplex and index % 2 == 1,
         )
+        # Release the page's raster before the next page is read; with
+        # whole-page buffers (skip blank, flipped pages) two would add up.
+        del pixel_data
         with page_buf.getbuffer() as page:
             output.write(page)
-
-
-def _render_pages_reversed(
-    pages: Iterable[tuple[int, int, PageData]],
-    settings: PrintSettings,
-    channels: dict[str, DitherChannel],
-    output: BinaryIO,
-    page_count: int | None,
-) -> None:
-    """Render pages in input order and write them to `output` last page first.
-
-    Each rendered page (BeginPage..EndPage) goes to a temporary file, so
-    only one raster page is in memory at a time. Page `i` of `n` ends up at
-    position `n - 1 - i`, which decides its duplex side exactly as if the
-    rasters had been reversed before rendering.
-    """
-    duplex = settings.duplex != DuplexMode.NONE
-    spans: list[tuple[int, int]] = []
-    with tempfile.TemporaryFile(prefix="brhl4150cdn-reverse-") as spool:
-        for index, (width, height, pixel_data) in enumerate(pages):
-            # Without page_count the side is unknown; that is only allowed
-            # when it does not change the output (simplex, short-edge duplex).
-            back_side = duplex and page_count is not None and (page_count - 1 - index) % 2 == 1
-            start = spool.tell()
-            _render_page(
-                XL2HBWriter(spool),
-                width,
-                height,
-                pixel_data,
-                settings,
-                channels,
-                back_side=back_side,
-            )
-            spans.append((start, spool.tell() - start))
-
-        if page_count is not None and len(spans) != page_count:
-            logger.error(
-                "Expected %d pages but rendered %d; duplex sides of the reversed job may be wrong",
-                page_count,
-                len(spans),
-            )
-
-        for start, length in reversed(spans):
-            spool.seek(start)
-            output.write(spool.read(length))
+        index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
 
 
 def filter_pages(
     pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
     output: BinaryIO,
-    page_count: int | None = None,
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
-    Pages are consumed lazily; with duplex, every second page is a back side.
-    With `settings.reverse` the pages are still rendered one at a time in
-    input order, spooled to a temporary file and emitted last page first,
-    so memory use does not grow with the job.
+    Pages are consumed lazily in input order; with duplex, every second
+    page is a back side. `settings.reverse` keeps the page order and sends
+    each page bottom-up with the back-side marker, as Brother's filter does.
+    `settings.skip_blank` drops pure-white pages before sides are assigned.
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
-    holds only complete pages: those rendered before the failure in input
-    order, none at all in reverse order (their duplex sides would be wrong).
+    holds only the complete pages rendered before the failure.
 
     Args:
         pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings of the job
         output: writable binary stream
-        page_count: number of pages in `pages`. Required for reverse order
-            with long-edge duplex, where a page's position in the reversed
-            job decides whether it is a mirrored back side.
-
-    Raises:
-        ValueError: If reverse long-edge duplex is requested without `page_count`.
     """
-    if settings.reverse and settings.duplex == DuplexMode.NO_TUMBLE and page_count is None:
-        msg = "page_count is required for reverse order with long-edge duplex"
-        raise ValueError(msg)
+    if settings.skip_blank:
+        # Idempotent: callers that drop blanks first to detect an empty job
+        # hand over whole-page buffers, which are only viewed again here.
+        pages = drop_blank_pages(pages)
     # PJL header always reports 600 dpi; Fine mode differs only in dithering.
     color = settings.mono_color != MonoColor.MONO
     pjl = generate_pjl_header(
@@ -741,15 +808,12 @@ def filter_pages(
 
     try:
         channels = _init_channels(settings)
-        if settings.reverse:
-            _render_pages_reversed(pages, settings, channels, output, page_count)
-        else:
-            _render_pages_forward(pages, settings, channels, output)
+        _render_pages(pages, settings, channels, output)
     except Exception:
-        # Only whole pages have reached `output` (see the two render
-        # helpers), so the session can still be closed: the printer prints
-        # the pages it got and ends the job instead of waiting for the rest
-        # of a page. If `output` itself failed there is nothing more to do.
+        # Only whole pages have reached `output` (see _render_pages), so
+        # the session can still be closed: the printer prints the pages it
+        # got and ends the job instead of waiting for the rest of a page.
+        # If `output` itself failed there is nothing more to do.
         with contextlib.suppress(OSError):
             _end_session(w, output)
         raise

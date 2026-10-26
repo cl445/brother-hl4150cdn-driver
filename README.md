@@ -20,8 +20,10 @@ Envelope #4; for all 21 sizes the page header values match the original.
 Correctness is established by byte-level comparison against captures from
 the manufacturer's filter.
 
-Fine mode (1200 dpi) emits valid framing; the compressed band data is
-not yet byte-identical.
+Fine mode (600x2400 dpi) matches the manufacturer's filter byte for byte
+on the CLI (`--fine`), but has not been checked on the printer yet. Until
+then the PPD does not offer it and the CUPS filter prints Fine requests
+in Normal mode.
 
 On a Raspberry Pi 3B+ with the Cython modules and the precomputed
 inverse LUTs, a 131-page job goes through the CUPS filter in about
@@ -38,9 +40,10 @@ instead of 25 s without the improve-gray inverse LUT, and 46 s instead of
 - CUPS
 - Optional, for speed: a C compiler and the Python headers (Debian:
   `sudo apt install build-essential python3-dev`). `install.sh` then
-  builds the Cython modules (RLE encoders, colour lookup, dither and a
-  band renderer that uses several cores); without them the driver falls
-  back to pure Python, which is several times slower.
+  builds the Cython modules (RLE encoders, colour lookup, dither, the
+  Fine codec and band renderers that use several cores); without them
+  the driver falls back to pure Python, which is several times slower
+  (Fine mode about 30 times).
 - About 260 MB of disk space for the precomputed inverse colour LUTs
   (Normal and Vivid colour matching, each with and without improve gray;
   64 MiB each). `install.sh` computes them, which takes about four minutes
@@ -103,7 +106,7 @@ Pass them as `-o key=value` to `lp` / `lpr` for scripting.
 |---|---|---|
 | `PageSize` | A4, Letter, Legal, Executive, A5, PRA5Rotated (A5 long edge), A6, ISOB5, ISOB6, JISB5, JISB6, Postcard, EnvDL, EnvPRC5Rotated (DL long edge), EnvC5, Env10 (Com-10), EnvMonarch, Br3x5, FanFoldGermanLegal (Folio), EnvYou4 (Envelope #4), EnvChou3 (Envelope MAX) | |
 | `BRMediaType` | Plain, Thin, Thick, Thicker, Bond, Envelope, EnvThin, EnvThick, Recycled, Postcard, Label, Glossy | Glossy uses the glossy colour tables |
-| `BRResolution` | 600dpi (Normal), 600x2400dpi (Fine) | Fine mode is incomplete (see Status) |
+| `BRResolution` | 600dpi (Normal) | Fine (600x2400dpi) is CLI-only for now (see Status) |
 | `BRMonoColor` | Auto, FullColor, Mono | |
 | `Duplex` | None, DuplexNoTumble, DuplexTumble | Tumble = short edge; IPP `sides` works too |
 | `BRColorMatching` | Normal, Vivid, None | Each selects its own colour tables |
@@ -112,8 +115,8 @@ Pass them as `-o key=value` to `lp` / `lpr` for scripting.
 | `BRImproveOutput` | OFF, BRLessPaperCurl, BRFixIntensity | |
 | `BRInputSlot` | AutoSelect, Tray1, Tray2, MPTray | |
 | `BRTonerSaveMode` | OFF, ON | Toner-save dither and colour tables |
-| `BRSkipBlank` | OFF, ON | |
-| `BRReverse` | OFF, ON | Reverse page order |
+| `BRSkipBlank` | OFF, ON | Drops pure-white pages, in duplex too |
+| `BRReverse` | OFF, ON | Sends each page bottom-up with Brother's reverse-print page marker; page order is kept. Not yet checked on the printer |
 | `BRBrightness` | -20 … 20 | |
 | `BRContrast` | -20 … 20 | |
 | `BRSaturation` | -20 … 20 | |
@@ -147,7 +150,7 @@ uv run nox -s lint            # ruff
 uv run nox -s format_check    # ruff format --check
 uv run nox -s typecheck       # pyrefly
 uv run nox -s deps            # deptry
-uv run nox -s tests           # pytest (1168 tests, needs extracted blobs)
+uv run nox -s tests           # pytest (1223 tests, needs extracted blobs)
 ```
 
 The Cython modules are optional in development too; build them in place
@@ -162,6 +165,37 @@ captures from the manufacturer's filter — pytest decompresses them on
 demand. Adding a new capture-based test is two steps: drop a fresh
 capture into `tests/fixtures/<name>.xl2hb.zst` and reference it from a
 parametrized test (`tests/test_full_pipeline.py` has the existing pattern).
+
+### Comparing with the manufacturer's filter
+
+Byte identity is checked against the original filter itself, which runs
+under Docker (`--platform linux/386`). After `./scripts/extract_blobs.sh`,
+three scripts in `scripts/` do the comparing:
+
+```bash
+# Render a test page or job with both drivers and diff the XL2HB streams.
+uv run python scripts/fine_diff.py hramp --lines 64 --rc Brightness=-20
+uv run python scripts/fine_diff.py edges --paper Letter
+uv run python scripts/fine_diff.py bars --pages 4 --rc Duplex=DuplexNoTumble --rc BRReverse=ON
+
+# Fuzz the Fine codec against the binary's own functions (Unicorn CPU emulator).
+uv run --with unicorn python scripts/native_codec.py 20000 [--cython]
+
+# Trace the original's Fine dither under gdb: its CMYK input and 4bpp output per line.
+uv run python scripts/trace_dither.py solid:128,128,128 --lines 4
+```
+
+`fine_diff.py` defaults to Fine mode on A4 (`--rc BRResolution=Normal` for
+Normal). It prints `IDENTICAL` or the first differing byte; for a
+single-page Fine job it also decodes the original's scanlines and reports,
+per plane, whether the dithered data or the encoder differs. The
+original's output is cached in `build/fine-diff-cache/`, so reruns only
+cost the Python side. `--save DIR` keeps both streams, `--dump DIR` the
+per-line comparison. Run any script with `--help` for the test patterns
+and options.
+
+`trace_dither.py` builds a Docker image with qemu-user and gdb on first
+use, as Docker Desktop's i386 emulation does not support ptrace.
 
 ## License
 

@@ -249,3 +249,118 @@ def decode_m_plane(compressed_20: bytes, compressed_10: bytes, n_bytes: int = BP
     if len(packed) >= n_bytes:
         return packed[:n_bytes]
     return packed + bytes(n_bytes - len(packed))
+
+
+# ---------------------------------------------------------------------------
+# Fine mode (APT): inverse of fine_encoder
+# ---------------------------------------------------------------------------
+
+# Stage-2 headers 0x00..0x0F: (repeat unit, base count, count is extended).
+# Units: "b" one byte, "bb" a byte pair, "b+x" a fixed byte followed by one
+# fresh byte per repeat, "b+xy" a fixed byte and two fresh bytes, "bb+x" a
+# fixed pair and one fresh byte, "bbb" a byte triple.
+_FINE_HEADERS = {
+    0: ("b", 3, False), 1: ("b", 4, False), 2: ("b", 5, False), 3: ("b", 6, True),
+    4: ("bb", 2, False), 5: ("bb", 3, False), 6: ("bb", 4, False), 7: ("bb", 5, True),
+    8: ("b+x", 3, False), 9: ("b+x", 4, True),
+    10: ("b+xy", 3, False), 11: ("b+xy", 4, True),
+    12: ("bb+x", 2, False), 13: ("bb+x", 3, True),
+    14: ("bbb", 2, False), 15: ("bbb", 3, True),
+}  # fmt: skip
+
+
+def decode_fine_stage2(data: bytes) -> bytes:
+    """Undo `compress_pattern_encode`: expand pattern headers into Stage-1 codes.
+
+    Bytes 0x10..0xFF are literal Stage-1 codes; 0x00..0x0F start a pattern
+    (`_FINE_HEADERS`), whose count may be extended by `_read_count_ext`.
+
+    Returns:
+        The Stage-1 byte stream.
+
+    Raises:
+        ValueError: If the stream ends inside a pattern.
+    """
+    out = bytearray()
+    pos = 0
+    while pos < len(data):
+        head = data[pos]
+        pos += 1
+        if head >= 0x10:
+            out.append(head)
+            continue
+        unit, count, extended = _FINE_HEADERS[head]
+        if extended:
+            extra, pos = _read_count_ext(data, pos)
+            count += extra
+        fixed = 2 if unit.startswith("bb") else 1
+        if unit == "bbb":
+            fixed = 3
+        fresh = {"b+x": 1, "b+xy": 2, "bb+x": 1}.get(unit, 0)
+        need = fixed + fresh * count
+        if pos + need > len(data):
+            msg = f"pattern 0x{head:02x} x{count} at {pos - 1} needs {need} bytes, {len(data) - pos} left"
+            raise ValueError(msg)
+        lead = data[pos : pos + fixed]
+        pos += fixed
+        if not fresh:
+            out += lead * count
+            continue
+        for _ in range(count):
+            out += lead + data[pos : pos + fresh]
+            pos += fresh
+    return bytes(out)
+
+
+def _fine_nibble(code: int) -> int:
+    """Nibble of a 3-bit Stage-1 field: 7 is 0xF, otherwise (code + 1) * 2."""
+    return 0xF if code == 7 else (code + 1) * 2
+
+
+def decode_fine_stage1(data: bytes) -> bytes:
+    """Undo `compress_rle_preencode`: expand Stage-1 codes into 4bpp bytes.
+
+    The result is the encoder input after its quantisation (each nibble
+    other than 0xF has its LSB cleared).
+
+    Returns:
+        The 4bpp scanline bytes.
+    """
+    out = bytearray()
+    for code in data:
+        low = code & 7
+        mid = (code >> 3) & 3
+        if code < 0x10:
+            msg = f"0x{code:02x} is a Stage-2 header, not a Stage-1 code"
+            raise ValueError(msg)
+        if code < 0x18:  # white run
+            out += bytes(low + 1)
+        elif code < 0x20:  # black run
+            out += b"\xff" * (low + 1)
+        elif code < 0x40:  # 1-2 white bytes, then 0xhF (bit 4 clear) or 0x0l (bit 4 set)
+            out += bytes(((code >> 3) & 1) + 1)
+            out.append(_fine_nibble(low) if code & 0x10 else (_fine_nibble(low) << 4) | 0xF)
+        elif code < 0x80:  # one byte: high nibble from bits 5..3, low nibble from bits 2..0
+            out.append((((code >> 3) & 7) * 2) << 4 | _fine_nibble(low))
+        elif code < 0xA0:  # 1-4 black bytes, then 0xh0 with h = 2 * low
+            out += b"\xff" * (mid + 1)
+            out.append((low * 2) << 4)
+        elif code < 0xC0:  # 0-3 white bytes, then 0xh0
+            out += bytes(mid)
+            out.append(_fine_nibble(low) << 4)
+        elif code < 0xE0:  # 0-3 black bytes, then 0xFl with l = 2 * low
+            out += b"\xff" * mid
+            out.append(0xF0 | low * 2)
+        else:  # 1-4 black bytes, then 0xhF with h = 2 * low
+            out += b"\xff" * (mid + 1)
+            out.append((low * 2) << 4 | 0xF)
+    return bytes(out)
+
+
+def decode_fine_plane(compressed: bytes) -> bytes:
+    """Decode one Fine-mode scanline entry (Stage 2, then Stage 1).
+
+    Returns:
+        The quantised 4bpp scanline bytes.
+    """
+    return decode_fine_stage1(decode_fine_stage2(compressed))

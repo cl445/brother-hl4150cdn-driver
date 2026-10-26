@@ -7,7 +7,18 @@
   are reserved as pattern headers.
 * :func:`encode_fine_plane` — runs both stages back-to-back; returns
   empty bytes for an all-zero scanline.
+
+The functions here are the reference implementation. `encode_fine_plane`
+uses the native `_fine_fast` codec when it is built and falls back to
+:func:`encode_fine_plane_py` otherwise.
 """
+
+try:
+    from _fine_fast import encode_fine_plane as _encode_fine_plane_native  # type: ignore[import-not-found]
+
+    HAS_CYTHON_FINE = True
+except ImportError:
+    HAS_CYTHON_FINE = False
 
 
 def compress_rle_preencode(data: bytes) -> bytes:
@@ -109,7 +120,7 @@ def compress_rle_preencode(data: bytes) -> bytes:
                         run_white -= 3
                         _flush_white_run()
                         run_white = 3
-                    output.append(((run_white * 8 - 8) & 0xFF) | ((hi_nibble >> 5) - 1) | 0xA0)
+                    output.append((run_white * 8) | ((hi_nibble >> 5) - 1) | 0xA0)
                     run_white = 0
                     continue
                 if run_black != 0:
@@ -466,6 +477,12 @@ def compress_pattern_encode(data: bytes) -> bytes:
                 pattern_mode = 4
                 has_pattern = True
                 match_count = 4
+            elif stride3_c_len == 4:
+                # Checked before stride-3 alternating (0x0805139c, Ghidra
+                # line 9813): emit two literals instead of a mode-3 pattern.
+                for _ in range(2):
+                    output.append(ring[pattern_start])
+                    pattern_start += 1
             elif stride2_len == 4:
                 pattern_mode = 3
                 has_pattern = True
@@ -475,10 +492,7 @@ def compress_pattern_encode(data: bytes) -> bytes:
                 do_literal_copy = False
                 lit_count = 2
 
-                if stride3_c_len == 4 if stride2_len >= 2 else False:
-                    do_literal_copy = True
-                    lit_count = 2
-                elif stride3_alt_len >= 2:
+                if stride3_alt_len >= 2:
                     lit_count = stride3_alt_len
                     if stride3_alt_len > 2:
                         pattern_mode = 5
@@ -578,6 +592,17 @@ def compress_pattern_encode(data: bytes) -> bytes:
 
 def encode_fine_plane(data: bytes) -> bytes:
     """Encode a single Fine-mode scanline through both compression stages.
+
+    Returns:
+        Compressed bytes, or empty bytes if the scanline is all-zero.
+    """
+    if HAS_CYTHON_FINE:
+        return _encode_fine_plane_native(data)
+    return encode_fine_plane_py(data)
+
+
+def encode_fine_plane_py(data: bytes) -> bytes:
+    """Pure-Python :func:`encode_fine_plane`, the reference for the native codec.
 
     Returns:
         Compressed bytes, or empty bytes if the scanline is all-zero.
