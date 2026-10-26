@@ -152,9 +152,12 @@ def test_kernel_reports_short_pages(monkeypatch):
 def test_fine_mode_keeps_per_line_path(monkeypatch):
     from settings import Resolution
 
-    channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
-    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, channels, is_fine=True) is None
-    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, channels, is_fine=False) is not None
+    fine_channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=True) is None
+    # Fine channels hold per-level nibbles, not the threshold matrix the kernel needs.
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=False) is None
+    normal_channels = pipeline._init_channels(PrintSettings())
+    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, normal_channels, is_fine=False) is not None
 
 
 def test_render_threads_from_environment(monkeypatch):

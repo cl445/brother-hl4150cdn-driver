@@ -228,6 +228,30 @@ def _adjust_rgb(rgb: Buffer, pixels: int, colour: _ColourSetup) -> Buffer:
     return rgb
 
 
+def _fine_overrun_planes(row: npt.NDArray[np.uint8], width: int, inks: tuple[npt.NDArray[np.uint8], ...]) -> bool:
+    """Whether the original's Fine dither clears byte 0 of the M, Y and K rows.
+
+    `dither_ordered_4ch_4bpp` @ 08061404 fills a run without ink (all four
+    channels zero, at least 2 identical RGB pixels) with memset and then
+    writes one more zero byte after it. When that run ends the line, the
+    byte lies just past the row buffer; the buffers are contiguous in the
+    order C, M, Y, K, ceil(width / 8) * 4 bytes apart, so it is byte 0 of
+    the next plane. `inks` are the K, C, M, Y rows (255 = no ink).
+
+    Returns:
+        True if byte 0 (pixels 0 and 1) of M, Y and K must be zeroed.
+    """
+    if width < 2 or width // 2 != (width + 7) // 8 * 4:
+        return False
+    if any(arr[width - 1] != 255 for arr in inks):
+        return False
+    return bool(np.array_equal(row[3 * width - 6 : 3 * width - 3], row[3 * width - 3 : 3 * width]))
+
+
+def _clear_first_byte(data: bytes) -> bytes:
+    return b"\x00" + data[1:]
+
+
 def _encode_lines(
     blocks: RowBlocks,
     width: int,
@@ -260,12 +284,13 @@ def _encode_lines(
             c_arr = np.concatenate((c_arr, pad_arr))
             m_arr = np.concatenate((m_arr, pad_arr))
             y_arr = np.concatenate((y_arr, pad_arr))
-        yield (
-            encoders[0](dither_fn(k_arr, line_idx, sw, channels["K"])),
-            encoders[1](dither_fn(c_arr, line_idx, sw, channels["C"])),
-            encoders[2](dither_fn(m_arr, line_idx, sw, channels["M"])),
-            encoders[3](dither_fn(y_arr, line_idx, sw, channels["Y"])),
-        )
+        k_dots = dither_fn(k_arr, line_idx, sw, channels["K"])
+        c_dots = dither_fn(c_arr, line_idx, sw, channels["C"])
+        m_dots = dither_fn(m_arr, line_idx, sw, channels["M"])
+        y_dots = dither_fn(y_arr, line_idx, sw, channels["Y"])
+        if is_fine and _fine_overrun_planes(row, width, (k_arr, c_arr, m_arr, y_arr)):
+            k_dots, m_dots, y_dots = map(_clear_first_byte, (k_dots, m_dots, y_dots))
+        yield encoders[0](k_dots), encoders[1](c_dots), encoders[2](m_dots), encoders[3](y_dots)
 
 
 def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:

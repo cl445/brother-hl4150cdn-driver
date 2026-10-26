@@ -55,16 +55,18 @@ def build_input_remap_lut(brightness: int, contrast: int, channel: int) -> npt.N
     Per source value ``v``, applied left-to-right with clamp to [0,255]
     after each step:
 
-        val = v + trunc(brightness * 255 / 128)
+        val = v + floor(brightness * 255 / 128)
         val = val + trunc((val - 128) * contrast / 100)
         val = val + trunc(channel * 255 / 128)
 
-    Truncation is toward zero.
+    The brightness shift rounds down (the original computes it as
+    ``brightness * 255 >> 7``, printer_setup.c:1868), so -20 shifts by -40;
+    the other two truncate toward zero.
 
     Returns:
         256-entry uint8 LUT mapping source value to remapped value.
     """
-    bright_shift = int(brightness * 255 / 128)
+    bright_shift = brightness * 255 >> 7
     chan_shift = int(channel * 255 / 128)
     v = np.arange(256, dtype=np.int32)
     val = np.clip(v + bright_shift, 0, 255)

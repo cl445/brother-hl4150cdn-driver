@@ -4,12 +4,15 @@ Converts continuous-tone intensity values to 1bpp or 4bpp planes.
 Loads BRCD cache files (per-channel threshold tables) when available
 and falls back to a standard Bayer matrix otherwise.
 
-1bpp mode: binary on/off dots, used in Normal mode.
-4bpp mode: 16 intensity levels (0-15) per pixel, nibble-packed output,
-used in Fine mode.
+1bpp mode: binary on/off dots, used in Normal mode. The ink amount is
+compared against a threshold matrix tiled to the page width, vectorised
+with numpy (or `_dither_fast`).
 
-Both compare the ink amount against a threshold matrix tiled to the
-page width, vectorised with numpy (or `_dither_fast` for 1bpp).
+4bpp mode: 16 intensity levels (0-15) per pixel, nibble-packed output,
+used in Fine mode. The original (`dither_ordered_4ch_4bpp` @ 08061404)
+reads the same BRCD data as one byte per pixel: level `ink` is a
+matrix of ready-made nibbles, indexed by page row and column. Without
+BRCD tables, a Bayer threshold matrix interpolates between levels.
 """
 
 import functools
@@ -33,12 +36,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DitherChannel:
-    """Ordered-dither threshold matrix for one color channel."""
+    """Ordered-dither data for one color channel: a threshold matrix or per-level nibbles."""
 
     width: int  # matrix width in pixels (e.g. 32)
     height: int  # matrix height in pixels (e.g. 32)
-    # shape (height, width), dtype uint8 — threshold[y][x]: dot if ink > threshold
-    threshold_matrix: npt.NDArray[np.uint8] = field(repr=False)
+    # shape (height, width), dtype uint8 — threshold[y][x]: dot if ink > threshold.
+    # None for Fine BRCD channels, which have `nibble_levels` instead.
+    threshold_matrix: npt.NDArray[np.uint8] | None = field(repr=False)
+    # shape (256, height, width), dtype uint8 — nibble_levels[ink][y][x] is the 4bpp
+    # output for that ink amount (Fine BRCD tables only).
+    nibble_levels: npt.NDArray[np.uint8] | None = field(default=None, repr=False)
 
     # Threshold matrix tiled to the target page width, keyed by width.
     _tiled_cache: dict[int, npt.NDArray[np.uint8]] = field(default_factory=dict, init=False, repr=False)
@@ -48,10 +55,16 @@ class DitherChannel:
 
         Returns:
             Array of shape (height, width) with the repeated threshold matrix.
+
+        Raises:
+            ValueError: For a channel without a threshold matrix.
         """
         cached = self._tiled_cache.get(width)
         if cached is not None:
             return cached
+        if self.threshold_matrix is None:
+            msg = "channel has no threshold matrix (Fine BRCD tables are per-level nibbles)"
+            raise ValueError(msg)
         repeats = (width + self.width - 1) // self.width
         tiled = np.tile(self.threshold_matrix, (1, repeats))[:, :width].copy()  # (height, width)
         self._tiled_cache[width] = tiled
@@ -128,15 +141,20 @@ def _extract_threshold_matrix(patterns: list[bytes], width: int, height: int) ->
     return thresholds.reshape(height, width)
 
 
-def dither_load_brcd(path: str) -> DitherChannel:
+def dither_load_brcd(path: str, *, nibbles: bool = False) -> DitherChannel:
     """Load dither table from a BRCD cache file.
 
-    File format: 4-byte magic "BRCD", 1-byte version ('0'),
-    1-byte reserved, 2-byte LE width, 2-byte LE height,
-    then 256 x row_bytes of pattern data.
+    File format: 4-byte magic "BRCD", 1-byte version ('0' for the Normal
+    tables, '1' for Fine), 1-byte reserved, 2-byte LE width in bits,
+    2-byte LE height, then 256 x row_bytes of pattern data, one block per
+    ink level.
+
+    With `nibbles`, each block is read as the 4bpp dither does: a
+    (height, width / 8) matrix of nibble values, one byte per pixel.
+    Otherwise it is a 1bpp dot pattern, reduced to a threshold matrix.
 
     Returns:
-        DitherChannel with the threshold matrix derived from the patterns.
+        DitherChannel with the threshold matrix or, with `nibbles`, the per-level nibbles.
 
     Raises:
         ValueError: If the magic bytes are wrong or pattern data is truncated.
@@ -156,6 +174,11 @@ def dither_load_brcd(path: str) -> DitherChannel:
                 msg = f"Truncated BRCD at pattern {i}"
                 raise ValueError(msg)
             patterns.append(pat)
+    if nibbles:
+        cols = width >> 3
+        levels = np.frombuffer(b"".join(patterns), dtype=np.uint8).reshape(256, row_bytes)
+        levels = levels[:, : height * cols].reshape(256, height, cols).copy()
+        return DitherChannel(width=cols, height=height, threshold_matrix=None, nibble_levels=levels)
     return DitherChannel(
         width=width, height=height, threshold_matrix=_extract_threshold_matrix(patterns, width, height)
     )
@@ -187,7 +210,7 @@ def load_brcd_tables(
         if not fpath.exists():
             logger.debug("BRCD file not found: %s", fpath)
             return None
-        channels[ch] = dither_load_brcd(str(fpath))
+        channels[ch] = dither_load_brcd(str(fpath), nibbles=fine)
     return channels
 
 
@@ -344,6 +367,12 @@ def dither_channel_4bpp_arr(
     """
     if channel is None:
         channel = _ensure_defaults()["K"]
+
+    if channel.nibble_levels is not None:
+        # Plain table lookup, as dither_ordered_4ch_4bpp: levels[ink][y % h][x % w].
+        cols = np.arange(width) % channel.width
+        levels = channel.nibble_levels[255 - row_arr[:width], y % channel.height, cols]
+        return _nibble_pack(levels, width)
 
     ink = (255 - row_arr[:width]).astype(np.int32)
     thresholds = channel.tiled_thresholds(width)[y % channel.height].astype(np.int32)
