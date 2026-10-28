@@ -48,7 +48,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   image width is rounded up to 8 pixels as in the original. A native band
   kernel renders an A4 Fine page in well under a second. The PPD offers it
   again as "Fine (2400 dpi class)" and the CUPS filter prints it instead
-  of falling back to Normal; it has not been checked on the printer yet.
+  of falling back to Normal. Checked on the printer.
 - `scripts/fine_diff.py` compares any job with the original filter in
   Docker, writing the rc for the original with Brother's spellings
   (`BOND`, `Env`); `scripts/trace_dither.py` traces the original's Fine
