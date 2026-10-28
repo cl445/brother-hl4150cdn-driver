@@ -116,7 +116,7 @@ Pass them as `-o key=value` to `lp` / `lpr` for scripting.
 | `BRInputSlot` | AutoSelect, Tray1, Tray2, MPTray | |
 | `BRTonerSaveMode` | OFF, ON | Toner-save dither and colour tables |
 | `BRSkipBlank` | OFF, ON | Drops pure-white pages, in duplex too |
-| `BRReverse` | OFF, ON | Sends each page bottom-up with Brother's reverse-print page marker; page order is kept. Not yet checked on the printer |
+| `BRReverse` | OFF, ON | Sends each page bottom-up with Brother's reverse-print page marker; page order is kept |
 | `BRBrightness` | -20 … 20 | |
 | `BRContrast` | -20 … 20 | |
 | `BRSaturation` | -20 … 20 | |
