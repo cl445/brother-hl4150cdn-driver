@@ -169,19 +169,22 @@ def test_gs_failure_mid_job_in_reverse_order_sends_only_complete_pages(fake_gs):
     assert broken.stdout == complete.stdout
 
 
-def test_fine_resolution_prints_in_normal_mode(fake_gs):
+def test_fine_resolution_prints_in_fine_mode(fake_gs):
     normal = _run(fake_gs)
     fine = _run(fake_gs, options=f"{_OPTIONS} BRResolution=600x2400dpi")
     assert fine.returncode == 0
-    assert b"WARNING: brhl4150cdn-filter: Fine mode is not verified" in fine.stderr
-    assert b"resolution=Normal" in fine.stderr
-    assert fine.stdout == normal.stdout
+    assert b"resolution=Fine" in fine.stderr
+    assert b"@PJL SET APTMODE=ON4" in fine.stdout
+    assert b"@PJL SET APTMODE=OFF" in normal.stdout
 
 
-def test_ppd_offers_no_fine_mode():
+def test_ppd_offers_normal_and_fine():
     ppd = (_FILTER.parent / "brhl4150cdn.ppd").read_text(encoding="latin-1")
     choices = [line for line in ppd.splitlines() if line.startswith("*BRResolution ")]
-    assert choices == ['*BRResolution 600dpi/Normal (600 x 600dpi): \t"          "']
+    assert choices == [
+        '*BRResolution 600dpi/Normal (600 x 600dpi): \t"          "',
+        '*BRResolution 600x2400dpi/Fine (2400 dpi class): \t"          "',
+    ]
 
 
 @pytest.mark.parametrize(("value", "expected"), [("2", 2), ("0", 0), ("-1", 0)])

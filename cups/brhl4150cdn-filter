@@ -27,7 +27,7 @@ sys.path.insert(0, str(_SRC_DIR if _SRC_DIR.is_dir() else _SCRIPT_DIR))
 
 from page_stream import iter_ppm_pages  # noqa: E402
 from pipeline import PageData, chain_peeked, drop_blank_pages, filter_pages  # noqa: E402
-from settings import PrintSettings, Resolution, read_ppd_defaults  # noqa: E402
+from settings import PrintSettings, read_ppd_defaults  # noqa: E402
 from xl2hb import PAPER_SIZES  # noqa: E402
 
 # The printable area starts 100 px (at 600 dpi) from the physical page edge;
@@ -278,10 +278,6 @@ def main() -> None:
     # PageCopies of `copies` on top would print copies² sheets of each page,
     # so the job carries 1, as Brother's cupswrapper hands its filter.
     settings = PrintSettings.from_cups_options(options_str, 1, ppd_defaults)
-    if settings.resolution == Resolution.FINE:
-        # A queue set up with an older PPD can still ask for it.
-        logger.warning("Fine mode is not verified on the printer yet, printing in Normal mode (600 dpi)")
-        settings.resolution = Resolution.NORMAL
     logger.info(
         "settings: page_size=%s duplex=%s resolution=%s mono=%s color_matching=%s gray=%s toner_save=%s",
         settings.page_size,
