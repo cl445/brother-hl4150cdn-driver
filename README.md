@@ -4,57 +4,39 @@
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-Open-source CUPS driver for the Brother HL-4150CDN color laser printer.
-Written in Python with optional Cython acceleration, runs anywhere CUPS
-does — including ARM (Raspberry Pi).
+Open-source CUPS driver for the Brother HL-4150CDN colour laser printer.
+Brother's own Linux driver runs only on x86 PCs. This one is written in
+Python with optional Cython acceleration and runs anywhere CUPS does,
+including ARM boards such as the Raspberry Pi.
 
-## Status
+## Features
 
-Drop-in for the printer's Normal mode (600 dpi). Output matches the
-manufacturer's CUPS filter byte for byte for every colour, tray and media
-setting (colour matching Normal/Vivid/None, improve gray, enhance black,
-toner save, glossy, brightness/contrast/saturation/RGB keys), for
-grayscale, and for simplex, long-edge and short-edge duplex. Paper sizes
-other than A4 are checked byte for byte on Letter, A5, DL, 3x5 and
-Envelope #4; for all 21 sizes the page header values match the original.
-Correctness is established by byte-level comparison against captures from
-the manufacturer's filter.
+- Sends the printer the same data as Brother's driver, byte for byte
+- Normal (600 dpi) and Fine (600x2400 dpi) print quality
+- Colour and grayscale, simplex and duplex on the long or short edge
+- 21 paper sizes, all trays and media types
+- Brother's colour settings: colour matching, improve gray, enhance
+  black, toner save, brightness, contrast, saturation and per-channel
+  colour adjustment
+- Reverse print, skip blank pages and copies
 
-Fine mode (600x2400 dpi) matches the manufacturer's filter byte for byte
-and has been checked on the printer. The PPD offers it as Print Quality
-"Fine (2400 dpi class)", Brother's own wording.
-
-On a Raspberry Pi 3B+ with the Cython modules and the precomputed
-inverse LUTs, a 131-page job goes through the CUPS filter in about
-133 s (roughly 1 s per page) with a peak memory use of about 64 MB.
-On a 20-page test document with a noisy colour photo on every page and
-the default improve gray (BRGray=ON), the filter takes about 23 s
-instead of 25 s without the improve-gray inverse LUT, and 46 s instead of
-69 s CPU time; Ghostscript alone takes 8 s of that.
+On a Raspberry Pi 3B+ a page takes about 1 s in Normal and about 6.5 s in
+Fine quality. The filter needs about 100 to 250 MB of memory, depending
+on the options.
 
 ## Requirements
 
+- Linux with CUPS and Ghostscript (`install.sh` does not support macOS)
 - Python 3.13+ and [`uv`](https://docs.astral.sh/uv/)
-- Ghostscript (the CUPS pipeline rasterizes PostScript to PPM)
-- CUPS
-- Optional, for speed: a C compiler and the Python headers (Debian:
+- Recommended: a C compiler and the Python headers (Debian:
   `sudo apt install build-essential python3-dev`). `install.sh` then
-  builds the Cython modules (RLE encoders, colour lookup, dither, the
-  Fine codec and band renderers that use several cores); without them
-  the driver falls back to pure Python, which is several times slower
-  (Fine mode about 30 times).
-- About 260 MB of disk space for the precomputed inverse colour LUTs
-  (Normal and Vivid colour matching, each with and without improve gray;
-  64 MiB each). `install.sh` computes them, which takes about four minutes
-  on a Pi 3. Their file names carry a hash of the colour grids they were
-  computed from, so re-run `install.sh` after `extract_blobs.sh`; until
-  then the filter ignores LUTs built from other grids and interpolates.
-- Linux. `install.sh` refuses to run on macOS, where the CUPS filter and
-  PPD directories are on the SIP-protected system volume.
-- A copy of the official Brother HL-4150CDN LPR driver `.deb`
-  (`scripts/extract_blobs.sh` downloads and verifies it; the printer's
-  calibration tables are extracted into `src/lut/` and `src/color_data/`
-  and are not redistributed)
+  builds the native modules; without them the driver is several times
+  slower, and Fine mode about 30 times.
+- About 260 MB of disk space for precomputed colour tables. `install.sh`
+  computes them, which takes about four minutes on a Pi 3.
+- Brother's HL-4150CDN LPR driver package: `scripts/extract_blobs.sh`
+  downloads it and extracts the printer's calibration tables, which this
+  repository does not include.
 
 ## Install
 
@@ -98,28 +80,28 @@ sudo lpadmin -p Brother_HL-4150CDN -P /usr/share/cups/model/brhl4150cdn.ppd
 
 ## Settings
 
-All options are PPD-driven and surfaced in the standard print dialog.
-Pass them as `-o key=value` to `lp` / `lpr` for scripting.
+All options appear in the standard print dialog. Pass them as
+`-o key=value` to `lp` / `lpr` for scripting.
 
 | Option | Values | Notes |
 |---|---|---|
 | `PageSize` | A4, Letter, Legal, Executive, A5, PRA5Rotated (A5 long edge), A6, ISOB5, ISOB6, JISB5, JISB6, Postcard, EnvDL, EnvPRC5Rotated (DL long edge), EnvC5, Env10 (Com-10), EnvMonarch, Br3x5, FanFoldGermanLegal (Folio), EnvYou4 (Envelope #4), EnvChou3 (Envelope MAX) | |
-| `BRMediaType` | Plain, Thin, Thick, Thicker, Bond, Envelope, EnvThin, EnvThick, Recycled, Postcard, Label, Glossy | Glossy uses the glossy colour tables |
-| `BRResolution` | 600dpi (Normal), 600x2400dpi (Fine) | Fine takes about 6.5 s per A4 page on a Pi 3B+ |
+| `BRMediaType` | Plain, Thin, Thick, Thicker, Bond, Envelope, EnvThin, EnvThick, Recycled, Postcard, Label, Glossy | Glossy also changes the colour calibration |
+| `BRResolution` | 600dpi (Normal), 600x2400dpi (Fine) | Fine: finer detail, slower |
 | `BRMonoColor` | Auto, FullColor, Mono | |
 | `Duplex` | None, DuplexNoTumble, DuplexTumble | Tumble = short edge; IPP `sides` works too |
-| `BRColorMatching` | Normal, Vivid, None | Each selects its own colour tables |
-| `BRGray` | OFF, ON | Improve gray: ImpGray colour tables |
-| `BREnhanceBlkPrt` | OFF, ON | Enhance black: rich black for pure black |
+| `BRColorMatching` | Normal, Vivid, None | None turns colour matching off |
+| `BRGray` | OFF, ON | Improve gray |
+| `BREnhanceBlkPrt` | OFF, ON | Enhance black: prints pure black as rich black |
 | `BRImproveOutput` | OFF, BRLessPaperCurl, BRFixIntensity | |
 | `BRInputSlot` | AutoSelect, Tray1, Tray2, MPTray | |
-| `BRTonerSaveMode` | OFF, ON | Toner-save dither and colour tables |
-| `BRSkipBlank` | OFF, ON | Drops pure-white pages, in duplex too |
-| `BRReverse` | OFF, ON | Sends each page bottom-up with Brother's reverse-print page marker; page order is kept |
+| `BRTonerSaveMode` | OFF, ON | Toner save |
+| `BRSkipBlank` | OFF, ON | Skips blank pages, in duplex too |
+| `BRReverse` | OFF, ON | Prints each page rotated by 180°, page order unchanged |
 | `BRBrightness` | -20 … 20 | |
 | `BRContrast` | -20 … 20 | |
 | `BRSaturation` | -20 … 20 | |
-| `BRRed`, `BRGreen`, `BRBlue` | -20 … 20 | Per-channel input shift |
+| `BRRed`, `BRGreen`, `BRBlue` | -20 … 20 | Per-channel colour adjustment |
 
 Copies come from the standard `-n` / `copies` option.
 
@@ -149,7 +131,7 @@ uv run nox -s lint            # ruff
 uv run nox -s format_check    # ruff format --check
 uv run nox -s typecheck       # pyrefly
 uv run nox -s deps            # deptry
-uv run nox -s tests           # pytest (1223 tests, needs extracted blobs)
+uv run nox -s tests           # pytest (needs extracted blobs)
 ```
 
 The Cython modules are optional in development too; build them in place
@@ -163,13 +145,19 @@ The test fixtures in `tests/fixtures/` are zstd-compressed XL2HB
 captures from the manufacturer's filter — pytest decompresses them on
 demand. Adding a new capture-based test is two steps: drop a fresh
 capture into `tests/fixtures/<name>.xl2hb.zst` and reference it from a
-parametrized test (`tests/test_full_pipeline.py` has the existing pattern).
+parametrized test (`tests/test_full_pipeline.py` has the existing
+pattern).
 
 ### Comparing with the manufacturer's filter
 
-Byte identity is checked against the original filter itself, which runs
-under Docker (`--platform linux/386`). After `./scripts/extract_blobs.sh`,
-three scripts in `scripts/` do the comparing:
+The captures cover every colour, tray and media setting, grayscale,
+simplex and both duplex modes. Normal mode is compared byte for byte on
+A4, Letter, A5, DL, 3x5 and Envelope #4, and on the page header values of
+all 21 paper sizes; Fine mode on all 21 paper sizes.
+
+For new comparisons, the original filter itself runs under Docker
+(`--platform linux/386`). After `./scripts/extract_blobs.sh`, three
+scripts in `scripts/` do the comparing:
 
 ```bash
 # Render a test page or job with both drivers and diff the XL2HB streams.
