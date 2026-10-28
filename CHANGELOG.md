@@ -9,8 +9,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - Reverse print (`BRReverse=ON`) keeps the page order and sends every page
   bottom-up with the page marker the manufacturer's filter uses for it;
-  before, it reversed the page order. On paper this should come out turned
-  by 180 degrees, which has not been checked on the printer yet.
+  before, it reversed the page order. On the printer the pages come out
+  turned by 180 degrees in their original order.
   Long-edge duplex jobs therefore no longer need the page count up front:
   the CUPS filter streams them from stdin like any other job instead of
   spooling them and counting their pages, and `filter_pages` has lost its
@@ -30,6 +30,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Negative brightness shifted one step too little: the shift is
   `brightness * 255 >> 7`, which rounds down, not toward zero
   (Brightness=-20 shifts by 40, not 39). Affects Normal mode too.
+- Copies (`lp -n 2`) printed each page copies² times, so four sheets per
+  page for two copies: Ghostscript already renders every page `copies`
+  times, because pstops sets `NumCopies`, and the filter asked the
+  printer for that many copies of each page again. The CUPS filter now
+  sends one copy per rendered page, like Brother's cupswrapper, which
+  passes its filter `Copies=1`.
 
 ### Changed
 - Fine mode (600x2400 dpi) is byte-identical to the original filter on

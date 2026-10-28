@@ -110,11 +110,13 @@ def test_reads_the_job_from_the_file_argument(fake_gs, tmp_path):
     assert from_file.stdout == _run(fake_gs).stdout
 
 
-def test_copies_argument_reaches_the_job(fake_gs):
+def test_copies_argument_does_not_reach_the_job(fake_gs):
+    # Ghostscript already renders each page `copies` times (pstops sets
+    # NumCopies); a PageCopies on top would multiply them again.
     one, two = _run(fake_gs), _run(fake_gs, copies="2")
     assert two.returncode == 0
     assert b"copies=2" in two.stderr
-    assert one.stdout != two.stdout
+    assert one.stdout == two.stdout
 
 
 def test_usage_error_without_cups_arguments(fake_gs):
