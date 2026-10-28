@@ -6,7 +6,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-28
+
+Fine mode (600x2400 dpi) matches the manufacturer's filter byte for byte
+and can be chosen in the print dialog. Reverse print, copies and skip
+blank pages in duplex now behave as with the original driver. Jobs that
+hand whole pages to the renderer hold at most one page at a time, which
+halves the CUPS filter's peak memory with skip blank.
+
 ### Upgrading
+- Re-run `cups/install.sh`: it builds the new Cython module for Fine
+  mode (`_fine_fast`); without the module, Fine pages are rendered in
+  pure Python, about 30 times slower.
 - Re-assign the PPD to existing queues to get the Fine choice into the
   print dialog (see Upgrading in the README).
 
@@ -42,13 +53,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   passes its filter `Copies=1`.
 
 ### Changed
-- Fine mode (600x2400 dpi) is byte-identical to the original filter on
-  the CLI for all 21 paper sizes and in duplex: the Fine codec, the 4bpp
-  dither tables and the original's dither overrun are reproduced, and the
-  image width is rounded up to 8 pixels as in the original. A native band
-  kernel renders an A4 Fine page in well under a second. The PPD offers it
-  again as "Fine (2400 dpi class)" and the CUPS filter prints it instead
-  of falling back to Normal. Checked on the printer.
+- Fine mode (600x2400 dpi) is byte-identical to the original filter for
+  all 21 paper sizes and in duplex: the Fine codec, the 4bpp dither
+  tables and the original's dither overrun are reproduced, and the image
+  width is rounded up to 8 pixels as in the original. A native band
+  kernel renders an A4 Fine page in well under a second on an M-series
+  Mac and in about 6.5 s on a Raspberry Pi 3B+. The PPD offers it again
+  as "Fine (2400 dpi class)" and the CUPS filter prints it instead of
+  falling back to Normal. Checked on the printer.
 - `scripts/fine_diff.py` compares any job with the original filter in
   Docker, writing the rc for the original with Brother's spellings
   (`BOND`, `Env`); `scripts/trace_dither.py` traces the original's Fine
@@ -274,7 +286,8 @@ Normal mode (600 dpi).
 - Fine mode emits valid framing but its compression codec is not yet
   byte-identical with the manufacturer's filter.
 
-[Unreleased]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cl445/brother-hl4150cdn-driver/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/cl445/brother-hl4150cdn-driver/releases/tag/v1.0.0

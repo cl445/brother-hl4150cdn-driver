@@ -1,6 +1,6 @@
 [project]
 name = "brother-hl4150cdn-driver"
-version = "1.1.1"
+version = "1.2.0"
 description = "Open-source driver replacement for the Brother HL-4150CDN color laser printer (XL2HB protocol, CUPS integration)"
 readme = "README.md"
 requires-python = ">=3.13"

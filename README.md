@@ -89,8 +89,8 @@ sudo lpadmin -p Brother_HL-4150CDN -E \
 
 Pull, then re-run `./scripts/extract_blobs.sh` and `sudo cups/install.sh`.
 Existing queues keep their old copy of the PPD; to pick up new options
-(e.g. the standard `Duplex` option since 1.1.0), re-assign it. This resets
-the queue's default options:
+(e.g. the standard `Duplex` option since 1.1.0, Fine since 1.2.0),
+re-assign it. This resets the queue's default options:
 
 ```bash
 sudo lpadmin -p Brother_HL-4150CDN -P /usr/share/cups/model/brhl4150cdn.ppd
