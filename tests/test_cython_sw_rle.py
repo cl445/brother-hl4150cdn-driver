@@ -82,6 +82,20 @@ def test_matches_python_encoder_random_sparse(variant):
         assert encode_sw_rle(data, bits) == expected, (variant, data.hex())
 
 
+@pytest.mark.parametrize("variant", _VARIANTS)
+@pytest.mark.parametrize("n_literals", [2047, 2048, 4095, 4096, 9000])
+def test_matches_python_encoder_literal_overflow(variant, n_literals):
+    """Literal stretches past the overflow limit, with a zero tail so no raw fallback hides them."""
+    bits, config = _VARIANTS[variant]
+    words = [(i % ((1 << bits) - 2)) + 1 for i in range(n_literals)] + [0] * 6000
+    value = 0
+    for w in words:
+        value = (value << bits) | w
+    n_bits = len(words) * bits
+    data = (value << (-n_bits % 8)).to_bytes((n_bits + 7) // 8, "big")
+    assert encode_sw_rle(data, bits) == _python_encode(data, bits, config)
+
+
 def test_rejects_unknown_word_size():
     with pytest.raises(ValueError, match="unsupported"):
         encode_sw_rle(b"\x01", 16)
