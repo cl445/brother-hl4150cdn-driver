@@ -68,10 +68,11 @@ def test_pure_python_var_switches_every_caller() -> None:
     """With the variable set at import time, no caller holds a native module."""
     code = (
         "from brother_xl2hb.codec import fine_encoder, plane_encoders, rle\n"
-        "from brother_xl2hb.color import color_lut, dither\n"
+        "from brother_xl2hb.color import color_lut, dither, saturation\n"
         "from brother_xl2hb.render import bands\n"
         "held = [rle._rle_fast, plane_encoders._rle_fast, fine_encoder._fine_fast, color_lut._color_fast,\n"
-        "        dither._dither_fast, dither._fine_fast, bands._band_fast, bands._fine_fast]\n"
+        "        dither._dither_fast, dither._fine_fast, bands._band_fast, bands._fine_fast,\n"
+        "        saturation._color_fast]\n"
         "assert held == [None] * len(held), held\n"
     )
     env = {**os.environ, _native.PURE_PYTHON_VAR: "1"}
