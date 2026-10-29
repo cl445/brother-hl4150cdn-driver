@@ -124,6 +124,65 @@ BRReverse=ON
         assert s.copies == 1
 
 
+class TestRCFileFallbacks:
+    """Odd rc values read as brhl4150cdnfilter reads them (each checked against it in Docker)."""
+
+    def _read(self, tmp_path, line: str) -> PrintSettings:
+        rc = tmp_path / "rc"
+        rc.write_text(f"[hl4150cdn]\n{line}\n")
+        return PrintSettings.from_rc_file(str(rc))
+
+    @pytest.mark.parametrize(
+        ("line", "attr"),
+        [
+            ("PageSize=Foo", "page_size"),
+            ("PageSize=letter", "page_size"),
+            ("BRMonoColor=mono", "mono_color"),
+            ("BRColorMatching=vivid", "color_matching"),
+            ("Duplex=duplexnotumble", "duplex"),
+            ("InputSlot=tray1", "input_slot"),
+            ("BRImproveOutput=brlesspapercurl", "improve_output"),
+        ],
+    )
+    def test_unknown_choice_keeps_default(self, tmp_path, line, attr):
+        assert getattr(self._read(tmp_path, line), attr) == getattr(PrintSettings(), attr)
+
+    @pytest.mark.parametrize("line", ["TonerSaveMode=on", "TonerSaveMode=On", "BRGray=on", "BRReverse=on"])
+    def test_only_exact_on_is_on(self, tmp_path, line):
+        s = self._read(tmp_path, line)
+        assert s.toner_save is False
+        assert s.improve_gray is False
+        assert s.reverse is False
+
+    @pytest.mark.parametrize(("value", "expected"), [("Normal", "Normal"), ("Fine", "Fine"), ("fine", "Fine")])
+    def test_resolution_other_than_normal_is_fine(self, tmp_path, value, expected):
+        assert self._read(tmp_path, f"BRResolution={value}").resolution == expected
+
+    @pytest.mark.parametrize(
+        ("line", "attr", "expected"),
+        [
+            ("Brightness=50", "brightness", 50),
+            ("Brightness=-50", "brightness", -50),
+            ("Brightness=50%", "brightness", 50),
+            ("Brightness=abc", "brightness", 0),
+            ("Contrast=100", "contrast", 100),
+            ("RedKey=-100", "red", -100),
+            ("Saturation=99999999999", "saturation", 1_000_000),
+        ],
+    )
+    def test_numbers_read_like_atoi(self, tmp_path, line, attr, expected):
+        assert getattr(self._read(tmp_path, line), attr) == expected
+
+    @pytest.mark.parametrize(
+        ("value", "expected"), [("3", 3), ("0", 1), ("-1", 1), ("abc", 1), ("2x", 2), ("100000", 9999)]
+    )
+    def test_copies_limited(self, tmp_path, value, expected):
+        assert self._read(tmp_path, f"Copies={value}").copies == expected
+
+    def test_percent_sign_is_not_interpolation(self, tmp_path):
+        assert self._read(tmp_path, "Contrast=5%").contrast == 5
+
+
 # ---------------------------------------------------------------------------
 # Paper sizes
 # ---------------------------------------------------------------------------

@@ -48,6 +48,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
   repeats the last word after the flush. A scanline has at most about 425
   words, so printed output does not change (#3).
+- IPP `print-color-mode=monochrome` (and bi-level) from generic and
+  AirPrint clients prints in mono; a job's own BRMonoColor still wins,
+  as Duplex does over `sides`.
+- CUPS options are split as `cupsParseOptions` does: quoted values,
+  backslash escapes and `noName` for Name=false. Boolean options take
+  on/off, true/false and yes/no in any case.
+- Copies are limited to 1..9999: 0 and -1 sent PageCopies 0 and 65535.
+- An rc file with an unknown choice, a `%` or a non-number no longer
+  stops the CLI; it reads them as Brother's filter does (default,
+  C `atoi`, BRResolution other than Normal is Fine).
 
 ## [1.2.0] — 2026-10-28
 

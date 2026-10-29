@@ -19,6 +19,7 @@ from brother_xl2hb.settings import (
     PageSize,
     PrintSettings,
     Resolution,
+    parse_cups_options,
     read_ppd_defaults,
 )
 
@@ -284,3 +285,85 @@ class TestPpdDefaults:
             "Duplex=DuplexTumble sides=two-sided-long-edge", ppd_defaults={"Duplex": "None"}
         )
         assert s.duplex == DuplexMode.TUMBLE
+
+
+class TestIppColorMode:
+    """IPP print-color-mode from generic and AirPrint clients, like sides for duplex."""
+
+    @pytest.mark.parametrize("mode", ["monochrome", "bi-level", "process-monochrome"])
+    def test_monochrome_prints_mono(self, mode):
+        s = PrintSettings.from_cups_options(f"print-color-mode={mode}", ppd_defaults={"BRMonoColor": "Auto"})
+        assert s.mono_color == MonoColor.MONO
+
+    @pytest.mark.parametrize("mode", ["color", "auto"])
+    def test_color_keeps_ppd_choice(self, mode):
+        """FullColor would switch off Auto's colour detection, so color leaves the PPD's choice."""
+        s = PrintSettings.from_cups_options(f"print-color-mode={mode}", ppd_defaults={"BRMonoColor": "Auto"})
+        assert s.mono_color == MonoColor.AUTO
+
+    def test_job_mono_color_beats_ipp_color_mode(self):
+        s = PrintSettings.from_cups_options("BRMonoColor=FullColor print-color-mode=monochrome")
+        assert s.mono_color == MonoColor.FULL_COLOR
+
+    def test_ipp_color_mode_beats_ppd_default(self):
+        s = PrintSettings.from_cups_options("print-color-mode=monochrome", ppd_defaults={"BRMonoColor": "FullColor"})
+        assert s.mono_color == MonoColor.MONO
+
+    def test_unknown_color_mode_keeps_default(self):
+        s = PrintSettings.from_cups_options("print-color-mode=sepia")
+        assert s.mono_color == MonoColor.AUTO
+
+
+class TestCupsOptionsBooleanSpellings:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("on", True), ("On", True), ("true", True), ("YES", True), ("off", False), ("False", False), ("no", False)],
+    )
+    def test_any_case_and_spelling(self, value, expected):
+        s = PrintSettings.from_cups_options(f"BRTonerSaveMode={value}", ppd_defaults={"BRTonerSaveMode": "OFF"})
+        assert s.toner_save is expected
+
+    def test_no_prefix_turns_option_off(self):
+        s = PrintSettings.from_cups_options("noBRGray", ppd_defaults={"BRGray": "ON"})
+        assert s.improve_gray is False
+
+    def test_bare_name_turns_option_on(self):
+        assert PrintSettings.from_cups_options("BRReverse").reverse is True
+
+    def test_unknown_value_keeps_default(self):
+        s = PrintSettings.from_cups_options("BRSkipBlank=maybe")
+        assert s.skip_blank is False
+
+
+class TestCupsCopies:
+    @pytest.mark.parametrize(("copies", "expected"), [(0, 1), (-1, 1), (1, 1), (9999, 9999), (100000, 9999)])
+    def test_copies_limited(self, copies, expected):
+        assert PrintSettings.from_cups_options("", copies=copies).copies == expected
+
+
+class TestParseCupsOptions:
+    """Quoting as cupsParseOptions reads it."""
+
+    @pytest.mark.parametrize(
+        ("options", "expected"),
+        [
+            ("", {}),
+            ("   ", {}),
+            ("PageSize=A4 BRGray=ON", {"PageSize": "A4", "BRGray": "ON"}),
+            (r"a=b\ c", {"a": "b c"}),
+            ("name='x y' k=v", {"name": "x y", "k": "v"}),
+            ('job-name="a \\"q\\" b"', {"job-name": 'a "q" b'}),
+            ("a=it' s'x b=2", {"a": "it sx", "b": "2"}),
+            ("e= f=1", {"e": "", "f": "1"}),
+            ("a=1 a=2", {"a": "2"}),
+            ("x={a=1 b={c d}} y=2", {"x": "{a=1 b={c d}}", "y": "2"}),
+            ("noBRGray BRSkipBlank", {"BRGray": "false", "BRSkipBlank": "true"}),
+            ('a="unterminated', {"a": "unterminated"}),
+        ],
+    )
+    def test_cups_semantics(self, options, expected):
+        assert parse_cups_options(options) == expected
+
+    def test_quoted_value_reaches_settings(self):
+        s = PrintSettings.from_cups_options("job-name='my report.pdf' PageSize=Letter")
+        assert s.page_size == PageSize.LETTER
