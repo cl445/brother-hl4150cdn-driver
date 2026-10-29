@@ -81,6 +81,15 @@ def test_scripts_know_the_model(model, script):
     assert re.search(rf"^\s*{model.key}\)", (_ROOT / script).read_text(), re.MULTILINE)
 
 
+@_MODELS
+def test_install_script_knows_whether_grids_are_generated(model):
+    """install.sh's warning about missing colour grids follows the model's `generated_grids`."""
+    block = re.search(rf"^\s*{model.key}\)(.*?);;", (_ROOT / "cups/install.sh").read_text(), re.MULTILINE | re.DOTALL)
+    assert block
+    setting = re.search(r"^\s*GENERATED_GRIDS=(\w+)", block[1], re.MULTILINE)
+    assert setting
+    assert setting[1] == str(model.generated_grids).lower()
+
 
 def _fake_package(parent: Path, origin: str) -> None:
     """A stand-in `brother_xl2hb` in `parent` whose `cups_filter.main` prints `origin`."""
