@@ -1,12 +1,18 @@
 """PrinterModel: the generic geometry and lookups, and the registered models' tables."""
 
 import dataclasses
+import io
 import logging
 
+import numpy as np
 import pytest
 
 from brother_xl2hb import cli
+from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL, HL4150CDN, MODELS
+from brother_xl2hb.models.base import PageSend
+from brother_xl2hb.protocol.xl2hb import XL2HBWriter
+from brother_xl2hb.render.page import init_channels, render_page
 from brother_xl2hb.settings import DuplexMode, InputSlot, MediaType, PageSize, PrintSettings
 
 
@@ -106,19 +112,43 @@ def test_image_height_without_imaging_area_is_the_paper_height_in_whole_points()
 
 
 @pytest.mark.parametrize(
-    ("duplex", "reverse", "back_side", "flipped"),
+    ("duplex", "reverse", "index", "flipped"),
     [
-        (DuplexMode.NONE, False, False, False),
-        (DuplexMode.NONE, True, False, True),
-        (DuplexMode.NO_TUMBLE, False, True, True),
-        (DuplexMode.NO_TUMBLE, True, True, False),  # long-edge back side and reverse cancel out
-        (DuplexMode.NO_TUMBLE, True, False, True),
-        (DuplexMode.TUMBLE, False, True, False),
+        (DuplexMode.NONE, False, 1, False),
+        (DuplexMode.NONE, True, 0, True),
+        (DuplexMode.NO_TUMBLE, False, 0, False),
+        (DuplexMode.NO_TUMBLE, False, 1, True),  # long-edge back side
+        (DuplexMode.NO_TUMBLE, True, 1, False),  # back side and reverse cancel out
+        (DuplexMode.NO_TUMBLE, True, 2, True),
+        (DuplexMode.TUMBLE, False, 1, False),
     ],
 )
-def test_hl4150cdn_page_is_flipped(duplex, reverse, back_side, flipped):
-    settings = PrintSettings(duplex=duplex, reverse=reverse)
-    assert HL4150CDN.page_is_flipped(settings, back_side) is flipped
+def test_hl4150cdn_sends_each_page_once(duplex, reverse, index, flipped):
+    settings = PrintSettings(duplex=duplex, reverse=reverse, copies=2)
+    assert HL4150CDN.page_sends(settings, index) == (PageSend(flip=flipped, copies=2),)
+
+
+def test_a_page_sent_twice_is_rendered_twice_from_streamed_rows():
+    """A model may send a page more than once; streamed row blocks are collected first."""
+    sends = (PageSend(flip=False, copies=1), PageSend(flip=True, copies=2))
+    twice = dataclasses.replace(HL4150CDN, page_sends=lambda settings, index: sends)
+    width, height = 64, HL4150CDN.paper_sizes["Postcard"][1]
+    rows = np.random.default_rng(0).integers(0, 256, (height, width * 3), dtype=np.uint8)
+    blocks = (rows[i : i + 100] for i in range(0, height, 100))
+    settings = PrintSettings(page_size=PageSize.POSTCARD)
+
+    out = io.BytesIO()
+    filter_pages([(width, height, blocks)], settings, out, twice)
+
+    channels = init_channels(settings, HL4150CDN)
+    expected = []
+    for send in sends:
+        page = io.BytesIO()
+        render_page(XL2HBWriter(page), width, height, rows, settings, channels, HL4150CDN, send)
+        expected.append(page.getvalue())
+    assert expected[0] != expected[1]
+    stream = out.getvalue()
+    assert expected[0] + expected[1] in stream
 
 
 def test_unknown_names_fall_back_with_a_warning(caplog):

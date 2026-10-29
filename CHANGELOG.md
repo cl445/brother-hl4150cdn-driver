@@ -25,6 +25,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `settings_from_cups_options`): Brother's spellings (Env, A5Rotated,
   B5, B6) are the model's `aliases`, and a choice the model does not
   support falls back to the default with a warning.
+- The model decides how each page is sent (`page_sends`: bottom-up or
+  not, PageCopies, and how often); the job no longer knows about duplex
+  sides.
 - `scripts/extract_blobs.sh` puts Brother's tables into
   `src/brother_xl2hb/lut/<model>/` and `src/brother_xl2hb/color_data/<model>/`
   (the unpacked package to `.brother-blobs/<model>/`); re-run it

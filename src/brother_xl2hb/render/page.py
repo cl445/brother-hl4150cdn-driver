@@ -5,7 +5,7 @@ from brother_xl2hb.color.dither import (
     load_dither_tables,
 )
 from brother_xl2hb.color.transforms import build_input_remap_lut
-from brother_xl2hb.models.base import PrinterModel
+from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
 from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
 from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, encode_lines, encode_lines_mono
@@ -21,14 +21,13 @@ def render_page(
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
     model: PrinterModel,
-    *,
-    flip: bool = False,
+    send: PageSend,
 ) -> None:
     """Render one page within an already-open session.
 
-    Handles: BeginPage -> scanline loop -> flush -> EndPage. `flip` sends
-    the page bottom-up with the back-side marker (which pages:
-    `PrinterModel.page_is_flipped`). Scanlines are read as views into `pixel_data`,
+    Handles: BeginPage -> scanline loop -> flush -> EndPage, as `send`
+    says (bottom-up with the back-side marker, PageCopies; see
+    `PrinterModel.page_sends`). Scanlines are read as views into `pixel_data`,
     which may also be a stream of row blocks; only flipped pages are
     collected into one buffer to be mirrored.
 
@@ -43,7 +42,7 @@ def render_page(
     bpl = (sw + 1) // 2 if is_fine else (sw + 7) // 8  # 4bpp: 2 pixels per byte, 1bpp: 8
 
     # A flipped page is mirrored top to bottom, columns stay.
-    if flip:
+    if send.flip:
         blocks: RowBlocks = (flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
         height = paper_h
     elif isinstance(pixel_data, BUFFER_TYPES):
@@ -56,11 +55,11 @@ def render_page(
         media_source=model.media_source[settings.input_slot],
         media_type=model.media_type_code(settings.media_type),
         duplex_mode=model.duplex_page_mode.get(settings.duplex),
-        back_side_marker=flip,
+        back_side_marker=send.flip,
     )
     w.write_set_page_origin(*model.page_origin)
     mono = settings.mono_color == MonoColor.MONO
-    w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine, color=not mono)
+    w.write_begin_image(sw, sh, copies=send.copies, fine=is_fine, color=not mono)
 
     plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
 
@@ -129,7 +128,7 @@ def render_page(
         write_plane(pid)
 
     w.write_end_image()
-    w.write_end_page(copies=settings.copies)
+    w.write_end_page(copies=send.copies)
 
 
 def init_channels(settings: PrintSettings, model: PrinterModel) -> dict[str, DitherChannel]:

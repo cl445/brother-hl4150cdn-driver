@@ -19,6 +19,20 @@ from brother_xl2hb.settings import Aliases, DuplexMode, InputSlot, PrintSettings
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class PageSend:
+    """One transmission of a page in the XL2HB stream.
+
+    Attributes:
+        flip: the page goes bottom-up with the back-side marker (rows
+            mirrored, columns not).
+        copies: PageCopies in BeginImage and EndPage.
+    """
+
+    flip: bool
+    copies: int
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PrinterModel:
     """One printer model, as its manufacturer's filter drives it.
@@ -49,9 +63,9 @@ class PrinterModel:
             built with `grid`.
         pjl_header: PJL before the XL2HB stream.
         pjl_footer: PJL after it.
-        page_is_flipped: whether a page is sent bottom-up with the
-            back-side marker; `back_side` is the second page of a duplex
-            sheet.
+        page_sends: how the page at `index` (counted after skip blank) is
+            sent: one `PageSend` per transmission, in order. Covers duplex
+            sides, reverse print and how copies are made.
         skip_blank: the filter can drop blank pages (BRSkipBlank).
         aliases: the spellings of option values in the model's rc file and
             Brother's PPD that differ from this driver's (see
@@ -77,7 +91,7 @@ class PrinterModel:
     color_table: Callable[[PrintSettings], ColorTable]
     pjl_header: Callable[[PrintSettings], bytes]
     pjl_footer: Callable[[], bytes]
-    page_is_flipped: Callable[[PrintSettings, bool], bool]
+    page_sends: Callable[[PrintSettings, int], tuple[PageSend, ...]]
     skip_blank: bool
     aliases: Aliases
 

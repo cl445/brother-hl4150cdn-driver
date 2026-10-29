@@ -7,7 +7,7 @@ itself is in `brother_xl2hb.protocol`.
 
 from brother_xl2hb.color.color_lut import ColorTable, Profile
 from brother_xl2hb.color.transforms import color_profile
-from brother_xl2hb.models.base import PrinterModel
+from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.pjl import generate_pjl_footer, generate_pjl_header
 from brother_xl2hb.settings import (
     DuplexMode,
@@ -240,17 +240,20 @@ def pjl_header(settings: PrintSettings) -> bytes:
     )
 
 
-def page_is_flipped(settings: PrintSettings, back_side: bool) -> bool:  # noqa: FBT001 - PrinterModel hook signature
-    """Whether a page is sent bottom-up with the back-side marker.
+def page_sends(settings: PrintSettings, index: int) -> tuple[PageSend, ...]:
+    """How brhl4150cdnfilter sends the page at `index`: once, with PageCopies = copies.
 
-    Long-edge back pages are sent that way (rows mirrored, columns not).
+    With duplex every second page is a back side. Long-edge back pages go
+    bottom-up with the back-side marker (rows mirrored, columns not).
     BRReverse makes Brother's filter send every page that way, so on a
     long-edge back page the two cancel out (verified against captures).
 
     Returns:
-        True if the page is mirrored top to bottom.
+        A single `PageSend`.
     """
-    return (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+    back_side = settings.duplex != DuplexMode.NONE and index % 2 == 1
+    flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+    return (PageSend(flip=flip, copies=settings.copies),)
 
 
 HL4150CDN = PrinterModel(
@@ -269,7 +272,7 @@ HL4150CDN = PrinterModel(
     color_table=color_table,
     pjl_header=pjl_header,
     pjl_footer=generate_pjl_footer,
-    page_is_flipped=page_is_flipped,
+    page_sends=page_sends,
     skip_blank=True,
     aliases=ALIASES,
 )

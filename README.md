@@ -141,7 +141,7 @@ The code is one package, `src/brother_xl2hb/`:
 | `codec` | plane RLE encoders (Normal) and the APT codec (Fine) |
 | `color` | colour grids, input remap, saturation, ordered dither |
 | `protocol` | XL2HB stream writer and PJL, without model data |
-| `models` | `PrinterModel` per printer: paper geometry, media and tray codes, dither set, colour grid choice, PJL, page flips |
+| `models` | `PrinterModel` per printer: paper geometry, media and tray codes, dither set, colour grid choice, PJL, how pages are sent |
 | `render` | one page: PPM input, the per-line and the band path |
 | `_native` | optional Cython kernels, each with a pure-Python fallback |
 

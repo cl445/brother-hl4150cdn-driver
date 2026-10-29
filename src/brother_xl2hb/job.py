@@ -20,7 +20,7 @@ from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
 from brother_xl2hb.render.page import init_channels, render_page
 from brother_xl2hb.render.rows import PageBuffer, PageData, collect_rows, is_blank_page
-from brother_xl2hb.settings import DuplexMode, PrintSettings
+from brother_xl2hb.settings import PrintSettings
 
 logger = logging.getLogger(__name__)
 
@@ -90,37 +90,31 @@ def _render_pages(
     output: BinaryIO,
     model: PrinterModel,
 ) -> None:
-    """Render pages in input order; with duplex every second page is a back side.
+    """Render pages in input order, each as the model's `page_sends` say.
 
-    Each page is rendered into memory (its compressed XL2HB, typically
+    A page sent more than once is collected into one buffer first, since
+    streamed row blocks can be read only once. Each send is rendered into memory (its compressed XL2HB, typically
     well under 10 MB) and written to `output` only once it is complete, so
     a failure while reading or rendering a page never leaves a half page
     in the printer data stream.
     """
-    duplex = settings.duplex != DuplexMode.NONE
     page_buf = io.BytesIO()
     # A counter instead of enumerate(): enumerate keeps the last (index,
     # page) pair until the next page has been read, which would hold two
     # whole-page buffers at once.
     index = 0
     for width, height, pixel_data in pages:
-        page_buf.seek(0)
-        page_buf.truncate()
-        render_page(
-            XL2HBWriter(page_buf),
-            width,
-            height,
-            pixel_data,
-            settings,
-            channels,
-            model,
-            flip=model.page_is_flipped(settings, duplex and index % 2 == 1),
-        )
+        sends = model.page_sends(settings, index)
+        data: PageData = collect_rows(pixel_data, width, height) if len(sends) > 1 else pixel_data
+        for send in sends:
+            page_buf.seek(0)
+            page_buf.truncate()
+            render_page(XL2HBWriter(page_buf), width, height, data, settings, channels, model, send)
+            with page_buf.getbuffer() as page:
+                output.write(page)
         # Release the page's raster before the next page is read; with
         # whole-page buffers (skip blank, flipped pages) two would add up.
-        del pixel_data
-        with page_buf.getbuffer() as page:
-            output.write(page)
+        del pixel_data, data
         index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
 
 
@@ -132,11 +126,10 @@ def filter_pages(
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
-    Pages are consumed lazily in input order; with duplex, every second
-    page is a back side. Which pages go bottom-up with the back-side
-    marker (long-edge back sides, `settings.reverse`) is the model's
-    `page_is_flipped`.
-    `settings.skip_blank` drops pure-white pages before sides are assigned.
+    Pages are consumed lazily in input order. How each is sent (duplex
+    sides, bottom-up for long-edge back sides and `settings.reverse`,
+    copies) is the model's `page_sends`. `settings.skip_blank` drops
+    pure-white pages before that.
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
