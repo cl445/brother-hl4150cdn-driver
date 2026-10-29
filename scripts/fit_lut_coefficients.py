@@ -28,7 +28,7 @@ LUT_DIM = 17
 PAIR_DIM = 9  # 2D interaction grid resolution
 TRI_DIM = 5  # 3D residual grid resolution
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "color_data"
+DATA_DIR = Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "color_data" / "hl4150cdn"
 OUTPUT_FILE = Path(__file__).resolve().parent / "fitted_coefficients.py"
 
 

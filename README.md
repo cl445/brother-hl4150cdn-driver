@@ -148,8 +148,8 @@ The code is one package, `src/brother_xl2hb/`:
 `job` (PJL, the session, page order, duplex, reverse, skip blank),
 `settings`, `cli` and `cups_filter` sit at the top; `cups/brhl4150cdn-filter`
 only puts the package on the path and calls `cups_filter.main`.
-`scripts/extract_blobs.sh` writes Brother's tables to
-`src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`.
+`scripts/extract_blobs.sh [model]` writes Brother's tables to
+`src/brother_xl2hb/lut/<model>/` and `src/brother_xl2hb/color_data/<model>/`.
 
 A printer model is one `PrinterModel` (`models/base.py`): the data its
 filter writes plus a few hooks where Brother's filters differ. The

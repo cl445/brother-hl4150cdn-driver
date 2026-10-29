@@ -22,7 +22,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bottom-up. `job.filter_pages`, the CUPS filter and the CLI take a model
   and default to the HL-4150CDN; the CLI has `--model`.
 - `scripts/extract_blobs.sh` puts Brother's tables into
-  `src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`; re-run it
+  `src/brother_xl2hb/lut/<model>/` and `src/brother_xl2hb/color_data/<model>/`
+  (the unpacked package to `.brother-blobs/<model>/`); re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of
   1.2.0 in `/usr/local/lib/brhl4150cdn/`.
 

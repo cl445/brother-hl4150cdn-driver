@@ -8,9 +8,9 @@ tests/test_full_pipeline.py.
 
 import pytest
 
-from brother_xl2hb.color.color_lut import ColorTable, rgb_to_cmyk_lut
+from brother_xl2hb.color.color_lut import rgb_to_cmyk_lut
 from brother_xl2hb.color.dither import dither_channel_1bpp
-from brother_xl2hb.color.transforms import color_table
+from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.models.hl4150cdn import DITHER_CACHE
 from brother_xl2hb.settings import ColorMatching, MediaType, PrintSettings
 
@@ -37,7 +37,7 @@ class TestOrderedDithering:
         """50% gray should produce a halftone pattern, not uniform output.
         The driver uses ordered dithering to distribute dots.
         With the 3D LUT, gray ink is spread across CMYK channels."""
-        k_int, c_int, m_int, y_int = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760)
+        k_int, c_int, m_int, y_int = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760, HL4150CDN.grid())
         # Dither all channels and count total dots
         k = dither_channel_1bpp(k_int, y=0, width=4760)
         c = dither_channel_1bpp(c_int, y=0, width=4760)
@@ -49,8 +49,8 @@ class TestOrderedDithering:
 
     def test_25pct_gray_sparser_than_50pct(self):
         """25% gray should have fewer dots than 50% gray."""
-        k_25_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(191, 191, 191), 4760)
-        k_50_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760)
+        k_25_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(191, 191, 191), 4760, HL4150CDN.grid())
+        k_50_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760, HL4150CDN.grid())
         k_25 = dither_channel_1bpp(k_25_int, y=0, width=4760)
         k_50 = dither_channel_1bpp(k_50_int, y=0, width=4760)
         bits_25 = sum(b.bit_count() for b in k_25[:595])
@@ -60,7 +60,7 @@ class TestOrderedDithering:
     def test_dither_varies_by_line(self):
         """Different scanlines should produce different dot patterns
         (the dither matrix is position-dependent)."""
-        k_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760)
+        k_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760, HL4150CDN.grid())
         k_y0 = dither_channel_1bpp(k_int, y=0, width=4760)
         k_y1 = dither_channel_1bpp(k_int, y=1, width=4760)
         assert k_y0 != k_y1, "Dither should vary by y position"
@@ -71,7 +71,7 @@ class TestOrderedDithering:
 
         from brother_xl2hb.color.dither import load_brcd_tables
 
-        lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
+        lut_dir = str(HL4150CDN.lut_dir)
         if not (Path(lut_dir) / "0600-k_cache09.bin").exists():
             pytest.skip("Original BRCD files not available")
         channels = load_brcd_tables(lut_dir, cache=DITHER_CACHE)
@@ -94,30 +94,30 @@ class TestColorTables:
     @pytest.mark.parametrize(
         ("settings", "expected"),
         [
-            (PrintSettings(), ColorTable("rgb")),
-            (PrintSettings(color_matching=ColorMatching.VIVID), ColorTable("srgb")),
-            (PrintSettings(color_matching=ColorMatching.NONE), ColorTable("cmyk")),
-            (PrintSettings(improve_gray=True), ColorTable("rgb", improve_gray=True)),
-            (PrintSettings(toner_save=True), ColorTable("rgb", variant="density2")),
-            (PrintSettings(media_type=MediaType.GLOSSY), ColorTable("rgb", variant="glossy")),
-            (PrintSettings(toner_save=True, media_type=MediaType.GLOSSY), ColorTable("rgb", variant="density2")),
-            (PrintSettings(enhance_black=True), ColorTable("rgb", rich_black=True)),
-            (PrintSettings(enhance_black=True, color_matching=ColorMatching.NONE), ColorTable("cmyk")),
+            (PrintSettings(), HL4150CDN.grid("rgb")),
+            (PrintSettings(color_matching=ColorMatching.VIVID), HL4150CDN.grid("srgb")),
+            (PrintSettings(color_matching=ColorMatching.NONE), HL4150CDN.grid("cmyk")),
+            (PrintSettings(improve_gray=True), HL4150CDN.grid("rgb", improve_gray=True)),
+            (PrintSettings(toner_save=True), HL4150CDN.grid("rgb", variant="density2")),
+            (PrintSettings(media_type=MediaType.GLOSSY), HL4150CDN.grid("rgb", variant="glossy")),
+            (PrintSettings(toner_save=True, media_type=MediaType.GLOSSY), HL4150CDN.grid("rgb", variant="density2")),
+            (PrintSettings(enhance_black=True), HL4150CDN.grid("rgb", rich_black=True)),
+            (PrintSettings(enhance_black=True, color_matching=ColorMatching.NONE), HL4150CDN.grid("cmyk")),
         ],
     )
     def test_table_for_settings(self, settings, expected):
-        assert color_table(settings) == expected
+        assert HL4150CDN.color_table(settings) == expected
 
     @pytest.mark.parametrize(
         ("table", "rgb", "expected"),
         [
-            (ColorTable("srgb"), (0, 255, 255), (255, 20, 255, 255)),
-            (ColorTable("srgb"), (255, 0, 0), (255, 255, 30, 30)),
-            (ColorTable("srgb"), (25, 230, 230), (253, 35, 251, 235)),
-            (ColorTable("rgb", variant="density2"), (30, 200, 90), (248, 98, 253, 96)),
-            (ColorTable("rgb", variant="density2"), (250, 240, 10), (255, 253, 244, 16)),
-            (ColorTable("cmyk"), (30, 200, 90), (255, 35, 236, 113)),
-            (ColorTable("cmyk"), (200, 100, 50), (255, 235, 124, 60)),
+            (HL4150CDN.grid("srgb"), (0, 255, 255), (255, 20, 255, 255)),
+            (HL4150CDN.grid("srgb"), (255, 0, 0), (255, 255, 30, 30)),
+            (HL4150CDN.grid("srgb"), (25, 230, 230), (253, 35, 251, 235)),
+            (HL4150CDN.grid("rgb", variant="density2"), (30, 200, 90), (248, 98, 253, 96)),
+            (HL4150CDN.grid("rgb", variant="density2"), (250, 240, 10), (255, 253, 244, 16)),
+            (HL4150CDN.grid("cmyk"), (30, 200, 90), (255, 35, 236, 113)),
+            (HL4150CDN.grid("cmyk"), (200, 100, 50), (255, 235, 124, 60)),
         ],
     )
     def test_separation_matches_original(self, table, rgb, expected):
@@ -126,9 +126,9 @@ class TestColorTables:
         assert (k[0], c[0], m[0], y[0]) == expected
 
     def test_rich_black_takes_grid_entry_zero(self):
-        k, c, m, y = rgb_to_cmyk_lut(_make_rgb_row(0, 0, 0, width=1), 1, ColorTable("rgb", rich_black=True))
+        k, c, m, y = rgb_to_cmyk_lut(_make_rgb_row(0, 0, 0, width=1), 1, HL4150CDN.grid("rgb", rich_black=True))
         assert (k[0], c[0], m[0], y[0]) == (0, 255 - 83, 255 - 55, 255 - 65)
-        k, c, m, y = rgb_to_cmyk_lut(_make_rgb_row(0, 0, 0, width=1), 1, ColorTable("rgb"))
+        k, c, m, y = rgb_to_cmyk_lut(_make_rgb_row(0, 0, 0, width=1), 1, HL4150CDN.grid("rgb"))
         assert (k[0], c[0], m[0], y[0]) == (0, 255, 255, 255)
 
 

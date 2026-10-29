@@ -9,8 +9,10 @@ filters (colour grid, PJL, which pages go bottom-up).
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
-from brother_xl2hb.color.color_lut import ColorTable
+from brother_xl2hb.blobs import COLOR_DATA_ROOT, LUT_ROOT
+from brother_xl2hb.color.color_lut import ColorTable, Profile
 from brother_xl2hb.settings import DuplexMode, InputSlot, PrintSettings
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,8 @@ class PrinterModel:
     """One printer model, as its manufacturer's filter drives it.
 
     Attributes:
+        key: short name for the CLI, file names and blob directories, e.g.
+            `hl4150cdn`.
         name: model name, e.g. `HL-4150CDN`.
         paper_sizes: paper size in pixels at 600 dpi (paperinfij2), keyed
             by PPD PageSize.
@@ -38,7 +42,10 @@ class PrinterModel:
             SimplexPageMode.
         dither_cache: suffix of the BRCD dither files, e.g. `cache09` for
             `0600-k_cache09.bin`.
-        color_table: the colour grid the filter selects for the settings.
+        inverse_lut_grids: (profile, improve_gray) of the default-variant
+            grids that get a precomputed inverse LUT (cups/install.sh).
+        color_table: the colour grid the filter selects for the settings;
+            built with `grid`.
         pjl_header: PJL before the XL2HB stream.
         pjl_footer: PJL after it.
         page_is_flipped: whether a page is sent bottom-up with the
@@ -46,6 +53,7 @@ class PrinterModel:
             sheet.
     """
 
+    key: str
     name: str
     paper_sizes: Mapping[str, tuple[int, int]]
     imaging_height_pt: Mapping[str, int] | None
@@ -56,10 +64,49 @@ class PrinterModel:
     media_source: Mapping[InputSlot, int]
     duplex_page_mode: Mapping[DuplexMode, int | None]
     dither_cache: str
+    inverse_lut_grids: tuple[tuple[Profile, bool], ...]
     color_table: Callable[[PrintSettings], ColorTable]
     pjl_header: Callable[[PrintSettings], bytes]
     pjl_footer: Callable[[], bytes]
     page_is_flipped: Callable[[PrintSettings, bool], bool]
+
+    @property
+    def lut_dir(self) -> Path:
+        """The model's BRCD dither tables: `lut/<key>/` in the package."""
+        return LUT_ROOT / self.key
+
+    @property
+    def color_data_dir(self) -> Path:
+        """The model's colour grids and inverse LUTs: `color_data/<key>/` in the package."""
+        return COLOR_DATA_ROOT / self.key
+
+    def grid(
+        self,
+        profile: Profile = "rgb",
+        *,
+        improve_gray: bool = False,
+        variant: str = "default",
+        rich_black: bool = False,
+    ) -> ColorTable:
+        """The model's colour grid with these properties.
+
+        Returns:
+            The table, marked `precomputed` if it is one of `inverse_lut_grids`.
+        """
+        precomputed = variant == "default" and not rich_black and (profile, improve_gray) in self.inverse_lut_grids
+        return ColorTable(
+            profile,
+            improve_gray,
+            variant,
+            rich_black,
+            data_dir=self.color_data_dir,
+            precomputed=precomputed,
+        )
+
+    @property
+    def inverse_lut_tables(self) -> tuple[ColorTable, ...]:
+        """The tables `cups/install.sh` precomputes an inverse LUT for."""
+        return tuple(self.grid(profile, improve_gray=gray) for profile, gray in self.inverse_lut_grids)
 
     def image_height(self, page_size: str) -> int:
         """Rows of the page image, as the original computes its band height.

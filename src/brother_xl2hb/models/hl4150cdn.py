@@ -5,13 +5,15 @@ and ImagingArea files and verified against its output. The protocol
 itself is in `brother_xl2hb.protocol`.
 """
 
-from brother_xl2hb.color.transforms import color_table
+from brother_xl2hb.color.color_lut import ColorTable, Profile
+from brother_xl2hb.color.transforms import color_profile
 from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.protocol.pjl import generate_pjl_footer, generate_pjl_header
 from brother_xl2hb.settings import (
     DuplexMode,
     ImproveOutput,
     InputSlot,
+    MediaType,
     MonoColor,
     PrintSettings,
     Resolution,
@@ -176,6 +178,36 @@ PAPER_POINTS = {
 DITHER_CACHE = "cache09"
 
 
+# Normal and Vivid colour matching, each with and without improve gray (the
+# PPD default is BRGray=ON); every other grid is interpolated per pixel.
+INVERSE_LUT_GRIDS: tuple[tuple[Profile, bool], ...] = (("rgb", False), ("rgb", True), ("srgb", False), ("srgb", True))
+
+
+def color_table(settings: PrintSettings) -> ColorTable:
+    """The colour grid `lookup_color_transform_table` selects for `settings`.
+
+    Profile from the colour matching, `density2` with toner save, `glossy`
+    for glossy media; toner save wins over glossy media, as in the
+    original. Rich black (BREnhanceBlkPrt) only exists for the rgb and srgb
+    profiles.
+
+    Returns:
+        The table for the colour separation.
+    """
+    profile = color_profile(settings)
+    variant = "default"
+    if settings.toner_save:
+        variant = "density2"
+    elif settings.media_type == MediaType.GLOSSY:
+        variant = "glossy"
+    return HL4150CDN.grid(
+        profile,
+        improve_gray=settings.improve_gray,
+        variant=variant,
+        rich_black=settings.enhance_black and profile != "cmyk",
+    )
+
+
 def pjl_header(settings: PrintSettings) -> bytes:
     """The PJL header brhl4150cdnfilter writes for `settings`.
 
@@ -214,6 +246,7 @@ def page_is_flipped(settings: PrintSettings, back_side: bool) -> bool:  # noqa: 
 
 
 HL4150CDN = PrinterModel(
+    key="hl4150cdn",
     name="HL-4150CDN",
     paper_sizes=PAPER_SIZES,
     imaging_height_pt=IMAGING_HEIGHT_PT,
@@ -224,6 +257,7 @@ HL4150CDN = PrinterModel(
     media_source=MEDIA_SOURCE,
     duplex_page_mode=DUPLEX_MAP,
     dither_cache=DITHER_CACHE,
+    inverse_lut_grids=INVERSE_LUT_GRIDS,
     color_table=color_table,
     pjl_header=pjl_header,
     pjl_footer=generate_pjl_footer,

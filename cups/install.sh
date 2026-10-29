@@ -11,6 +11,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 # Installation paths
 LIB_DIR="/usr/local/lib/brhl4150cdn"
 VENV_DIR="$LIB_DIR/.venv"
+MODEL="hl4150cdn"
 PKG_SRC="$REPO_ROOT/src/brother_xl2hb"
 PKG_DIR="$LIB_DIR/brother_xl2hb"
 
@@ -101,11 +102,11 @@ rm -f "$LIB_DIR/"*.py "$LIB_DIR/"_*_fast*.so
 # Copy the package with the tables extract_blobs.sh put into it
 cp -R "$PKG_SRC" "$PKG_DIR"
 find "$PKG_DIR" \( -name __pycache__ -o -name '*.so' -o -name '*.c' -o -name 'inverse_lut_*.npy' \) -prune -exec rm -rf {} +
-mkdir -p "$PKG_DIR/color_data"
+mkdir -p "$PKG_DIR/color_data/$MODEL"
 
-if ! compgen -G "$PKG_DIR/lut/*.bin" >/dev/null; then
-    echo "Warning: BRCD LUT files not found in $PKG_SRC/lut"
-    echo "  Run scripts/extract_blobs.sh to fetch them from Brother's LPR package."
+if ! compgen -G "$PKG_DIR/lut/$MODEL/*.bin" >/dev/null; then
+    echo "Warning: BRCD LUT files not found in $PKG_SRC/lut/$MODEL"
+    echo "  Run scripts/extract_blobs.sh $MODEL to fetch them from Brother's LPR package."
     echo "  The driver will fall back to built-in Bayer dithering otherwise."
 fi
 
@@ -120,7 +121,7 @@ python3 -m venv "$VENV_DIR"
 # computed from; LUTs from older grids (e.g. before extract_blobs.sh) are
 # removed here and ignored by the filter.
 echo "Precomputing inverse color LUTs (takes about four minutes on a Pi 3)..."
-if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" -m brother_xl2hb.cli --precompute-lut); then
+if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" -m brother_xl2hb.cli --model "$MODEL" --precompute-lut); then
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
 fi
 

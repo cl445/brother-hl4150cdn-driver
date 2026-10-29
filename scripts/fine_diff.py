@@ -56,7 +56,7 @@ from extract_fixtures import PLANE_NAMES, parse_xl2hb_capture  # noqa: E402
 if TYPE_CHECKING:
     from brother_xl2hb.render.rows import PageData
 
-BROTHER_DIR = ROOT / ".brother-blobs" / "extracted" / "usr" / "local" / "Brother"
+BROTHER_DIR = ROOT / ".brother-blobs" / "hl4150cdn" / "extracted" / "usr" / "local" / "Brother"
 RC_TEMPLATE = BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "brhl4150cdnrc"
 CACHE_DIR = ROOT / "build" / "fine-diff-cache"
 DOCKER_IMAGE = "i386/debian:bookworm-slim"

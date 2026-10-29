@@ -3,9 +3,10 @@
 * :func:`build_input_remap_lut` / :func:`apply_input_remap_rgb` apply
   brightness, contrast, and per-channel RGB-key shifts as a single 256-entry
   per-channel input remap.
-* :func:`color_table` picks the colour grid the original driver would use
-  for the settings; :func:`color_lut.rgb_to_cmyk_lut_arr` separates RGB
-  into CMYK through it. Colour matching, BRGray, toner save, glossy media and
+* :func:`color_profile` maps colour matching to the grid profile; the
+  model's `color_table` picks the grid within it, and
+  :func:`color_lut.rgb_to_cmyk_lut_arr` separates RGB into CMYK through
+  it. Colour matching, BRGray, toner save, glossy media and
   BREnhanceBlkPrt only choose the grid; they do not touch the pixels.
 """
 
@@ -14,8 +15,8 @@ from collections.abc import Buffer
 import numpy as np
 import numpy.typing as npt
 
-from brother_xl2hb.color.color_lut import ColorTable, Profile, Variant
-from brother_xl2hb.settings import ColorMatching, MediaType, PrintSettings
+from brother_xl2hb.color.color_lut import Profile
+from brother_xl2hb.settings import ColorMatching, PrintSettings
 
 _NDArrayU8 = npt.NDArray[np.uint8]
 
@@ -26,27 +27,16 @@ _PROFILES: dict[ColorMatching, Profile] = {
 }
 
 
-def color_table(settings: PrintSettings) -> ColorTable:
-    """The colour grid `lookup_color_transform_table` selects for `settings`.
+def color_profile(settings: PrintSettings) -> Profile:
+    """The colour grid profile for the colour matching setting: rgb, srgb or cmyk.
 
-    Toner save wins over glossy media, as in the original. Rich black
-    (BREnhanceBlkPrt) only exists for the rgb and srgb profiles.
+    Shared by Brother's filters; which variant of the profile's grid applies
+    is the model's choice (`PrinterModel.color_table`).
 
     Returns:
-        The table for the colour separation.
+        The profile name.
     """
-    profile = _PROFILES[settings.color_matching]
-    variant: Variant = "default"
-    if settings.toner_save:
-        variant = "density2"
-    elif settings.media_type == MediaType.GLOSSY:
-        variant = "glossy"
-    return ColorTable(
-        profile=profile,
-        improve_gray=settings.improve_gray,
-        variant=variant,
-        rich_black=settings.enhance_black and profile != "cmyk",
-    )
+    return _PROFILES[settings.color_matching]
 
 
 def build_input_remap_lut(brightness: int, contrast: int, channel: int) -> npt.NDArray[np.uint8]:

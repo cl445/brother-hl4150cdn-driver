@@ -1,6 +1,5 @@
 """One page of the XL2HB stream, from BeginPage to EndPage."""
 
-from brother_xl2hb.blobs import LUT_DIR
 from brother_xl2hb.color.dither import (
     DitherChannel,
     load_dither_tables,
@@ -136,8 +135,8 @@ def render_page(
 def init_channels(settings: PrintSettings, model: PrinterModel) -> dict[str, DitherChannel]:
     """Initialize dither channels for the current print settings.
 
-    The BRCD tables are `model.dither_cache`'s set in `blobs.LUT_DIR`
-    (`lut/` inside the package, in the repository and when installed).
+    The BRCD tables are `model.dither_cache`'s set in `model.lut_dir`
+    (`lut/<key>/` inside the package, in the repository and when installed).
     `load_dither_tables` handles the fine→normal fallback and the Bayer
     fallback when no BRCD set matches.
 
@@ -145,7 +144,7 @@ def init_channels(settings: PrintSettings, model: PrinterModel) -> dict[str, Dit
         Channel dict keyed by 'K', 'C', 'M', 'Y'.
     """
     return load_dither_tables(
-        str(LUT_DIR),
+        str(model.lut_dir),
         cache=model.dither_cache,
         fine=settings.resolution == Resolution.FINE,
         toner_save=settings.toner_save,

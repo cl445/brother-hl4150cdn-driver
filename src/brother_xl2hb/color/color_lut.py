@@ -9,15 +9,13 @@ import functools
 import hashlib
 import logging
 import time
-from collections.abc import Buffer
-from dataclasses import dataclass
+from collections.abc import Buffer, Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
-
-from brother_xl2hb.blobs import COLOR_DATA_DIR
 
 try:
     from brother_xl2hb._native._color_fast import gather_kcmy, interp_kcmy  # type: ignore[import-not-found]
@@ -27,9 +25,6 @@ except ImportError:
     HAS_CYTHON_COLOR = False
 
 logger = logging.getLogger(__name__)
-
-# Data directory containing extracted binary tables
-_DATA_DIR = COLOR_DATA_DIR
 
 # LUT dimensions
 _LUT_DIM = 17  # 17x17x17 grid
@@ -51,27 +46,37 @@ _CORNER_OFFSETS = np.array([0, 17, 1, 18, 289, 306, 290, 307], dtype=np.int32)
 
 
 Profile = Literal["rgb", "srgb", "cmyk"]
-Variant = Literal["default", "density2", "glossy"]
 
 
 @dataclass(frozen=True, slots=True)
 class ColorTable:
     """One of the colour grids `lookup_color_transform_table` chooses from.
 
+    Built by `PrinterModel.grid`, which knows where the model's grids are
+    and which of them have a precomputed inverse LUT. As the key of every
+    cache here, `data_dir` keeps the grids of different models apart.
+
     Attributes:
         profile: `rgb` for Normal colour matching, `srgb` for Vivid, `cmyk`
             for colour matching None.
         improve_gray: the ImpGray=ON grids (BRGray).
-        variant: `density2` with toner save, `glossy` for glossy media.
+        variant: the model's grid variant, e.g. `density2` for toner save on
+            the HL-4150CDN; `default` otherwise.
         rich_black: pure black takes grid entry 0 (C, M, Y and K) instead of
             K only; the original does this with BREnhanceBlkPrt in the
             rgb/srgb profiles (`lut_selection` 0 in `load_color_profile`).
+        data_dir: the model's colour data directory (grids, interpolation
+            tables, inverse LUTs).
+        precomputed: an inverse LUT is installed for this table (see
+            `inverse_lut_path`); every other table is interpolated per pixel.
     """
 
     profile: Profile = "rgb"
     improve_gray: bool = False
-    variant: Variant = "default"
+    variant: str = "default"
     rich_black: bool = False
+    data_dir: Path = field(kw_only=True)
+    precomputed: bool = field(default=False, kw_only=True)
 
     @property
     def name(self) -> str:
@@ -79,20 +84,7 @@ class ColorTable:
         return f"{self.profile}{'_ig' if self.improve_gray else ''}_{self.variant}"
 
 
-DEFAULT_TABLE = ColorTable()
-
-# Tables with a precomputed inverse LUT (install.sh writes all four): Normal
-# and Vivid colour matching, each with and without improve gray (the PPD
-# default is BRGray=ON). Every other table is interpolated per pixel.
-INVERSE_LUT_TABLES: tuple[ColorTable, ...] = (
-    ColorTable("rgb"),
-    ColorTable("rgb", improve_gray=True),
-    ColorTable("srgb"),
-    ColorTable("srgb", improve_gray=True),
-)
-
-
-def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
+def _load_lut(table: ColorTable) -> npt.NDArray[np.int32]:
     """Load the 3D color grid of `table` as unpacked CMYK channels.
 
     The binary file contains packed int32 pairs (cm_packed, yk_packed).
@@ -109,7 +101,7 @@ def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
     Raises:
         ValueError: If the binary LUT file has an unexpected size.
     """
-    path = _DATA_DIR / f"{table.name}_lut.bin"
+    path = table.data_dir / f"{table.name}_lut.bin"
     if not path.exists():
         from brother_xl2hb.color.color_lut_gen import generate_rgb_default_lut, generate_srgb_default_lut
 
@@ -131,8 +123,8 @@ def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
     return unpacked
 
 
-def _load_interp_tables() -> npt.NDArray[np.uint8]:
-    """Load interpolation weight tables (17 tables, each 17*17*9 bytes).
+def _load_interp_tables(data_dir: Path) -> npt.NDArray[np.uint8]:
+    """Load the interpolation weight tables from `data_dir` (17 tables, each 17*17*9 bytes).
 
     Falls back to analytical generation if the binary file is missing.
 
@@ -142,7 +134,7 @@ def _load_interp_tables() -> npt.NDArray[np.uint8]:
     Raises:
         ValueError: If the binary file has an unexpected size.
     """
-    path = _DATA_DIR / "interp_tables.bin"
+    path = data_dir / "interp_tables.bin"
     if not path.exists():
         logger.info("Interpolation tables binary not found, generating analytically")
         from brother_xl2hb.color.color_lut_gen import generate_interp_tables
@@ -159,10 +151,9 @@ def _load_interp_tables() -> npt.NDArray[np.uint8]:
 # Ink for pure black (R=G=B=0) unless the table asks for rich black.
 _K_PRESET = np.array([0, 0, 0, 255], dtype=np.int32)
 
-# Precomputed full RGB→KCMY lookup tables, one file per table in
-# INVERSE_LUT_DIR (see `inverse_lut_path`). Last axis order is K, C, M, Y in
+# Precomputed full RGB→KCMY lookup tables, one file per table in its
+# data_dir (see `inverse_lut_path`). Last axis order is K, C, M, Y in
 # pixel-brightness convention (0 = full ink, 255 = no ink).
-INVERSE_LUT_DIR = _DATA_DIR
 _INVERSE_LUT_SHAPE = (256, 256, 256, 4)
 # Part of the source digest: bump when the interpolation itself changes, so
 # inverse LUTs computed by the old code are no longer used.
@@ -170,13 +161,13 @@ _INVERSE_LUT_FORMAT = 1
 
 
 @functools.lru_cache(maxsize=8)
-def _load_data(table: ColorTable = DEFAULT_TABLE) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8]]:
+def _load_data(table: ColorTable) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8]]:
     """Load the grid of `table` and the interpolation tables (cached).
 
     Returns:
         Tuple of (lut, interp_tables); see `_load_lut` and `_load_interp_tables`.
     """
-    return _load_lut(table), _load_interp_tables()
+    return _load_lut(table), _load_interp_tables(table.data_dir)
 
 
 def black_ink(table: ColorTable, lut: npt.NDArray[np.int32]) -> npt.NDArray[np.int32]:
@@ -189,7 +180,7 @@ def black_ink(table: ColorTable, lut: npt.NDArray[np.int32]) -> npt.NDArray[np.i
 
 
 def interp_arrays(
-    table: ColorTable = DEFAULT_TABLE,
+    table: ColorTable,
 ) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8], npt.NDArray[np.int32]]:
     """Flat, contiguous grid, interpolation weights and black ink for the native interpolation.
 
@@ -206,8 +197,8 @@ def interp_arrays(
     )
 
 
-@functools.lru_cache(maxsize=len(INVERSE_LUT_TABLES))
-def source_digest(table: ColorTable = DEFAULT_TABLE) -> str:
+@functools.lru_cache(maxsize=32)
+def source_digest(table: ColorTable) -> str:
     """Hash of everything the inverse LUT of `table` is computed from.
 
     Covers the grid and the interpolation weights as loaded (the extracted
@@ -227,7 +218,7 @@ def source_digest(table: ColorTable = DEFAULT_TABLE) -> str:
     return digest.hexdigest()[:16]
 
 
-def inverse_lut_path(table: ColorTable = DEFAULT_TABLE, directory: Path | None = None) -> Path | None:
+def inverse_lut_path(table: ColorTable, directory: Path | None = None) -> Path | None:
     """Where the inverse LUT of `table` is installed: ``inverse_lut_<name>-<digest>.npy``.
 
     The name carries `source_digest`, so a file computed from other grid
@@ -235,14 +226,14 @@ def inverse_lut_path(table: ColorTable = DEFAULT_TABLE, directory: Path | None =
 
     Args:
         table: the colour table.
-        directory: where to look; `INVERSE_LUT_DIR` by default.
+        directory: where to look; the table's `data_dir` by default.
 
     Returns:
         The path, or None for tables without a precomputed inverse LUT.
     """
-    if table not in INVERSE_LUT_TABLES:
+    if not table.precomputed:
         return None
-    return _digest_path(table, INVERSE_LUT_DIR if directory is None else directory)
+    return _digest_path(table, table.data_dir if directory is None else directory)
 
 
 def _digest_path(table: ColorTable, directory: Path) -> Path:
@@ -272,8 +263,8 @@ def _stale_inverse_luts(table: ColorTable, directory: Path) -> list[Path]:
     return sorted(stale)
 
 
-@functools.lru_cache(maxsize=len(INVERSE_LUT_TABLES))
-def inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | None:
+@functools.lru_cache(maxsize=32)
+def inverse_lut(table: ColorTable) -> npt.NDArray[np.uint8] | None:
     """Memory-map the installed RGB→KCMY inverse LUT of `table`, or None if absent.
 
     Mapped read-only instead of loaded: each CUPS job is a fresh process,
@@ -313,7 +304,7 @@ def inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8] | No
     return np.asarray(arr)
 
 
-def precompute_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.uint8]:
+def precompute_inverse_lut(table: ColorTable) -> npt.NDArray[np.uint8]:
     """Evaluate the tetrahedral interpolation over all 16.7M RGB inputs.
 
     Iterates one R-slice at a time so the working set stays small enough
@@ -334,7 +325,7 @@ def precompute_inverse_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.
     return out
 
 
-def write_inverse_lut(path: Path | None = None, table: ColorTable = DEFAULT_TABLE) -> Path:
+def write_inverse_lut(table: ColorTable, path: Path | None = None) -> Path:
     """Precompute the inverse LUT of `table` and save it to ``path`` (default `inverse_lut_path`).
 
     Written to a temporary file and renamed, so a job running meanwhile
@@ -362,29 +353,31 @@ def write_inverse_lut(path: Path | None = None, table: ColorTable = DEFAULT_TABL
     return target
 
 
-def write_inverse_luts(directory: Path | None = None) -> list[Path]:
-    """Write the inverse LUTs of all `INVERSE_LUT_TABLES` and remove stale ones.
+def write_inverse_luts(tables: Iterable[ColorTable], directory: Path | None = None) -> list[Path]:
+    """Write the inverse LUTs of `tables` and remove stale ones.
 
-    What `cups/install.sh` runs. Stale files are those of these tables with
-    another source digest, plus the digest-less ones from older versions.
+    What `cups/install.sh` runs, with the model's `inverse_lut_tables`.
+    Stale files are those of these tables with another source digest, plus
+    the digest-less ones from older versions.
 
     Args:
-        directory: target directory; `INVERSE_LUT_DIR` by default.
+        tables: the tables to precompute.
+        directory: target directory; each table's `data_dir` by default.
 
     Returns:
         The written paths.
     """
-    base = INVERSE_LUT_DIR if directory is None else directory
+    tables = tuple(tables)
     written = []
-    for table in INVERSE_LUT_TABLES:
-        target = _digest_path(table, base)
+    for table in tables:
+        target = _digest_path(table, table.data_dir if directory is None else directory)
         logger.info("Precomputing %s inverse LUT to %s ...", table.name, target)
         t0 = time.perf_counter()
-        write_inverse_lut(target, table)
+        write_inverse_lut(table, target)
         logger.info("Wrote %.1f MiB in %.1fs", target.stat().st_size / 1024 / 1024, time.perf_counter() - t0)
         written.append(target)
-    for table in INVERSE_LUT_TABLES:
-        for stale in _stale_inverse_luts(table, base):
+    for table in tables:
+        for stale in _stale_inverse_luts(table, table.data_dir if directory is None else directory):
             logger.info("Removing stale inverse LUT %s", stale)
             stale.unlink(missing_ok=True)
     return written
@@ -394,7 +387,7 @@ _NDArrayU8 = npt.NDArray[np.uint8]
 
 
 def rgb_to_cmyk_lut_arr(
-    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
+    rgb_row: Buffer, width: int, table: ColorTable
 ) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Like :func:`rgb_to_cmyk_lut` but returns ndarrays directly.
 
@@ -431,9 +424,7 @@ def _warn_interp_fallback(table: ColorTable) -> None:
     )
 
 
-def rgb_to_cmyk_lut(
-    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
-) -> tuple[bytes, bytes, bytes, bytes]:
+def rgb_to_cmyk_lut(rgb_row: Buffer, width: int, table: ColorTable) -> tuple[bytes, bytes, bytes, bytes]:
     """Convert one RGB scanline to CMYK using the driver's 3D LUT.
 
     Uses the precomputed inverse LUT when present; otherwise interpolates
@@ -454,7 +445,7 @@ def rgb_to_cmyk_lut(
 
 
 def _rgb_to_cmyk_interp_arr(
-    rgb_row: Buffer, width: int, table: ColorTable = DEFAULT_TABLE
+    rgb_row: Buffer, width: int, table: ColorTable
 ) -> tuple[_NDArrayU8, _NDArrayU8, _NDArrayU8, _NDArrayU8]:
     """Per-pixel tetrahedral interpolation through the 17x17x17 LUT grid.
 

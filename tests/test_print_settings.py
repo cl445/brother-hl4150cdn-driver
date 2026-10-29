@@ -120,7 +120,7 @@ BRReverse=ON
 
         rc_path = (
             Path(__file__).resolve().parent.parent
-            / ".brother-blobs/extracted/usr/local/Brother/Printer/hl4150cdn/inf/brhl4150cdnrc"
+            / ".brother-blobs/hl4150cdn/extracted/usr/local/Brother/Printer/hl4150cdn/inf/brhl4150cdnrc"
         )
         if not rc_path.exists():
             pytest.skip("Brother driver not extracted; run scripts/extract_blobs.sh")
@@ -319,13 +319,12 @@ class TestCopies:
 class TestTonerSave:
     def test_toner_save_reduces_coverage(self):
         """Brother's toner-save dither tables put fewer dots on a mid-gray row."""
-        from pathlib import Path
 
         import numpy as np
 
         from brother_xl2hb.color.dither import dither_channel_1bpp_arr, load_dither_tables
 
-        lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
+        lut_dir = str(HL4150CDN.lut_dir)
         width = 256
         # Mid-gray row: ink level ~127 (pixel brightness 128 -> ink 127)
         row = np.full(width, 128, dtype=np.uint8)

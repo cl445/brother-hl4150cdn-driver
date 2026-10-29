@@ -1,13 +1,14 @@
 """Inverse-LUT cache: byte-identity vs. the per-pixel interpolation path, source-digest checks."""
 
+import dataclasses
 import logging
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.color.color_lut import (
-    INVERSE_LUT_TABLES,
     ColorTable,
     _rgb_to_cmyk_interp_arr,
     inverse_lut,
@@ -17,13 +18,28 @@ from brother_xl2hb.color.color_lut import (
     write_inverse_lut,
     write_inverse_luts,
 )
+from brother_xl2hb.models import HL4150CDN
 
+INVERSE_LUT_TABLES = HL4150CDN.inverse_lut_tables
 _TABLE_IDS = [t.name for t in INVERSE_LUT_TABLES]
+
+
+def _grid_dir(directory: Path) -> Path:
+    """`directory` with symlinks to the real grids and interpolation tables, but no inverse LUTs."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for blob in HL4150CDN.color_data_dir.glob("*.bin"):
+        (directory / blob.name).symlink_to(blob)
+    return directory
+
+
+def _at(table: ColorTable, directory: Path) -> ColorTable:
+    """`table` with its colour data (and so its inverse LUT) in `directory`."""
+    return dataclasses.replace(table, data_dir=directory)
 
 
 @pytest.fixture(autouse=True)
 def _fresh_inverse_lut():
-    """Tests point INVERSE_LUT_DIR elsewhere; never leak a cached LUT or digest between tests."""
+    """Tests write inverse LUTs to temporary directories; never leak a cached LUT or digest between tests."""
     inverse_lut.cache_clear()
     source_digest.cache_clear()
     yield
@@ -32,17 +48,11 @@ def _fresh_inverse_lut():
 
 
 @pytest.fixture(scope="module")
-def lut_dir(tmp_path_factory):
-    """All inverse LUTs, as install.sh writes them."""
-    directory = tmp_path_factory.mktemp("lut")
-    write_inverse_luts(directory)
+def installed(tmp_path_factory):
+    """A colour data directory with all inverse LUTs, as install.sh writes them."""
+    directory = _grid_dir(tmp_path_factory.mktemp("color_data"))
+    write_inverse_luts([_at(t, directory) for t in INVERSE_LUT_TABLES])
     return directory
-
-
-@pytest.fixture
-def installed(lut_dir, monkeypatch):
-    monkeypatch.setattr(color_lut, "INVERSE_LUT_DIR", lut_dir)
-    return lut_dir
 
 
 def _sample_rgb(seed: int, width: int) -> bytes:
@@ -50,9 +60,9 @@ def _sample_rgb(seed: int, width: int) -> bytes:
     return rng.integers(0, 256, (width, 3), dtype=np.uint8).tobytes()
 
 
-def _interp(rgb: bytes, width: int, table: ColorTable = color_lut.DEFAULT_TABLE) -> tuple[bytes, bytes, bytes, bytes]:
+def _interp(rgb: bytes, width: int, table: ColorTable | None = None) -> tuple[bytes, bytes, bytes, bytes]:
     """The per-pixel interpolation path, as bytes like rgb_to_cmyk_lut returns."""
-    k, c, m, y = _rgb_to_cmyk_interp_arr(rgb, width, table)
+    k, c, m, y = _rgb_to_cmyk_interp_arr(rgb, width, table or HL4150CDN.grid())
     return k.tobytes(), c.tobytes(), m.tobytes(), y.tobytes()
 
 
@@ -74,12 +84,13 @@ def test_paths_are_distinct_and_carry_the_digest() -> None:
     for table, path in zip(INVERSE_LUT_TABLES, paths, strict=True):
         assert path is not None
         assert path.name == f"inverse_lut_{table.name}-{source_digest(table)}.npy"
-    assert inverse_lut_path(ColorTable("cmyk")) is None
-    assert inverse_lut_path(ColorTable("rgb", rich_black=True)) is None
+    assert inverse_lut_path(HL4150CDN.grid("cmyk")) is None
+    assert inverse_lut_path(HL4150CDN.grid("rgb", rich_black=True)) is None
 
 
 @pytest.mark.parametrize("table", INVERSE_LUT_TABLES, ids=_TABLE_IDS)
 def test_cached_lookup_matches_direct_interp(installed, table) -> None:
+    table = _at(table, installed)
     path = inverse_lut_path(table)
     assert path is not None
     assert path.parent == installed
@@ -95,6 +106,7 @@ def test_full_cube_matches_native_interp(installed, table) -> None:
     """Every one of the 16.7M entries equals what the native kernel interpolates without the LUT."""
     if not color_lut.HAS_CYTHON_COLOR:
         pytest.skip("_color_fast extension not built")
+    table = _at(table, installed)
     inv = inverse_lut(table)
     assert inv is not None
     r, g, b = np.meshgrid(*(np.arange(256, dtype=np.uint8),) * 3, indexing="ij")
@@ -105,12 +117,11 @@ def test_full_cube_matches_native_interp(installed, table) -> None:
     np.testing.assert_array_equal(inv.reshape(-1, 4), planes.T)
 
 
-def test_falls_back_when_cache_missing(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(color_lut, "INVERSE_LUT_DIR", tmp_path)
-
+def test_falls_back_when_cache_missing(tmp_path) -> None:
+    table = _at(HL4150CDN.grid(), _grid_dir(tmp_path))
     sample = _sample_rgb(seed=7, width=512)
-    assert inverse_lut() is None
-    assert rgb_to_cmyk_lut(sample, 512) == _interp(sample, 512)
+    assert inverse_lut(table) is None
+    assert rgb_to_cmyk_lut(sample, 512, table) == _interp(sample, 512, table)
 
 
 @pytest.mark.parametrize(
@@ -119,6 +130,7 @@ def test_falls_back_when_cache_missing(tmp_path, monkeypatch) -> None:
 )
 @pytest.mark.parametrize("table", INVERSE_LUT_TABLES, ids=_TABLE_IDS)
 def test_special_values_match(installed, table, rgb) -> None:
+    table = _at(table, installed)
     pixel = bytes(rgb)
     assert rgb_to_cmyk_lut(pixel, 1, table) == _interp(pixel, 1, table)
 
@@ -127,14 +139,13 @@ def test_lut_from_other_grid_is_ignored(tmp_path, monkeypatch, caplog) -> None:
     """A LUT computed from the generated fallback grid is not used once the real grid is present."""
     from brother_xl2hb.color.color_lut_gen import generate_rgb_default_lut
 
-    table = color_lut.DEFAULT_TABLE
+    table = _at(HL4150CDN.grid(), _grid_dir(tmp_path))
     real_digest = source_digest(table)
     real_load = color_lut._load_data
     generated = generate_rgb_default_lut()
-    monkeypatch.setattr(color_lut, "INVERSE_LUT_DIR", tmp_path)
     monkeypatch.setattr(color_lut, "_load_data", lambda t=table: (generated, real_load(t)[1]))
     source_digest.cache_clear()
-    stale = write_inverse_lut(table=table)
+    stale = write_inverse_lut(table)
     assert source_digest(table) != real_digest
 
     monkeypatch.setattr(color_lut, "_load_data", real_load)
@@ -146,25 +157,24 @@ def test_lut_from_other_grid_is_ignored(tmp_path, monkeypatch, caplog) -> None:
     assert rgb_to_cmyk_lut(sample, 256, table) == _interp(sample, 256, table)
 
 
-def test_digest_less_legacy_lut_is_ignored(tmp_path, monkeypatch, caplog) -> None:
-    monkeypatch.setattr(color_lut, "INVERSE_LUT_DIR", tmp_path)
+def test_digest_less_legacy_lut_is_ignored(tmp_path, caplog) -> None:
+    table = _at(HL4150CDN.grid(), _grid_dir(tmp_path))
     np.save(tmp_path / "inverse_lut.npy", np.zeros((1,), np.uint8))
     with caplog.at_level(logging.WARNING, logger="brother_xl2hb.color.color_lut"):
-        assert inverse_lut() is None
+        assert inverse_lut(table) is None
     assert "inverse_lut.npy" in caplog.text
 
 
-def test_write_inverse_luts_removes_stale_files(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(color_lut, "INVERSE_LUT_TABLES", (color_lut.DEFAULT_TABLE,))
+def test_write_inverse_luts_removes_stale_files(tmp_path) -> None:
     legacy = tmp_path / "inverse_lut.npy"
     old = tmp_path / "inverse_lut_rgb_default-0000000000000000.npy"
     other = tmp_path / "inverse_lut_srgb_default-0000000000000000.npy"  # not in the patched tables
     for p in (legacy, old, other):
         p.write_bytes(b"")
 
-    (written,) = write_inverse_luts(tmp_path)
+    (written,) = write_inverse_luts([HL4150CDN.grid()], tmp_path)
 
-    assert written == inverse_lut_path(color_lut.DEFAULT_TABLE, tmp_path)
+    assert written == inverse_lut_path(HL4150CDN.grid(), tmp_path)
     assert written.exists()
     assert not legacy.exists()
     assert not old.exists()
@@ -181,8 +191,8 @@ def test_native_gather_matches_numpy_path(monkeypatch) -> None:
     monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: lut)
 
     sample = _sample_rgb(seed=11, width=5000)
-    native = color_lut.rgb_to_cmyk_lut_arr(sample, 4768)
+    native = color_lut.rgb_to_cmyk_lut_arr(sample, 4768, HL4150CDN.grid())
     monkeypatch.setattr(color_lut, "HAS_CYTHON_COLOR", False)
-    reference = color_lut.rgb_to_cmyk_lut_arr(sample, 4768)
+    reference = color_lut.rgb_to_cmyk_lut_arr(sample, 4768, HL4150CDN.grid())
     for got, want in zip(native, reference, strict=True):
         np.testing.assert_array_equal(got, want)

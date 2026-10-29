@@ -4,10 +4,10 @@ Validates that generated LUT and interpolation tables
 match the original binary data within acceptable tolerances.
 """
 
+import dataclasses
 import io
 import tempfile
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import pytest
@@ -17,9 +17,10 @@ from brother_xl2hb.color.color_lut_gen import (
     generate_rgb_default_lut,
     generate_srgb_default_lut,
 )
+from brother_xl2hb.models import HL4150CDN
 
 # Data directory containing original binary tables
-_DATA_DIR = Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "color_data"
+_DATA_DIR = HL4150CDN.color_data_dir
 
 
 # ---------------------------------------------------------------------------
@@ -223,22 +224,15 @@ class TestFallbackIntegration:
         """color_lut module should fall back to generation when binaries missing."""
         from brother_xl2hb.color import color_lut
 
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            mock.patch.object(color_lut, "_DATA_DIR", Path(tmpdir)),
-        ):
-            lut, interp = color_lut._load_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lut, interp = color_lut._load_data(dataclasses.replace(HL4150CDN.grid(), data_dir=Path(tmpdir)))
             assert lut.shape == (4913, 4)
             assert interp.shape == (17, 289, 9)
 
-    def test_pipeline_without_binaries(self):
+    def test_pipeline_without_binaries(self, use_color_data_root):
         """Full pipeline should work without binary data files."""
-        from brother_xl2hb.color import color_lut
-
-        with (
-            tempfile.TemporaryDirectory() as tmpdir,
-            mock.patch.object(color_lut, "_DATA_DIR", Path(tmpdir)),
-        ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            use_color_data_root(Path(tmpdir))
             from brother_xl2hb.job import filter_page
             from brother_xl2hb.settings import PrintSettings
 
