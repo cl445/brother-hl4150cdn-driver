@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from brother_xl2hb import cups_filter
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.protocol.pjl import generate_pjl_footer
 from brother_xl2hb.protocol.xl2hb import OP_END_SESSION
@@ -34,6 +35,9 @@ _FAKE_GS = textwrap.dedent(
 
     args = sys.argv[1:]
     source = args[-1]
+    if source.startswith("<"):
+        # Duplex copies: the job is run from PostScript, `<hex path> run ...`.
+        source = bytes.fromhex(source[1:source.index(">")]).decode()
     job = sys.stdin.buffer.read() if source == "-" else open(source, "rb").read()
     with open(os.environ["FAKE_GS_RECORD"], "w") as record:
         json.dump({{"args": args, "job": job.decode("latin-1")}}, record)
@@ -118,6 +122,24 @@ def test_copies_argument_does_not_reach_the_job(fake_gs):
     assert two.returncode == 0
     assert b"copies=2" in two.stderr
     assert one.stdout == two.stdout
+
+
+def test_duplex_copies_hand_ghostscript_the_job_as_a_file(fake_gs):
+    # Ghostscript runs the job once per copy, so stdin is spooled first.
+    result = _run(fake_gs, options=f"{_OPTIONS} Duplex=DuplexNoTumble", copies="2")
+    assert result.returncode == 0, result.stderr.decode()
+    call = _gs_call(fake_gs)
+    assert call["args"][-1].endswith("repeat")
+    assert call["args"][-2] == cups_filter.DUPLEX_COPIES_PROLOGUE
+    assert call["job"].encode("latin-1") == _JOB
+    assert result.stdout == _run(fake_gs, options=f"{_OPTIONS} Duplex=DuplexNoTumble").stdout
+
+
+@pytest.mark.parametrize(("options", "copies"), [(_OPTIONS, "2"), (f"{_OPTIONS} Duplex=DuplexNoTumble", "1")])
+def test_other_jobs_stream_stdin_to_ghostscript(fake_gs, options, copies):
+    result = _run(fake_gs, options=options, copies=copies)
+    assert result.returncode == 0, result.stderr.decode()
+    assert _gs_call(fake_gs)["args"][-1] == "-"
 
 
 def test_usage_error_without_cups_arguments(fake_gs):

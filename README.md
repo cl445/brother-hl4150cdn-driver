@@ -108,7 +108,8 @@ All options appear in the standard print dialog. Pass them as
 | `BRSaturation` | -20 … 20 | |
 | `BRRed`, `BRGreen`, `BRBlue` | -20 … 20 | Per-channel colour adjustment |
 
-Copies come from the standard `-n` / `copies` option.
+Copies come from the standard `-n` / `copies` option. In duplex they are
+always collated, so each copy starts on a new sheet.
 
 ## CLI without CUPS
 

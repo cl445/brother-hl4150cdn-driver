@@ -24,11 +24,30 @@ from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.render.page_stream import iter_ppm_pages
 from brother_xl2hb.render.rows import Page
-from brother_xl2hb.settings import PrintSettings, read_ppd_defaults
+from brother_xl2hb.settings import DuplexMode, PrintSettings, read_ppd_defaults
 
 # Seconds to wait for Ghostscript to exit on its own after the job failed
 # (it has usually closed its output already) before it is killed.
 GS_EXIT_GRACE = 2.0
+
+# Uncollated copies reach Ghostscript as NumCopies (pstops and pdftops put
+# it into the PostScript), and Ghostscript emits each page that many times
+# in a row. In duplex that prints a page on both sides of a sheet. For
+# duplex copies Ghostscript is therefore kept at one copy per page and runs
+# the job again for each further copy instead, collated like the copies
+# pstops makes itself: a copy that ends on a front side gets a blank back,
+# so the next one starts on a new sheet.
+DUPLEX_COPIES_PROLOGUE = (
+    "/BRNumCopies 1 def "
+    "/setpagedevice { dup /NumCopies known { "
+    "dup /NumCopies get dup type /integertype eq { userdict /BRNumCopies 3 -1 roll put } { pop } ifelse "
+    "dup length dict copy dup /NumCopies 1 put "
+    "} if //setpagedevice } bind def"
+)
+DUPLEX_COPIES_RUN = (
+    "<{job}> run "
+    "BRNumCopies 1 sub {{ currentpagedevice /PageCount get 2 mod 1 eq {{ showpage }} if <{job}> run }} repeat"
+)
 
 
 logger = logging.getLogger(__name__)
@@ -53,11 +72,20 @@ def find_gs() -> str:
     return gs
 
 
-def build_gs_command(input_path: str, page_size: str, model: PrinterModel) -> list[str]:
+def build_gs_command(
+    input_path: str, page_size: str, model: PrinterModel, *, collate_copies: bool = False
+) -> list[str]:
     """Build the Ghostscript command for rasterizing PS to PPM at the model's paper size.
+
+    With `collate_copies`, the NumCopies the job asks for are rendered as
+    whole runs of the job instead of repeated pages (DUPLEX_COPIES_PROLOGUE);
+    the job has to be a file then.
 
     Returns:
         The argument vector; `input_path` "-" reads the job from stdin.
+
+    Raises:
+        ValueError: `collate_copies` with the job on stdin.
     """
     cmd = [
         find_gs(),
@@ -71,7 +99,18 @@ def build_gs_command(input_path: str, page_size: str, model: PrinterModel) -> li
     ]
 
     w_pt, h_pt = model.paper_points[page_size]
-    cmd.extend([f"-dDEVICEWIDTHPOINTS={w_pt}", f"-dDEVICEHEIGHTPOINTS={h_pt}", input_path])
+    cmd.extend([f"-dDEVICEWIDTHPOINTS={w_pt}", f"-dDEVICEHEIGHTPOINTS={h_pt}"])
+    if not collate_copies:
+        cmd.append(input_path)
+        return cmd
+    if input_path == "-":
+        msg = "collated copies need the job as a file, Ghostscript runs it once per copy"
+        raise ValueError(msg)
+    # Under -dSAFER PostScript may open only permitted files. The job is
+    # run from PostScript every time: Ghostscript drops the permission for
+    # a file given on its command line once it has run it.
+    run = DUPLEX_COPIES_RUN.format(job=os.fsencode(input_path).hex())
+    cmd.extend([f"--permit-file-read={input_path}", "-c", DUPLEX_COPIES_PROLOGUE, run])
     return cmd
 
 
@@ -165,13 +204,26 @@ def log_gs_stderr(stderr_file: BinaryIO, level: int) -> None:
             logger.log(level, "GS: %s", line.rstrip())
 
 
-def print_job(input_path: str, settings: PrintSettings, output: BinaryIO, model: PrinterModel = DEFAULT_MODEL) -> int:
+def print_job(
+    input_path: str, settings: PrintSettings, output: BinaryIO, model: PrinterModel = DEFAULT_MODEL, copies: int = 1
+) -> int:
     """Run Ghostscript on `input_path` and send its pages to `output`.
+
+    `copies` is the job's copy count from CUPS; in duplex, copies are
+    collated (see DUPLEX_COPIES_PROLOGUE).
 
     Returns:
         The filter's exit status: 0 on success, 1 on any failure.
     """
-    gs_cmd = build_gs_command(input_path, settings.page_size, model)
+    collate_copies = settings.duplex != DuplexMode.NONE and copies > 1
+    if collate_copies and input_path == "-":
+        # Ghostscript runs the job once per copy, so stdin goes to a file first.
+        with tempfile.NamedTemporaryFile(prefix="brjob-", suffix=".ps") as spool:
+            shutil.copyfileobj(sys.stdin.buffer, spool)
+            spool.flush()
+            return print_job(spool.name, settings, output, model, copies)
+
+    gs_cmd = build_gs_command(input_path, settings.page_size, model, collate_copies=collate_copies)
     logger.info("running: %s", " ".join(gs_cmd))
 
     # Ghostscript's stderr goes to a file: a pipe nobody reads while the
@@ -240,9 +292,10 @@ def main(model: PrinterModel = DEFAULT_MODEL) -> None:
     ppd_path = os.environ.get("PPD")
     ppd_defaults = read_ppd_defaults(ppd_path) if ppd_path else {}
     # Copies are already made upstream: pstops puts NumCopies into the
-    # PostScript and Ghostscript renders every page that many times. A
-    # PageCopies of `copies` on top would print copies² sheets of each page,
-    # so the job carries 1, as Brother's cupswrapper hands its filter.
+    # PostScript and Ghostscript renders every page that many times (in
+    # duplex, the whole job; see DUPLEX_COPIES_PROLOGUE). A PageCopies of
+    # `copies` on top would print copies² sheets of each page, so the job
+    # carries 1, as Brother's cupswrapper hands its filter.
     settings = model.settings_from_cups_options(options_str, 1, ppd_defaults)
     logger.info(
         "settings: page_size=%s duplex=%s resolution=%s mono=%s color_matching=%s gray=%s toner_save=%s",
@@ -257,7 +310,7 @@ def main(model: PrinterModel = DEFAULT_MODEL) -> None:
 
     # Ghostscript reads the job straight from stdin, so it starts
     # rasterising while pdftops is still producing PostScript.
-    status = print_job(input_file or "-", settings, sys.stdout.buffer, model)
+    status = print_job(input_file or "-", settings, sys.stdout.buffer, model, copies)
     if status == 0:
         logger.info("done")
     sys.exit(status)

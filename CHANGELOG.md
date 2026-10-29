@@ -48,6 +48,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
   repeats the last word after the flush. A scanline has at most about 425
   words, so printed output does not change (#3).
+- Uncollated copies in duplex no longer print a page on both sides of a
+  sheet. Ghostscript repeated each page for NumCopies; in duplex it now
+  renders the whole job once per copy, and a copy with an odd page count
+  gets a blank back, so the next copy starts on a new sheet. Simplex
+  copies are unchanged.
 
 ## [1.2.0] — 2026-10-28
 
