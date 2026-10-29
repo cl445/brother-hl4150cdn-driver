@@ -8,9 +8,9 @@ tests/test_full_pipeline.py.
 
 import pytest
 
-from brfilter import ColorMatching, MediaType, PrintSettings, rgb_to_cmyk_lut
-from color_lut import ColorTable
+from color_lut import ColorTable, rgb_to_cmyk_lut
 from dither import dither_channel_1bpp
+from settings import ColorMatching, MediaType, PrintSettings
 from transforms import color_table
 
 # ---------------------------------------------------------------------------

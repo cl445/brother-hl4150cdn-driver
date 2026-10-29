@@ -20,8 +20,9 @@ import numpy as np
 import numpy.typing as npt
 
 import color_lut
-from brother_encode import encode_c_plane, encode_fine_plane, encode_m_plane_10, encode_plane
 from dither import DitherChannel, dither_channel_1bpp_arr, dither_channel_4bpp_arr, load_dither_tables
+from fine_encoder import encode_fine_plane
+from plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
 from saturation import adjust_saturation
 from settings import (
     DUPLEX_MAP,

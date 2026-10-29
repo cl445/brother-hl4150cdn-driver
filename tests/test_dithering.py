@@ -289,10 +289,11 @@ class TestCaptureVerification:
         """
         import io
 
-        from brfilter import read_ppm, rgb_to_cmyk_lut
         from brother_decode import decode_plane
+        from color_lut import rgb_to_cmyk_lut
         from dither import dither_channel_1bpp, load_dither_tables
         from fixture_utils import read_fixture
+        from ppm import read_ppm
 
         cap = all_captures["test_fullwidth_k"]
 
@@ -344,10 +345,11 @@ class TestCaptureVerification:
         import io
         from pathlib import Path
 
-        from brfilter import read_ppm, rgb_to_cmyk_lut
         from brother_decode import decode_plane
+        from color_lut import rgb_to_cmyk_lut
         from dither import dither_channel_1bpp, load_brcd_tables
         from fixture_utils import read_fixture
+        from ppm import read_ppm
 
         cap = all_captures["test_fullwidth_c"]
 
@@ -404,8 +406,8 @@ class TestCaptureVerification:
         """
         from pathlib import Path
 
-        from brfilter import rgb_to_cmyk_lut
-        from brother_encode import encode_plane
+        from color_lut import rgb_to_cmyk_lut
+        from plane_encoders import encode_plane
 
         cap = all_captures["gray75_1000"]
 

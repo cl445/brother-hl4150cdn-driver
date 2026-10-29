@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- The CLI without CUPS is `src/cli.py`; `src/brfilter.py` and the
+  `brother_encode` re-export module are gone, code imports the modules
+  that define the functions. `cups/install.sh` removes both from an
+  existing installation.
+
 ### Fixed
 - Literal stretches longer than one block are encoded as in the original:
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder

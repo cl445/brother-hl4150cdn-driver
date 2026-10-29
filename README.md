@@ -109,15 +109,15 @@ Copies come from the standard `-n` / `copies` option.
 
 ```bash
 # PPM in, XL2HB raw stream out
-cat page.ppm | uv run python src/brfilter.py \
+cat page.ppm | uv run python src/cli.py \
     --paper Letter --duplex long --toner-save \
   > page.xl2hb
 
 # Send straight to the printer (network)
-cat page.ppm | uv run python src/brfilter.py | nc <printer-ip> 9100
+cat page.ppm | uv run python src/cli.py | nc <printer-ip> 9100
 
 # …or via USB
-cat page.ppm | uv run python src/brfilter.py > /dev/usb/lp0
+cat page.ppm | uv run python src/cli.py > /dev/usb/lp0
 ```
 
 ## Development
