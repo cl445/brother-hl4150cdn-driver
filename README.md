@@ -5,9 +5,10 @@
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
 Open-source CUPS driver for the Brother HL-4150CDN colour laser printer.
-Brother's own Linux driver runs only on x86 PCs. This one is written in
-Python with optional Cython acceleration and runs anywhere CUPS does,
-including ARM boards such as the Raspberry Pi.
+Brother's own Linux driver is a 32-bit x86 program and needs i386
+libraries. This one is written in Python with optional Cython
+acceleration and runs wherever CUPS and Python do: x86-64 without the
+i386 libraries, ARM and other architectures.
 
 Eight more Brother models use exactly the same filter as the HL-4150CDN
 and should work as they are: HL-4140CN, HL-4570CDW, DCP-9055CDN,
@@ -28,9 +29,14 @@ of the family.
   colour adjustment
 - Reverse print, skip blank pages and copies
 
-On a Raspberry Pi 3B+ a page takes about 1 s in Normal and about 6.5 s in
-Fine quality. The filter needs about 100 to 250 MB of memory, depending
-on the options.
+Time per A4 colour page with the native modules:
+
+| Machine | Normal | Fine |
+|---|---|---|
+| Desktop (Apple M4 Pro) | 0.35 s | 0.4 s |
+| Raspberry Pi 3B+ | 1 s | 6.5 s |
+
+The filter needs about 100 to 250 MB of memory, depending on the options.
 
 ## Requirements
 
@@ -41,7 +47,8 @@ on the options.
   builds the native modules; without them the driver is several times
   slower, and Fine mode about 30 times.
 - About 260 MB of disk space for precomputed colour tables. `install.sh`
-  computes them, which takes about four minutes on a Pi 3.
+  computes them, which takes about 20 seconds on a desktop and about
+  four minutes on a Raspberry Pi 3.
 - Brother's HL-4150CDN LPR driver package: `scripts/extract_blobs.sh`
   downloads it and extracts the printer's calibration tables, which this
   repository does not include.

@@ -20,7 +20,7 @@ body:
     id: host
     attributes:
       label: Machine and OS
-      placeholder: e.g. Raspberry Pi 4, Raspberry Pi OS (Debian 13), CUPS 2.4
+      placeholder: e.g. x86-64 PC, Debian 13, CUPS 2.4
     validations:
       required: true
   - type: input
