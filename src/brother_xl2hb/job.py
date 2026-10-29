@@ -12,22 +12,17 @@ import logging
 from collections.abc import Iterable, Iterator
 from typing import BinaryIO
 
-from brother_xl2hb.color.dither import (
-    DitherChannel,
-)
 from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
-from brother_xl2hb.render.page import init_channels, render_page
-from brother_xl2hb.render.rows import PageBuffer, PageData, collect_rows, is_blank_page
+from brother_xl2hb.render.page import JobContext, render_page
+from brother_xl2hb.render.rows import Page, PageBuffer, PageData, collect_rows, is_blank_page
 from brother_xl2hb.settings import PrintSettings
 
 logger = logging.getLogger(__name__)
 
 
-def chain_peeked(
-    first: tuple[int, int, PageData], rest: Iterator[tuple[int, int, PageData]]
-) -> Iterator[tuple[int, int, PageData]]:
+def chain_peeked(first: Page, rest: Iterator[Page]) -> Iterator[Page]:
     """Yield a page taken off a job with `next()`, then the rest of the job.
 
     Unlike `itertools.chain([first], rest)`, which keeps its arguments and
@@ -43,7 +38,7 @@ def chain_peeked(
     yield from rest
 
 
-def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tuple[int, int, PageBuffer]]:
+def drop_blank_pages(pages: Iterable[Page]) -> Iterator[tuple[int, int, PageBuffer]]:
     """Skip the pure-white pages of a job (BRSkipBlank).
 
     Brother's filter drops them before sides are assigned, in simplex and
@@ -83,13 +78,7 @@ def filter_page(
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
 
 
-def _render_pages(
-    pages: Iterable[tuple[int, int, PageData]],
-    settings: PrintSettings,
-    channels: dict[str, DitherChannel],
-    output: BinaryIO,
-    model: PrinterModel,
-) -> None:
+def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> None:
     """Render pages in input order, each as the model's `page_sends` say.
 
     A page sent more than once is collected into one buffer first, since
@@ -104,12 +93,12 @@ def _render_pages(
     # whole-page buffers at once.
     index = 0
     for width, height, pixel_data in pages:
-        sends = model.page_sends(settings, index)
+        sends = job.model.page_sends(job.settings, index)
         data: PageData = collect_rows(pixel_data, width, height) if len(sends) > 1 else pixel_data
         for send in sends:
             page_buf.seek(0)
             page_buf.truncate()
-            render_page(XL2HBWriter(page_buf), width, height, data, settings, channels, model, send)
+            render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
             with page_buf.getbuffer() as page:
                 output.write(page)
         # Release the page's raster before the next page is read; with
@@ -119,7 +108,7 @@ def _render_pages(
 
 
 def filter_pages(
-    pages: Iterable[tuple[int, int, PageData]],
+    pages: Iterable[Page],
     settings: PrintSettings,
     output: BinaryIO,
     model: PrinterModel = DEFAULT_MODEL,
@@ -155,8 +144,7 @@ def filter_pages(
     w.write_open_data_source()
 
     try:
-        channels = init_channels(settings, model)
-        _render_pages(pages, settings, channels, output, model)
+        _render_pages(pages, JobContext.create(settings, model), output)
     except Exception:
         # Only whole pages have reached `output` (see _render_pages), so
         # the session can still be closed: the printer prints the pages it

@@ -22,7 +22,7 @@ from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.render.page_stream import iter_ppm_pages
-from brother_xl2hb.render.rows import PageData
+from brother_xl2hb.render.rows import Page
 from brother_xl2hb.settings import PrintSettings, read_ppd_defaults
 
 # Seconds to wait for Ghostscript to exit on its own after the job failed
@@ -31,8 +31,6 @@ GS_EXIT_GRACE = 2.0
 
 
 logger = logging.getLogger("brhl4150cdn-filter")
-
-Page = tuple[int, int, PageData]
 
 
 def find_gs() -> str:

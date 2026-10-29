@@ -12,7 +12,7 @@ from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL, HL4150CDN, MODELS
 from brother_xl2hb.models.base import PageSend
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
-from brother_xl2hb.render.page import init_channels, render_page
+from brother_xl2hb.render.page import JobContext, render_page
 from brother_xl2hb.settings import DuplexMode, InputSlot, MediaType, PageSize, PrintSettings
 
 
@@ -140,11 +140,11 @@ def test_a_page_sent_twice_is_rendered_twice_from_streamed_rows():
     out = io.BytesIO()
     filter_pages([(width, height, blocks)], settings, out, twice)
 
-    channels = init_channels(settings, HL4150CDN)
+    job = JobContext.create(settings, HL4150CDN)
     expected = []
     for send in sends:
         page = io.BytesIO()
-        render_page(XL2HBWriter(page), width, height, rows, settings, channels, HL4150CDN, send)
+        render_page(XL2HBWriter(page), (width, height, rows), job, send)
         expected.append(page.getvalue())
     assert expected[0] != expected[1]
     stream = out.getvalue()

@@ -1,5 +1,8 @@
 """One page of the XL2HB stream, from BeginPage to EndPage."""
 
+from dataclasses import dataclass
+from typing import Self
+
 from brother_xl2hb.color.dither import (
     DitherChannel,
     load_dither_tables,
@@ -9,31 +12,48 @@ from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
 from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
 from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, encode_lines, encode_lines_mono
-from brother_xl2hb.render.rows import BUFFER_TYPES, PageData, RowBlocks, collect_rows, flip_vertical, page_rows
+from brother_xl2hb.render.rows import BUFFER_TYPES, Page, RowBlocks, collect_rows, flip_vertical, page_rows
 from brother_xl2hb.settings import MonoColor, PrintSettings, Resolution
 
 
-def render_page(
-    w: XL2HBWriter,
-    width: int,
-    height: int,
-    pixel_data: PageData,
-    settings: PrintSettings,
-    channels: dict[str, DitherChannel],
-    model: PrinterModel,
-    send: PageSend,
-) -> None:
+@dataclass(frozen=True, slots=True)
+class JobContext:
+    """What stays the same for every page of a job.
+
+    Attributes:
+        settings: the job's settings, restricted to what `model` supports.
+        model: the printer.
+        channels: the dither channels for `settings` (see `init_channels`).
+    """
+
+    settings: PrintSettings
+    model: PrinterModel
+    channels: dict[str, DitherChannel]
+
+    @classmethod
+    def create(cls, settings: PrintSettings, model: PrinterModel) -> Self:
+        """The context for `settings` on `model`, with its dither channels loaded.
+
+        Returns:
+            The job context.
+        """
+        return cls(settings, model, init_channels(settings, model))
+
+
+def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> None:
     """Render one page within an already-open session.
 
     Handles: BeginPage -> scanline loop -> flush -> EndPage, as `send`
     says (bottom-up with the back-side marker, PageCopies; see
-    `PrinterModel.page_sends`). Scanlines are read as views into `pixel_data`,
-    which may also be a stream of row blocks; only flipped pages are
-    collected into one buffer to be mirrored.
+    `PrinterModel.page_sends`). Scanlines are read as views into the
+    page's pixel data, which may also be a stream of row blocks; only
+    flipped pages are collected into one buffer to be mirrored.
 
     Raises:
-        ValueError: If `pixel_data` has fewer than `height` rows.
+        ValueError: If the page has fewer than its `height` rows.
     """
+    width, height, pixel_data = page
+    settings, model, channels = job.settings, job.model, job.channels
     is_fine = settings.resolution == Resolution.FINE
     page_size = settings.page_size
     _, paper_h = model.paper_sizes[page_size]
