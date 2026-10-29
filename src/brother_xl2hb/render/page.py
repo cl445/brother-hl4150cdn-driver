@@ -1,5 +1,6 @@
 """One page of the XL2HB stream, from BeginPage to EndPage."""
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Self
 
@@ -11,7 +12,7 @@ from brother_xl2hb.color.transforms import build_input_remap_lut
 from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
 from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
-from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, encode_lines, encode_lines_mono
+from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, LineCodes, encode_lines, encode_lines_mono
 from brother_xl2hb.render.rows import BUFFER_TYPES, Page, RowBlocks, collect_rows, flip_vertical, page_rows
 from brother_xl2hb.settings import MonoColor, PrintSettings, Resolution
 
@@ -52,23 +53,15 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
     Raises:
         ValueError: If the page has fewer than its `height` rows.
     """
-    width, height, pixel_data = page
+    width = page[0]
     settings, model, channels = job.settings, job.model, job.channels
     is_fine = settings.resolution == Resolution.FINE
+    mono = settings.mono_color == MonoColor.MONO
     page_size = settings.page_size
     _, paper_h = model.paper_sizes[page_size]
-
     sw, sh = model.image_dimensions(page_size, fine=is_fine)
-    bpl = (sw + 1) // 2 if is_fine else (sw + 7) // 8  # 4bpp: 2 pixels per byte, 1bpp: 8
 
-    # A flipped page is mirrored top to bottom, columns stay.
-    if send.flip:
-        blocks: RowBlocks = (flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
-        height = paper_h
-    elif isinstance(pixel_data, BUFFER_TYPES):
-        blocks = (page_rows(pixel_data, width, height),)
-    else:
-        blocks = pixel_data
+    blocks, height = _row_blocks(page, paper_h, flip=send.flip)
 
     w.write_begin_page(
         media_size=model.media_size_code(page_size),
@@ -78,9 +71,73 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
         back_side_marker=send.flip,
     )
     w.write_set_page_origin(*model.page_origin)
-    mono = settings.mono_color == MonoColor.MONO
     w.write_begin_image(sw, sh, copies=send.copies, fine=is_fine, color=not mono)
 
+    colour = _colour_setup(settings, model)
+    if mono:
+        lines = encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
+    elif (kernel_colour := band_kernel_colour(colour.table, channels, is_fine=is_fine)) is not None:
+        lines = encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour, is_fine=is_fine)
+    else:
+        lines = encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
+    bpl = (sw + 1) // 2 if is_fine else (sw + 7) // 8  # 4bpp: 2 pixels per byte, 1bpp: 8
+    _write_planes(w, lines, height, paper_h, bpl=bpl, is_fine=is_fine)
+
+    w.write_end_image()
+    w.write_end_page(copies=send.copies)
+
+
+def _row_blocks(page: Page, paper_h: int, *, flip: bool) -> tuple[RowBlocks, int]:
+    """The page's rows as blocks, top to bottom as they are sent.
+
+    A flipped page is collected and mirrored top to bottom (columns stay)
+    over the full paper height.
+
+    Returns:
+        The row blocks and the number of rows they hold.
+    """
+    width, height, pixel_data = page
+    if flip:
+        return (flip_vertical(collect_rows(pixel_data, width, height), paper_h),), paper_h
+    if isinstance(pixel_data, BUFFER_TYPES):
+        return (page_rows(pixel_data, width, height),), height
+    return pixel_data, height
+
+
+def _colour_setup(settings: PrintSettings, model: PrinterModel) -> ColourSetup:
+    """The page's colour grid and brightness/contrast/RGB-key input remap.
+
+    The cmyk profile (colour matching None) takes no remap: the original
+    sends it through cmyk_basic, which skips compress_color_manage.
+    Grayscale keeps brightness and contrast whatever the colour matching,
+    but the original zeroes the RGB keys there (printer_setup.c, RLE mode).
+
+    Returns:
+        The colour setup for the scanline encoders.
+    """
+    table = model.color_table(settings)
+    mono = settings.mono_color == MonoColor.MONO
+    keys = (0, 0, 0) if mono else (settings.red, settings.green, settings.blue)
+    input_remap = None
+    if (mono or table.profile != "cmyk") and (settings.brightness != 0 or settings.contrast != 0 or any(keys)):
+        r, g, b = (build_input_remap_lut(settings.brightness, settings.contrast, key) for key in keys)
+        input_remap = (r, g, b)
+    return ColourSetup(settings, table, input_remap)
+
+
+def _write_planes(
+    w: XL2HBWriter, lines: Iterator[LineCodes], height: int, paper_h: int, *, bpl: int, is_fine: bool
+) -> None:
+    """Buffer the encoded scanlines per plane and write them as ReadImage blocks.
+
+    Lines past `height` down to `paper_h` are blank. Each plane flushes on
+    its own, in the order C, M, Y, K: an empty line flushes what the plane
+    has gathered, a non-empty one is appended and flushes a nearly full
+    buffer.
+
+    Raises:
+        ValueError: If `lines` ends before `height` lines.
+    """
     plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
 
     def write_plane(pid: int) -> None:
@@ -93,30 +150,6 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
         write_plane(pid)
         plane_bufs[pid].reset(next_line)
 
-    # Pre-build LUTs (constant per page). The cmyk profile (colour matching
-    # None) takes no brightness/contrast/RGB-key remap: the original sends it
-    # through cmyk_basic, which skips compress_color_manage. Grayscale keeps
-    # brightness and contrast whatever the colour matching, but the original
-    # zeroes the RGB keys there (printer_setup.c, RLE mode).
-    table = model.color_table(settings)
-    keys = (0, 0, 0) if mono else (settings.red, settings.green, settings.blue)
-    input_remap = None
-    if (mono or table.profile != "cmyk") and (settings.brightness != 0 or settings.contrast != 0 or any(keys)):
-        input_remap = (
-            build_input_remap_lut(settings.brightness, settings.contrast, keys[0]),
-            build_input_remap_lut(settings.brightness, settings.contrast, keys[1]),
-            build_input_remap_lut(settings.brightness, settings.contrast, keys[2]),
-        )
-
-    colour = ColourSetup(settings, table, input_remap)
-    kernel_colour = None if mono else band_kernel_colour(colour.table, channels, is_fine=is_fine)
-    if mono:
-        lines = encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
-    elif kernel_colour is not None:
-        lines = encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour, is_fine=is_fine)
-    else:
-        lines = encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
-
     for line_idx in range(paper_h):
         if line_idx < height:
             line = next(lines, None)
@@ -127,9 +160,6 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
         else:
             plane_comp = BLANK_LINE
 
-        # Per-plane independent flush. Process planes in order C, M, Y, K.
-        # Empty line + accumulated data → flush that plane. Non-empty line →
-        # append; if buffer nearly full → flush that plane.
         for pid in FLUSH_ORDER:
             comp = plane_comp[pid]
             pb = plane_bufs[pid]
@@ -143,9 +173,6 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
 
     for pid in FLUSH_ORDER:
         write_plane(pid)
-
-    w.write_end_image()
-    w.write_end_page(copies=send.copies)
 
 
 def init_channels(settings: PrintSettings, model: PrinterModel) -> dict[str, DitherChannel]:
