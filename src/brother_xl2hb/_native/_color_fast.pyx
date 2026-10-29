@@ -84,6 +84,8 @@ cdef inline unsigned int x87_quotient_product(unsigned int a, unsigned int b, un
     cdef unsigned long long hi, lo, low, high, kept, dropped, half
     cdef int s = 0
     cdef int k = 0
+    if a == 0:
+        return 0
     # a / b as m / 2**s with 2**63 <= m < 2**64, by long division.
     while m < (1ULL << 63):
         rem <<= 1
