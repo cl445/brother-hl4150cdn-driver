@@ -1,36 +1,34 @@
-"""Native sliding-window RLE encoder: byte-identity vs. the pure-Python encoder."""
+"""Native sliding-window RLE encoder: byte-identity vs. the pure-Python fallback in plane_encoders."""
 
 import numpy as np
 import pytest
 
-from brother_xl2hb.codec.rle import (
-    CONFIG_10BIT,
-    CONFIG_12BIT,
-    CONFIG_20BIT,
-    finalize_compressed,
-    group_bits_py,
-    sw_rle_encode,
-)
+from brother_xl2hb.codec import plane_encoders
+from brother_xl2hb.codec.rle import group_bits_py
 
 _rle_fast = pytest.importorskip("brother_xl2hb._native._rle_fast")
 if not hasattr(_rle_fast, "encode_sw_rle"):
     pytest.skip("_rle_fast built without encode_sw_rle; rebuild the extension", allow_module_level=True)
 encode_sw_rle = _rle_fast.encode_sw_rle
 
-# (bits, config) for every plane encoder in plane_encoders.
+# Word size per plane encoder of plane_encoders.
 _VARIANTS = {
-    "K/Y 12-bit": (12, CONFIG_12BIT),
-    "C 20-bit": (20, CONFIG_20BIT),
-    "M 10-bit": (10, CONFIG_10BIT),
+    "K/Y 12-bit": (12, lambda data: plane_encoders.encode_plane(data, "K")),
+    "C 20-bit": (20, plane_encoders.encode_c_plane),
+    "M 10-bit": (10, plane_encoders.encode_m_plane_10),
 }
 
 
-def _python_encode(data: bytes, bits: int, config) -> bytes:
-    """Reference: plane_encoders._encode_via_sw_rle over the Python word split."""
-    words = group_bits_py(data, bits)
-    if not words or not any(words):
-        return b""
-    return finalize_compressed(sw_rle_encode(words, config), data, bits)
+@pytest.fixture
+def python_encoder(monkeypatch):
+    """The plane encoders as they run without _rle_fast: Python word split and sw_rle_encode."""
+    monkeypatch.setattr(plane_encoders, "_HAS_CYTHON_SW_RLE", False)
+    monkeypatch.setattr(plane_encoders, "group_bits", group_bits_py)
+
+    def encode(variant: str, data: bytes) -> bytes:
+        return _VARIANTS[variant][1](data)
+
+    return encode
 
 
 def _rows() -> list[bytes]:
@@ -69,38 +67,38 @@ def _rows() -> list[bytes]:
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
-def test_matches_python_encoder(variant):
-    bits, config = _VARIANTS[variant]
+def test_matches_python_encoder(variant, python_encoder):
+    bits, _ = _VARIANTS[variant]
     for data in _rows():
-        expected = _python_encode(data, bits, config)
+        expected = python_encoder(variant, data)
         assert encode_sw_rle(data, bits) == expected, (variant, len(data), data[:16])
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
-def test_matches_python_encoder_random_sparse(variant):
+def test_matches_python_encoder_random_sparse(variant, python_encoder):
     """Many short sparse rows: exercises every state transition cheaply."""
-    bits, config = _VARIANTS[variant]
+    bits, _ = _VARIANTS[variant]
     rng = np.random.default_rng(hash(variant) & 0xFFFF)
     for _ in range(2000):
         n = int(rng.integers(1, 64))
         vals = rng.choice(np.array([0, 0, 0, 0xFF, 0x0F, 0xF0, 0x81], dtype=np.uint8), n)
         data = vals.tobytes()
-        expected = _python_encode(data, bits, config)
+        expected = python_encoder(variant, data)
         assert encode_sw_rle(data, bits) == expected, (variant, data.hex())
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
 @pytest.mark.parametrize("n_literals", [2047, 2048, 4095, 4096, 9000])
-def test_matches_python_encoder_literal_overflow(variant, n_literals):
+def test_matches_python_encoder_literal_overflow(variant, n_literals, python_encoder):
     """Literal stretches past the overflow limit, with a zero tail so no raw fallback hides them."""
-    bits, config = _VARIANTS[variant]
+    bits, _ = _VARIANTS[variant]
     words = [(i % ((1 << bits) - 2)) + 1 for i in range(n_literals)] + [0] * 6000
     value = 0
     for w in words:
         value = (value << bits) | w
     n_bits = len(words) * bits
     data = (value << (-n_bits % 8)).to_bytes((n_bits + 7) // 8, "big")
-    assert encode_sw_rle(data, bits) == _python_encode(data, bits, config)
+    assert encode_sw_rle(data, bits) == python_encoder(variant, data)
 
 
 def test_rejects_unknown_word_size():
