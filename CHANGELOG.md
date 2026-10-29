@@ -42,6 +42,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (the unpacked package to `.brother-blobs/<model>/`); re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of
   1.2.0 in `/usr/local/lib/brhl4150cdn/`.
+- The Normal-mode plane encoders are named by word width:
+  `encode_plane_12bit` (K, Y; was `encode_plane(data, plane)`),
+  `encode_plane_20bit` (C; was `encode_c_plane`) and `encode_plane_10bit`
+  (M; was `encode_m_plane_10`).
 
 ### Fixed
 - Literal stretches longer than one block are encoded as in the original:

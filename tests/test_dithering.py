@@ -406,7 +406,7 @@ class TestCaptureVerification:
         produce identical compressed bytes.
         """
 
-        from brother_xl2hb.codec.plane_encoders import encode_plane
+        from brother_xl2hb.codec.plane_encoders import encode_plane_12bit
         from brother_xl2hb.color.color_lut import rgb_to_cmyk_lut
 
         cap = all_captures["gray75_1000"]
@@ -438,7 +438,7 @@ class TestCaptureVerification:
                 line_idx = block.start_line + entry_idx
 
                 our_plane = dither_channel_1bpp(gray_k_int, line_idx, sw, channels["K"])
-                our_compressed = encode_plane(our_plane, "K")
+                our_compressed = encode_plane_12bit(our_plane)
 
                 if our_compressed != entry:
                     mismatches += 1
