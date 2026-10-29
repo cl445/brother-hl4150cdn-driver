@@ -1,6 +1,7 @@
 """page_stream: threaded PPM reader that yields the printable window in row blocks."""
 
 import io
+import threading
 
 import numpy as np
 import pytest
@@ -79,3 +80,33 @@ def test_truncated_page_raises_in_consumer():
 
 def test_empty_stream_yields_nothing():
     assert list(iter_ppm_pages(io.BytesIO(b""), _WINDOW)) == []
+
+
+def test_closing_the_pages_stops_the_reader_thread():
+    """A consumer that gives up must not leave the reader blocked on a full queue."""
+    width, height = 200, 300
+    data = b"".join(_ppm(_random_page(width, height, i), width, height) for i in range(30))
+    stream = io.BytesIO(data)
+    before = set(threading.enumerate())
+    pages = iter_ppm_pages(stream, (0, 0, width, height), block_rows=10, queue_blocks=2)
+    _w, _h, blocks = next(pages)
+    next(iter(blocks))
+    (reader,) = set(threading.enumerate()) - before
+
+    pages.close()
+    reader.join(timeout=10)
+    assert not reader.is_alive()
+    assert stream.tell() < len(data)
+
+
+def test_reader_failure_after_close_does_not_block():
+    """A reader that fails while the consumer is gone exits instead of waiting for room."""
+    width, height = 200, 300
+    stream = io.BytesIO(_ppm(_random_page(width, height, 0), width, height)[:-10])
+    before = set(threading.enumerate())
+    pages = iter_ppm_pages(stream, (0, 0, width, height), block_rows=10, queue_blocks=1)
+    next(pages)
+    (reader,) = set(threading.enumerate()) - before
+    pages.close()
+    reader.join(timeout=10)
+    assert not reader.is_alive()

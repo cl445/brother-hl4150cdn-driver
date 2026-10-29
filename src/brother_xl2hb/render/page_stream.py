@@ -9,12 +9,17 @@ while Python renders, Python waits on gs while it rasterises.
 block of scanlines at a time, cuts out the printable window and hands the
 blocks over through a bounded queue. Blocking reads release the GIL, so gs
 keeps rasterising while the main thread renders.
+
+Closing the page iterator stops the reader thread, so a consumer that
+gives up early does not leave it blocked on a full queue holding the
+buffered blocks.
 """
 
+import contextlib
 import queue
 import threading
 from collections.abc import Iterator
-from typing import BinaryIO
+from typing import BinaryIO, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -23,6 +28,13 @@ from brother_xl2hb.render.ppm import read_ppm_header
 
 _END_OF_PAGE = object()
 _END_OF_STREAM = object()
+
+# How often a reader blocked on a full queue checks whether it was stopped.
+_PUT_POLL = 0.1
+
+
+class _ReaderStoppedError(Exception):
+    """The consumer closed the page iterator; ends the reader thread."""
 
 
 class _ReaderFailure:
@@ -94,23 +106,42 @@ def _cropped_blocks(
         yield np.full((min(block_rows, height - first), row_bytes), 255, dtype=np.uint8)
 
 
+def _put(q: "queue.Queue[object]", item: object, stop: threading.Event) -> None:
+    """Put `item` on `q`, waiting for room until `stop` is set.
+
+    Raises:
+        _ReaderStoppedError: If `stop` is set.
+    """
+    while not stop.is_set():
+        try:
+            q.put(item, timeout=_PUT_POLL)
+        except queue.Full:
+            continue
+        return
+    raise _ReaderStoppedError
+
+
 def _read_pages(
     stream: BinaryIO,
     q: "queue.Queue[object]",
     window: tuple[int, int, int, int],
     block_rows: int,
+    stop: threading.Event,
 ) -> None:
     """Reader thread: push (src_w, src_h), row blocks and end markers onto `q`."""
     try:
         while (header := read_ppm_header(stream)) is not None:
             src_w, src_h, _maxval = header
-            q.put((src_w, src_h))
+            _put(q, (src_w, src_h), stop)
             for block in _cropped_blocks(stream, src_w, src_h, window, block_rows):
-                q.put(block)
-            q.put(_END_OF_PAGE)
-        q.put(_END_OF_STREAM)
+                _put(q, block, stop)
+            _put(q, _END_OF_PAGE, stop)
+        _put(q, _END_OF_STREAM, stop)
+    except _ReaderStoppedError:
+        pass
     except BaseException as exc:  # noqa: BLE001 — re-raised in the consumer
-        q.put(_ReaderFailure(exc))
+        with contextlib.suppress(_ReaderStoppedError):
+            _put(q, _ReaderFailure(exc), stop)
 
 
 class PageBlocks:
@@ -144,28 +175,109 @@ class PageBlocks:
             pass
 
 
+class PageStream:
+    """Iterator of (src_width, src_height, blocks), one per PPM page.
+
+    See `iter_ppm_pages`. `close()` (or leaving a `with` block) stops the
+    reader thread and drops the blocks it buffered.
+    """
+
+    def __init__(
+        self,
+        stream: BinaryIO,
+        window: tuple[int, int, int, int],
+        block_rows: int,
+        queue_blocks: int,
+    ) -> None:
+        """Start the reader thread on `stream`."""
+        self._q: queue.Queue[object] = queue.Queue(maxsize=queue_blocks)
+        self._stop = threading.Event()
+        self._page: PageBlocks | None = None
+        self._ended = False
+        reader = threading.Thread(
+            target=_read_pages, args=(stream, self._q, window, block_rows, self._stop), name="ppm-reader", daemon=True
+        )
+        reader.start()
+
+    def __iter__(self) -> Self:
+        """Return the stream itself; it is iterated once.
+
+        Returns:
+            This stream.
+        """
+        return self
+
+    def __next__(self) -> tuple[int, int, PageBlocks]:
+        """Discard what is left of the previous page and start the next one.
+
+        Returns:
+            Source dimensions from the PPM header and the page's row blocks.
+
+        Raises:
+            StopIteration: At the end of the stream, or once closed.
+        """
+        if self._ended:
+            raise StopIteration
+        if self._page is not None:
+            self._page.drain()
+            self._page = None
+        try:
+            item = _get(self._q)
+        except BaseException:
+            self.close()
+            raise
+        if item is _END_OF_STREAM:
+            self.close()
+            raise StopIteration
+        src_w, src_h = item  # type: ignore[misc]
+        self._page = PageBlocks(self._q)
+        return src_w, src_h, self._page
+
+    def close(self) -> None:
+        """Stop the reader thread and release the buffered blocks.
+
+        The thread finishes the read it may be blocked in first, which
+        ends at the latest when the writer closes the stream.
+        """
+        self._ended = True
+        self._page = None
+        self._stop.set()
+        with contextlib.suppress(queue.Empty):
+            while True:
+                self._q.get_nowait()
+
+    def __enter__(self) -> Self:
+        """Use the stream in a `with` block that closes it.
+
+        Returns:
+            This stream.
+        """
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Close the stream."""
+        self.close()
+
+
 def iter_ppm_pages(
     stream: BinaryIO,
     window: tuple[int, int, int, int],
     *,
     block_rows: int = 128,
     queue_blocks: int = 16,
-) -> Iterator[tuple[int, int, PageBlocks]]:
-    """Yield (src_width, src_height, blocks) for each PPM page in `stream`.
+) -> PageStream:
+    """Iterate (src_width, src_height, blocks) for each PPM page in `stream`.
 
     `window` is (x_off, y_off, width, height) of the printable area; every
     page yields exactly `height` rows of `width` pixels. At most
     `queue_blocks` blocks are buffered ahead of the consumer. A page's
     unread blocks are discarded when the next page is requested.
 
-    Yields:
-        Source dimensions from the PPM header and the page's row blocks.
+    A consumer that stops early closes the returned stream, so that the
+    reader thread ends instead of blocking on a full queue that holds the
+    buffered blocks.
+
+    Returns:
+        The page iterator, also a context manager that closes it.
     """
-    q: queue.Queue[object] = queue.Queue(maxsize=queue_blocks)
-    reader = threading.Thread(target=_read_pages, args=(stream, q, window, block_rows), daemon=True)
-    reader.start()
-    while (item := _get(q)) is not _END_OF_STREAM:
-        src_w, src_h = item  # type: ignore[misc]
-        page = PageBlocks(q)
-        yield src_w, src_h, page
-        page.drain()
+    return PageStream(stream, window, block_rows, queue_blocks)
