@@ -1,15 +1,13 @@
-"""XL2HB protocol emitter for the Brother HL-4150CDN.
+"""XL2HB protocol emitter.
 
 Wraps compressed plane data in the XL2HB byte stream (a PCL-XL
-variant) the printer accepts. Operators, attribute IDs, MediaSize
-codes, and the band-config encoding are documented inline.
+variant) Brother's colour lasers accept. Operators, attribute IDs and
+the band-config encoding are documented inline; what a model writes for
+its paper sizes and media is in `brother_xl2hb.models`.
 """
 
-import logging
 import struct
 from typing import BinaryIO
-
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # PCL-XL data type tags
@@ -75,107 +73,6 @@ OP_BEGIN_IMAGE = 0xB0
 OP_READ_IMAGE = 0xB1
 OP_END_IMAGE = 0xB2
 
-# ---------------------------------------------------------------------------
-# MediaSize enum
-# ---------------------------------------------------------------------------
-# BeginPage MediaSize as brhl4150cdnfilter writes it: a PCL XL media-size
-# enum, or for sizes without one a name string.
-MEDIA_SIZE: dict[str, int | bytes] = {
-    "Letter": 0,
-    "Legal": 1,
-    "A4": 2,
-    "Executive": 3,
-    "Env10": 6,
-    "EnvMonarch": 7,
-    "EnvC5": 8,
-    "EnvDL": 9,
-    "JISB5": 11,
-    "ISOB5": 12,
-    "Postcard": 14,
-    "A5": 16,
-    "A6": 17,
-    "PRA5Rotated": b"A5L",
-    "ISOB6": b"B6",
-    "JISB6": b"JISB6",
-    "Br3x5": b"3x5",
-    "FanFoldGermanLegal": b"Folio",
-    "EnvPRC5Rotated": b"DL Long Edge",
-    "EnvYou4": b"Envelope #4",
-    "EnvChou3": b"Envelope MAX",
-}
-
-# ---------------------------------------------------------------------------
-# Paper sizes: pixels at 600 DPI from paperinfij2, and the printable height
-# in points (ury - lly) from Brother's ImagingArea file.
-# ---------------------------------------------------------------------------
-PAPER_SIZES = {
-    "A4": (4760, 6812),
-    "Letter": (4900, 6400),
-    "Legal": (4900, 8200),
-    "Executive": (4148, 6100),
-    "A5": (3296, 4760),
-    "PRA5Rotated": (4756, 3300),
-    "A6": (2272, 3300),
-    "ISOB5": (3956, 5708),
-    "ISOB6": (2748, 3956),
-    "JISB5": (4100, 5872),
-    "JISB6": (2824, 4100),
-    "EnvDL": (2400, 4996),
-    "EnvC5": (3624, 5208),
-    "Env10": (2272, 5500),
-    "EnvMonarch": (2124, 4300),
-    "Br3x5": (1600, 2800),
-    "FanFoldGermanLegal": (4900, 7600),
-    "EnvPRC5Rotated": (5000, 2400),
-    "Postcard": (2164, 3288),
-    "EnvYou4": (2280, 5348),
-    "EnvChou3": (2632, 5348),
-}
-
-IMAGING_HEIGHT_PT = {
-    "A4": 818,
-    "Letter": 768,
-    "Legal": 984,
-    "Executive": 732,
-    "A5": 571,
-    "PRA5Rotated": 396,
-    "A6": 396,
-    "ISOB5": 685,
-    "ISOB6": 475,
-    "JISB5": 705,
-    "JISB6": 492,
-    "EnvDL": 600,
-    "EnvC5": 625,
-    "Env10": 660,
-    "EnvMonarch": 516,
-    "Br3x5": 336,
-    "FanFoldGermanLegal": 912,
-    "EnvPRC5Rotated": 288,
-    "Postcard": 395,
-    "EnvYou4": 642,
-    "EnvChou3": 642,
-}
-
-# Fine mode uses the same paper sizes as Normal — only the dithering
-# depth, band config, and PJL APTMODE differ.
-
-# MediaType strings (each name is prefixed with 'd' on the wire), as
-# brhl4150cdnfilter writes them for the rc values Brother's CUPS wrapper
-# passes (MediaType=BOND, Env, ...). It sends Bond paper as Transparency.
-MEDIA_TYPE_STRINGS = {
-    "Plain": b"dRegular",
-    "Thin": b"dThin",
-    "Thick": b"dThick",
-    "Thicker": b"dThick2",
-    "Bond": b"dTransparency",
-    "Envelope": b"dEnvelopes",
-    "EnvThin": b"dEnvthin",
-    "EnvThick": b"dEnvthick",
-    "Recycled": b"dRecycled",
-    "Postcard": b"dPostcard",
-    "Label": b"dLabel",
-    "Glossy": b"dGlossy",
-}
 
 # ---------------------------------------------------------------------------
 # Plane parameters
@@ -199,10 +96,6 @@ PLANE_PARAMS_FINE = {
 # Plane flush order: C, M, Y, K.
 FLUSH_ORDER = (1, 2, 3, 0)
 
-# Bytes per line of an A4 Normal-mode plane (4768 pixels / 8): the
-# PlaneBuffer default and the reference width of the tests. The pipeline
-# passes the width of the actual paper size.
-BPL = 596
 
 # PlaneBuffer sizing constants.
 PLANE_BUF_INIT_FREE = 0x7FF2  # 32754 bytes: 0x8000 minus the 14-byte plane header
@@ -289,49 +182,6 @@ def emit_extended_data(buf: bytearray, data: bytes) -> None:
         buf.append(TAG_EXTENDED_DATA_UINT32)
         buf.extend(struct.pack("<I", dlen))
     buf.extend(data)
-
-
-# ---------------------------------------------------------------------------
-# Image dimensions
-# ---------------------------------------------------------------------------
-
-
-def image_height(page_size: str) -> int:
-    """Rows of the page image, as the original computes its band height.
-
-    The printable height in points, capped at the paper height in whole
-    points, converted to 600 dpi: `min(ury - lly, paper_h * 72 // 600) *
-    600 // 72`. Verified against brhl4150cdnfilter for every paper size
-    (A4 6812 -> 6808, Letter 6400 -> 6400, EnvDL 4996 -> 4991).
-
-    Returns:
-        Source height in rows.
-    """
-    _, ph = PAPER_SIZES[page_size]
-    points = min(IMAGING_HEIGHT_PT[page_size], ph * 72 // 600)
-    return points * 600 // 72
-
-
-def get_image_dimensions(page_size: str) -> tuple[int, int]:
-    """Return (source_width, source_height) for BeginImage.
-
-    Width = paper_width rounded up to 32-pixel boundary; height see
-    `image_height`.
-    """
-    pw, _ = PAPER_SIZES[page_size]
-    return (pw + 31) & ~31, image_height(page_size)
-
-
-def get_image_dimensions_fine(page_size: str) -> tuple[int, int]:
-    """Return (source_width, source_height) for Fine mode BeginImage.
-
-    Fine mode rounds the paper width up to 8 pixels instead of 32
-    (raster_encode.c:352): A4 4760 stays 4760 (Normal 4768), Letter 4900
-    becomes 4904. Height is the same as Normal. Verified against
-    brhl4150cdnfilter for all 21 paper sizes.
-    """
-    pw, _ = PAPER_SIZES[page_size]
-    return (pw + 7) & ~7, image_height(page_size)
 
 
 # ---------------------------------------------------------------------------
@@ -432,13 +282,13 @@ class PlaneBuffer:
         +0x01  1B  bit_depth (4 in Normal mode, 12 in Fine mode)
         +0x02  1B  quant_type (2 or 4)
         +0x03  1B  comp_size (10, 12, or 20)
-        +0x04  2B  row_width_BE (bytes per line; 596 for A4)
+        +0x04  2B  row_width_BE (bytes per line; 596 for A4 on the HL-4150CDN)
         +0x06  2B  line_count_BE
         +0x08  4B  data_size_BE (= total extended data length)
         +0x0C  2B  always 0x0000
     """
 
-    def __init__(self, plane_id: int, bpl: int = BPL, fine: bool = False) -> None:
+    def __init__(self, plane_id: int, bpl: int, fine: bool = False) -> None:
         """Configure the encoder for the given plane and resolution mode."""
         self.plane_id = plane_id
         params = PLANE_PARAMS_FINE if fine else PLANE_PARAMS
@@ -585,18 +435,22 @@ class XL2HBWriter:
 
     def write_begin_page(
         self,
-        media_size: str = "A4",
+        media_size: int | bytes = 2,
         media_source: int = 1,
         orientation: int = 0,
-        media_type: str = "Plain",
+        media_type: bytes = b"dRegular",
         duplex_mode: int | None = None,
         back_side_marker: bool = False,
     ) -> None:
         """Emit BeginPage with media size, source, type, and simplex/duplex mode.
 
-        `duplex_mode` None writes SimplexPageMode=0; otherwise DuplexPageMode
-        carries the value (0x00 long edge, 0x81 short edge, as Brother's filter).
-        `back_side_marker` prefixes the long-edge back-page marker attribute.
+        `media_size` is a PCL XL media-size enum value or a name string and
+        `media_type` the MediaType string, as the model writes them (see
+        `models.hl4150cdn.media_size_code` / `media_type_code`); the
+        defaults are A4 and plain paper. `duplex_mode` None writes
+        SimplexPageMode=0; otherwise DuplexPageMode carries the value (0x00
+        long edge, 0x81 short edge, as Brother's filter). `back_side_marker`
+        prefixes the long-edge back-page marker attribute.
         """
         if back_side_marker:
             emit_ubyte_attr(self.buf, DUPLEX_BACK_SIDE_MARKER, ATTR_DUPLEX_BACK_SIDE)
@@ -605,19 +459,11 @@ class XL2HBWriter:
             emit_uint16_attr(self.buf, media_source, ATTR_MEDIA_SOURCE)
         else:
             emit_ubyte_attr(self.buf, media_source, ATTR_MEDIA_SOURCE)
-        size = MEDIA_SIZE.get(media_size)
-        if size is None:
-            logger.warning("Unknown media size %r, defaulting to A4", media_size)
-            size = 2
-        if isinstance(size, bytes):
-            emit_ubyte_array_attr(self.buf, size, ATTR_MEDIA_SIZE)
+        if isinstance(media_size, bytes):
+            emit_ubyte_array_attr(self.buf, media_size, ATTR_MEDIA_SIZE)
         else:
-            emit_ubyte_attr(self.buf, size, ATTR_MEDIA_SIZE)
-        type_str = MEDIA_TYPE_STRINGS.get(media_type)
-        if type_str is None:
-            logger.warning("Unknown media type %r, defaulting to Regular", media_type)
-            type_str = b"dRegular"
-        emit_ubyte_array_attr(self.buf, type_str, ATTR_MEDIA_TYPE)
+            emit_ubyte_attr(self.buf, media_size, ATTR_MEDIA_SIZE)
+        emit_ubyte_array_attr(self.buf, media_type, ATTR_MEDIA_TYPE)
         if duplex_mode is None:
             emit_ubyte_attr(self.buf, 0, ATTR_SIMPLEX_PAGE_MODE)
         else:
@@ -692,56 +538,3 @@ class XL2HBWriter:
         """Emit EndSession opcode."""
         emit_opcode(self.buf, OP_END_SESSION)
         self._flush()
-
-
-# ---------------------------------------------------------------------------
-# PJL header/footer
-# ---------------------------------------------------------------------------
-
-
-def generate_pjl_header(
-    resolution: int = 600,
-    color: bool = True,
-    color_adapt: bool = True,
-    economode: bool = False,
-    less_paper_curl: bool = False,
-    fix_intensity: bool = False,
-    apt_mode: bool = False,
-    improve_gray: bool = False,
-    ucrgcr: bool = False,
-) -> bytes:
-    """Generate the PJL header.
-
-    Lines are LF-terminated and emitted in the order of the original's
-    pjl.c. The PAGEPROTECT, RET, SOURCETRAY and MANUALDPX commands it also
-    knows are never sent for this model.
-
-    Returns:
-        Encoded PJL header bytes (ASCII).
-    """
-    lines = [
-        "\x1b%-12345X@PJL \n",
-        f"@PJL SET ECONOMODE={'ON' if economode else 'OFF'}\n",
-        f"@PJL SET RENDERMODE={'COLOR' if color else 'GRAYSCALE'}\n",
-        f"@PJL SET COLORADAPT={'ON' if color and color_adapt else 'OFF'}\n",
-        f"@PJL SET LESSPAPERCURL={'ON' if less_paper_curl else 'OFF'}\n",
-        f"@PJL SET FIXINTENSITYUP={'ON' if fix_intensity else 'OFF'}\n",
-    ]
-    lines.append(f"@PJL SET APTMODE={'ON4' if apt_mode else 'OFF'}\n")
-    if color:
-        if improve_gray:
-            lines.append("@PJL SET IMPROVEGRAY=ON\n")
-        if ucrgcr:
-            lines.append("@PJL SET UCRGCRFORIMAGE=ON\n")
-    lines.append(f"@PJL SET RESOLUTION={resolution}\n")
-    lines.append("@PJL ENTER LANGUAGE=XL2HB\n")
-    return "".join(lines).encode("ascii")
-
-
-def generate_pjl_footer() -> bytes:
-    """Generate the PJL footer: two UEL escapes, no @PJL RESET.
-
-    Returns:
-        Encoded PJL footer bytes.
-    """
-    return b"\x1b%-12345X\x1b%-12345X"

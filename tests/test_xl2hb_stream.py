@@ -10,10 +10,8 @@ from io import BytesIO
 
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import (
-    XL2HBWriter,
-    get_image_dimensions,
-)
+from brother_xl2hb.models.hl4150cdn import get_image_dimensions, media_size_code, media_type_code
+from brother_xl2hb.protocol.xl2hb import XL2HBWriter
 from fixture_utils import assert_bytes_equal
 
 # ---------------------------------------------------------------------------
@@ -161,20 +159,19 @@ class TestUnknownMediaDefaults:
 
     def test_unknown_media_size(self, caplog):
         """Unknown media size defaults to A4 (enum 2) and logs a warning."""
-        buf = BytesIO()
-        w = XL2HBWriter(buf)
-        with caplog.at_level(logging.WARNING, logger="brother_xl2hb.protocol.xl2hb"):
-            w.write_begin_page(media_size="Folio")
+        with caplog.at_level(logging.WARNING, logger="brother_xl2hb.models.hl4150cdn"):
+            size = media_size_code("Folio")
         assert "Unknown media size" in caplog.text
-        # A4 enum value is 0x02 — verify it appears in the output
-        data = buf.getvalue()
-        assert b"\xc0\x02\xf8\x25" in data  # TAG_UBYTE 0x02 TAG_ATTR ATTR_MEDIA_SIZE
+        assert size == 2
+        buf = BytesIO()
+        XL2HBWriter(buf).write_begin_page(media_size=size)
+        assert b"\xc0\x02\xf8\x25" in buf.getvalue()  # TAG_UBYTE 0x02 TAG_ATTR ATTR_MEDIA_SIZE
 
     def test_unknown_media_type(self, caplog):
         """Unknown media type defaults to 'dRegular' and logs a warning."""
-        buf = BytesIO()
-        w = XL2HBWriter(buf)
-        with caplog.at_level(logging.WARNING, logger="brother_xl2hb.protocol.xl2hb"):
-            w.write_begin_page(media_type="Cardstock")
+        with caplog.at_level(logging.WARNING, logger="brother_xl2hb.models.hl4150cdn"):
+            media_type = media_type_code("Cardstock")
         assert "Unknown media type" in caplog.text
+        buf = BytesIO()
+        XL2HBWriter(buf).write_begin_page(media_type=media_type)
         assert b"dRegular" in buf.getvalue()

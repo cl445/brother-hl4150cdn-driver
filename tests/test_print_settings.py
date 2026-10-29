@@ -10,14 +10,9 @@ import tempfile
 
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import (
-    MEDIA_SIZE,
-    MEDIA_TYPE_STRINGS,
-    PAPER_SIZES,
-    generate_pjl_header,
-    get_image_dimensions,
-)
-from brother_xl2hb.render.pipeline import filter_page, filter_pages
+from brother_xl2hb.job import filter_page, filter_pages
+from brother_xl2hb.models.hl4150cdn import MEDIA_SIZE, MEDIA_TYPE_STRINGS, PAPER_SIZES, get_image_dimensions
+from brother_xl2hb.protocol.pjl import generate_pjl_header
 from brother_xl2hb.settings import DuplexMode, PrintSettings
 
 # ---------------------------------------------------------------------------

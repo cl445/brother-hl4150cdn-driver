@@ -11,6 +11,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `color`, `protocol`, `render` and `_native` (Cython). The CLI without
   CUPS is `uv run brother-xl2hb`; `src/brfilter.py` and the
   `brother_encode` re-export module are gone.
+- `protocol.xl2hb` holds only the XL2HB protocol; the HL-4150CDN's paper
+  sizes, media codes and tray values are in `models.hl4150cdn`, PJL in
+  `protocol.pjl`. `render.pipeline` is split into `job` (session, page
+  order, duplex and reverse flips, skip blank) and `render.rows`,
+  `render.lines`, `render.bands` and `render.page`.
 - `scripts/extract_blobs.sh` puts Brother's tables into
   `src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`; re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of

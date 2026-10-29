@@ -30,7 +30,7 @@ from brother_xl2hb.codec.rle import (
     pack_groups,
     sw_rle_encode,
 )
-from brother_xl2hb.protocol.xl2hb import BPL
+from brother_xl2hb.models.hl4150cdn import BPL
 
 # ---------------------------------------------------------------------------
 # K-plane: 12-bit read, 12-bit RLE

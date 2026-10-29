@@ -239,7 +239,7 @@ class TestFallbackIntegration:
             tempfile.TemporaryDirectory() as tmpdir,
             mock.patch.object(color_lut, "_DATA_DIR", Path(tmpdir)),
         ):
-            from brother_xl2hb.render.pipeline import filter_page
+            from brother_xl2hb.job import filter_page
             from brother_xl2hb.settings import PrintSettings
 
             w, h = 100, 10

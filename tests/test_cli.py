@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from brother_xl2hb import cli
-from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.job import filter_pages
 from brother_xl2hb.settings import PrintSettings
 from fixture_utils import assert_matches_fixture
 

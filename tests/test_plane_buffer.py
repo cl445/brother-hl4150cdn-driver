@@ -9,7 +9,8 @@ import struct
 
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import BPL, PLANE_BUF_FLUSH_THRESH, PLANE_BUF_INIT_FREE, PLANE_PARAMS, PlaneBuffer
+from brother_xl2hb.models.hl4150cdn import BPL
+from brother_xl2hb.protocol.xl2hb import PLANE_BUF_FLUSH_THRESH, PLANE_BUF_INIT_FREE, PLANE_PARAMS, PlaneBuffer
 from fixture_utils import capture_block_params
 
 BLOCK_PARAMS = capture_block_params()
@@ -27,7 +28,7 @@ class TestBlockBlobMatchesCapture:
         cap = all_captures[capture_name]
         block = cap.blocks[block_idx]
 
-        pb = PlaneBuffer(plane_id=block.plane_id)
+        pb = PlaneBuffer(plane_id=block.plane_id, bpl=BPL)
         pb.start_line = block.start_line
         for entry in block.entries:
             pb.append_scanline(entry)
@@ -79,17 +80,17 @@ class TestBlockBlobMatchesCapture:
 
 class TestPlaneBufferEdgeCases:
     def test_empty_buffer_returns_none(self):
-        pb = PlaneBuffer(plane_id=0)
+        pb = PlaneBuffer(plane_id=0, bpl=BPL)
         assert pb.flush() is None
 
     def test_empty_compressed_skipped(self):
-        pb = PlaneBuffer(plane_id=0)
+        pb = PlaneBuffer(plane_id=0, bpl=BPL)
         pb.append_scanline(b"")  # empty → skipped
         assert pb.flush() is None
         assert pb.line_count == 0
 
     def test_single_entry(self):
-        pb = PlaneBuffer(plane_id=0)
+        pb = PlaneBuffer(plane_id=0, bpl=BPL)
         entry = b"\x01\x02\x03"
         pb.append_scanline(entry, line_idx=42)
         result = pb.flush()
@@ -111,7 +112,7 @@ class TestPlaneBufferEdgeCases:
         assert trailing == 3
 
     def test_reset_clears_state(self):
-        pb = PlaneBuffer(plane_id=0)
+        pb = PlaneBuffer(plane_id=0, bpl=BPL)
         pb.append_scanline(b"\x01\x02", line_idx=10)
         assert pb.line_count == 1
 
@@ -121,7 +122,7 @@ class TestPlaneBufferEdgeCases:
         assert pb.flush() is None
 
     def test_is_nearly_full_threshold(self):
-        pb = PlaneBuffer(plane_id=0)
+        pb = PlaneBuffer(plane_id=0, bpl=BPL)
         assert not pb.is_nearly_full()
         assert pb.free_space == PLANE_BUF_INIT_FREE
 
@@ -146,7 +147,7 @@ class TestPlaneBufferEdgeCases:
     )
     def test_plane_params_in_header(self, plane_id, expected_qt, expected_cs):
         """Verify quant_type and comp_size in header for each plane."""
-        pb = PlaneBuffer(plane_id=plane_id)
+        pb = PlaneBuffer(plane_id=plane_id, bpl=BPL)
         pb.append_scanline(b"\xaa\xbb")
         result = pb.flush()
         assert result is not None

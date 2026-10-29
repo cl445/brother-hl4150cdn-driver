@@ -140,10 +140,12 @@ The code is one package, `src/brother_xl2hb/`:
 |---|---|
 | `codec` | plane RLE encoders (Normal) and the APT codec (Fine) |
 | `color` | colour grids, input remap, saturation, ordered dither |
-| `protocol` | XL2HB stream writer and PJL |
-| `render` | PPM input, band rendering, the job pipeline |
+| `protocol` | XL2HB stream writer and PJL, without model data |
+| `models` | per printer: paper geometry, media and tray codes |
+| `render` | one page: PPM input, the per-line and the band path |
 | `_native` | optional Cython kernels, each with a pure-Python fallback |
 
+`job` (PJL, the session, page order, duplex, reverse, skip blank),
 `settings`, `cli` and `cups_filter` sit at the top; `cups/brhl4150cdn-filter`
 only puts the package on the path and calls `cups_filter.main`.
 `scripts/extract_blobs.sh` writes Brother's tables to
