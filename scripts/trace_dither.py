@@ -10,7 +10,7 @@ LUT, 4bpp pattern data) are dumped once.
 
     uv run python scripts/trace_dither.py solid:0,255,255 --lines 16
     uv run python scripts/trace_dither.py hramp --lines 4 --show 64
-    uv run python scripts/trace_dither.py solid:128,128,128 --rc Saturation=20 --save build/trace.npz
+    uv run python scripts/trace_dither.py solid:128,128,128 --rc Saturation=20 --save .cache/trace.npz
 
 The traced filter's own XL2HB output is checked against the traced dither
 output: every traced line must equal what `decode_fine_plane` decodes from
@@ -50,7 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends qemu-user gdb-m
 COPY --from=sysroot /usr /sysroot/usr
 RUN ln -s usr/lib /sysroot/lib && ln -s usr/bin /sysroot/bin && ln -s usr/sbin /sysroot/sbin
 """
-CACHE_DIR = fine_diff.ROOT / "build" / "trace-dither-cache"
+CACHE_DIR = fine_diff.ROOT / ".cache" / "trace-dither"
 CHANNELS = "CMYK"  # order of the four input and output arguments
 TRACER_VERSION = "1"
 
