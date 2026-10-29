@@ -6,6 +6,7 @@ Tests end-to-end output against original driver captures.
 
 import io
 import struct
+import tracemalloc
 
 import numpy as np
 import pytest
@@ -429,6 +430,21 @@ class TestMonoMode:
         for plane_id in (1, 2, 3):
             assert bytes([0xC1, plane_id, 0x00, 0xF8, 0x81]) not in out
         assert bytes([0xC1, 0x00, 0x00, 0xF8, 0x81]) in out
+
+    def test_whole_page_block_stays_small(self):
+        """A page handed over as one block (CLI, flipped pages) is converted in slices.
+
+        Converting the whole block to luma at once peaks near nine times the
+        page, ~830 MiB for A4.
+        """
+        ppm = _make_ppm_band(_A4_W, _A4_H, 0, _A4_H, 120, 60, 200)
+        tracemalloc.start()
+        try:
+            _pipeline_from_ppm(ppm, PrintSettings(mono_color=MonoColor.MONO))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 2 * len(ppm)
 
 
 class TestPipelineSettings:
