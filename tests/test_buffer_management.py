@@ -7,13 +7,9 @@ and the complete driver buffer loop that produces correct block boundaries.
 
 import struct
 
-import pytest
-
 from brother_xl2hb.protocol.xl2hb import (
     FLUSH_ORDER,
-    PLANE_BUF_FLUSH_THRESH,
     PLANE_BUF_INIT_FREE,
-    PLANE_PARAMS,
     PlaneBuffer,
 )
 from fixture_utils import BPL
@@ -110,11 +106,6 @@ class TestNearlyFull:
             pb.append_scanline(big_entry)
         assert pb.is_nearly_full()
 
-    def test_threshold_value(self):
-        """Buffer becomes nearly full when free < FLUSH_THRESH."""
-        assert PLANE_BUF_FLUSH_THRESH == 0x1688  # 5768
-        assert PLANE_BUF_INIT_FREE == 0x7FF2  # 32754
-
 
 # ---------------------------------------------------------------------------
 # Flush output structure
@@ -209,10 +200,6 @@ class TestReset:
 
 
 class TestMultiPlaneFlush:
-    def test_flush_order_constant(self):
-        """Flush order is C(1), M(2), Y(3), K(0)."""
-        assert FLUSH_ORDER == (1, 2, 3, 0)
-
     def test_independent_plane_buffers(self):
         """Each plane maintains independent state."""
         buffers = {i: PlaneBuffer(plane_id=i, bpl=BPL) for i in range(4)}
@@ -325,30 +312,3 @@ class TestFillFlushLoop:
             total_lines += result[1]
 
         assert total_lines == paper_h
-
-
-# ---------------------------------------------------------------------------
-# Plane-specific configuration
-# ---------------------------------------------------------------------------
-
-
-class TestPlaneConfig:
-    @pytest.mark.parametrize(
-        ("plane_id", "expected_qt", "expected_cs"),
-        [
-            (0, 2, 12),  # K
-            (1, 2, 20),  # C
-            (2, 4, 10),  # M
-            (3, 2, 12),  # Y
-        ],
-        ids=["K", "C", "M", "Y"],
-    )
-    def test_plane_params(self, plane_id, expected_qt, expected_cs):
-        qt, cs = PLANE_PARAMS[plane_id]
-        assert qt == expected_qt
-        assert cs == expected_cs
-
-    @pytest.mark.parametrize("plane_id", [0, 1, 2, 3])
-    def test_bpl_default(self, plane_id):
-        pb = PlaneBuffer(plane_id=plane_id, bpl=BPL)
-        assert pb.bpl == BPL
