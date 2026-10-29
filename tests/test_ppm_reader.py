@@ -134,3 +134,58 @@ class TestPPMReaderConcatenated:
             assert pix == bytes([i, i, i])
 
         assert read_ppm(stream) is None
+
+
+class TestPPMReaderHeaderSyntax:
+    """Header layouts the netpbm format allows besides Ghostscript's own."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            b"P6 2 2 255\n",
+            b"P6\n2 2\n# after the dimensions\n255\n",
+            b"P6\n2 2# right after a number\n255\n",
+            b"P6\n\n2 2\n\n255\n",
+            b"P6\r\n2\t2\r\n255\r",
+            b"# before the magic\nP6\n2 2\n255\n",
+        ],
+    )
+    def test_accepted(self, header):
+        pixels = bytes(range(12))
+        result = read_ppm(io.BytesIO(header + pixels))
+        assert result == (2, 2, 255, pixels)
+
+    def test_exactly_one_whitespace_byte_ends_the_header(self):
+        """Raster bytes that look like whitespace or comments belong to the raster."""
+        pixels = b"\n# \t\n\r"
+        result = read_ppm(io.BytesIO(b"P6 2 1 255\n" + pixels))
+        assert result == (2, 1, 255, pixels)
+
+    def test_whitespace_between_and_after_images(self):
+        stream = io.BytesIO(_make_ppm(1, 1, pixels=b"abc") + b"\n \n" + _make_ppm(1, 1, pixels=b"def") + b"\n")
+        assert read_ppm(stream) == (1, 1, 255, b"abc")
+        assert read_ppm(stream) == (1, 1, 255, b"def")
+        assert read_ppm(stream) is None
+
+
+class TestPPMReaderMalformedHeader:
+    @pytest.mark.parametrize(
+        ("data", "match"),
+        [
+            (b"P6", "incomplete"),
+            (b"P6\n2", "incomplete"),
+            (b"P6\n2 2\n", "incomplete"),
+            (b"P6\n2 2\n255", "incomplete"),
+            (b"P6\n2 2 # comment without a line end", "incomplete"),
+            (b"P6\nx 2\n255\n", "invalid width"),
+            (b"P6\n2 -2\n255\n", "invalid height"),
+            (b"P6\n0 2\n255\n", "invalid width"),
+            (b"P6\n2 2\n25x\n", "invalid maxval"),
+            (b"P6\n2 2\n15\n", "maxval=15"),
+            (b"P61 1 255\n", "Not PPM P6"),
+            (b"\x89PNG" + bytes(100), "too long"),
+        ],
+    )
+    def test_raises_value_error(self, data, match):
+        with pytest.raises(ValueError, match=match):
+            read_ppm(io.BytesIO(data))
