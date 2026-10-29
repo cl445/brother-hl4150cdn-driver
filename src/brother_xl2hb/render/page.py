@@ -95,20 +95,17 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
 
     # Pre-build LUTs (constant per page). The cmyk profile (colour matching
     # None) takes no brightness/contrast/RGB-key remap: the original sends it
-    # through cmyk_basic, which skips compress_color_manage.
+    # through cmyk_basic, which skips compress_color_manage. Grayscale keeps
+    # brightness and contrast whatever the colour matching, but the original
+    # zeroes the RGB keys there (printer_setup.c, RLE mode).
     table = model.color_table(settings)
+    keys = (0, 0, 0) if mono else (settings.red, settings.green, settings.blue)
     input_remap = None
-    if table.profile != "cmyk" and (
-        settings.brightness != 0
-        or settings.contrast != 0
-        or settings.red != 0
-        or settings.green != 0
-        or settings.blue != 0
-    ):
+    if (mono or table.profile != "cmyk") and (settings.brightness != 0 or settings.contrast != 0 or any(keys)):
         input_remap = (
-            build_input_remap_lut(settings.brightness, settings.contrast, settings.red),
-            build_input_remap_lut(settings.brightness, settings.contrast, settings.green),
-            build_input_remap_lut(settings.brightness, settings.contrast, settings.blue),
+            build_input_remap_lut(settings.brightness, settings.contrast, keys[0]),
+            build_input_remap_lut(settings.brightness, settings.contrast, keys[1]),
+            build_input_remap_lut(settings.brightness, settings.contrast, keys[2]),
         )
 
     colour = ColourSetup(settings, table, input_remap)
