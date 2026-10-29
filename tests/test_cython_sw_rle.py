@@ -7,6 +7,7 @@ from brother_xl2hb.codec.rle import (
     CONFIG_10BIT,
     CONFIG_12BIT,
     CONFIG_20BIT,
+    BytesLike,
     finalize_compressed,
     group_bits_py,
     sw_rle_encode,
@@ -25,7 +26,7 @@ _VARIANTS = {
 }
 
 
-def _python_encode(data: bytes, bits: int, config) -> bytes:
+def _python_encode(data: BytesLike, bits: int, config) -> bytes:
     """Reference: plane_encoders._encode_via_sw_rle over the Python word split."""
     words = group_bits_py(data, bits)
     if not words or not any(words):
@@ -106,3 +107,17 @@ def test_matches_python_encoder_literal_overflow(variant, n_literals):
 def test_rejects_unknown_word_size():
     with pytest.raises(ValueError, match="unsupported"):
         encode_sw_rle(b"\x01", 16)
+
+
+@pytest.mark.parametrize("variant", _VARIANTS)
+def test_accepts_buffers(variant):
+    """Like the Python fallback, the native encoder takes any contiguous byte buffer."""
+    bits, config = _VARIANTS[variant]
+    data = _rows()[5]
+    expected = _python_encode(data, bits, config)
+    assert encode_sw_rle(bytearray(data), bits) == expected
+    assert encode_sw_rle(memoryview(data), bits) == expected
+    assert encode_sw_rle(np.frombuffer(data, np.uint8), bits) == expected
+    assert _python_encode(bytearray(data), bits, config) == expected
+    assert _python_encode(memoryview(data), bits, config) == expected
+    assert encode_sw_rle(bytearray(), bits) == b""

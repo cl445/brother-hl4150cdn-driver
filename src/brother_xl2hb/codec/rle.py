@@ -7,26 +7,41 @@ The plane encoders share three pieces of machinery:
 * ``sw_rle_encode``: unified sliding-window RLE encoder, parametrised
   by ``SwRleConfig`` so a single state machine handles 12-bit, 20-bit
   and 10-bit variants.
-
-``finalize_compressed`` is the shared post-processing step: if the
-compressed output exceeds the raw input by more than 0x14 bytes, fall
-back to a literal dump of the raw scanline.
+* ``finalize_compressed``: the shared post-processing step. If the
+  compressed output exceeds the raw input by more than 0x14 bytes, it
+  falls back to a literal dump of the raw scanline.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import IntEnum, auto
 
 import numpy as np
 
+# Scanline input: anything the native codec's `const uchar[::1]` takes too.
+type BytesLike = bytes | bytearray | memoryview
 
-def group_bits_py(data: bytes, group_size: int) -> list[int]:
+MAX_GROUP_SIZE = 32
+
+
+def check_group_size(group_size: int) -> None:
+    """Reject group sizes outside 1..MAX_GROUP_SIZE.
+
+    Raises:
+        ValueError: If `group_size` is not in 1..MAX_GROUP_SIZE.
+    """
+    if not 1 <= group_size <= MAX_GROUP_SIZE:
+        msg = f"group size {group_size} outside 1..{MAX_GROUP_SIZE}"
+        raise ValueError(msg)
+
+
+def group_bits_py(data: BytesLike, group_size: int) -> list[int]:
     """Group input byte data into values of group_size bits each (MSB first).
 
     Returns:
         List of integer groups; the last entry is zero-padded if the
         bit count is not a multiple of `group_size`.
     """
+    check_group_size(group_size)
     total_bits = len(data) * 8
     if total_bits == 0:
         return []
@@ -59,6 +74,7 @@ def pack_groups_py(groups: list[int], group_size: int) -> bytes:
     Returns:
         Packed byte string of length `ceil(len(groups) * group_size / 8)`.
     """
+    check_group_size(group_size)
     if not groups:
         return b""
 
@@ -143,13 +159,9 @@ def emit_context_skip(output: bytearray, count: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _State(IntEnum):
-    MAIN = auto()
-    RUN = auto()
-    LITERAL = auto()
-    CONTEXT_SKIP = auto()
-    FINALIZE_LIT = auto()
-    DONE = auto()
+# Encoder states. Plain ints: IntEnum lookups and comparisons took about a
+# third of the pure-Python encoder's run time.
+_MAIN, _RUN, _LITERAL, _CONTEXT_SKIP, _FINALIZE_LIT, _DONE = range(6)
 
 
 class _ContextWindow3:
@@ -160,9 +172,6 @@ class _ContextWindow3:
     def __init__(self) -> None:
         self.prev1 = 0
         self.prev2 = 0
-
-    def store_first(self, w: int) -> None:
-        self.prev2 = w
 
     def shift_and_get_ref(self) -> int:
         old = self.prev1
@@ -180,9 +189,6 @@ class _ContextWindow5:
 
     def __init__(self) -> None:
         self.prev = [0, 0, 0, 0, 0]
-
-    def store_first(self, w: int) -> None:
-        self.prev[4] = w
 
     def shift_and_get_ref(self) -> int:
         p = self.prev
@@ -206,11 +212,6 @@ class SwRleConfig:
     emit_literal: Callable[[bytearray, list[int]], None]
     eof: int
     literal_overflow: int
-    # 10-bit M encoder (compress_encode_plane_m): the word that starts a
-    # context-predicted stretch is counted in the context skip rather than
-    # emitted as run(1) first, and a run break returns to MAIN instead of
-    # jumping straight into a context skip.
-    skip_counts_current: bool
 
 
 def _make_emit_run_nbit(value_bits: int) -> Callable[[bytearray, int, int], None]:
@@ -255,7 +256,6 @@ CONFIG_12BIT = SwRleConfig(
     emit_literal=_make_emit_literal_nbit(12),
     eof=0xFFFFFFFF,
     literal_overflow=0xFFF,
-    skip_counts_current=False,
 )
 
 CONFIG_20BIT = SwRleConfig(
@@ -264,7 +264,6 @@ CONFIG_20BIT = SwRleConfig(
     emit_literal=_make_emit_literal_nbit(20),
     eof=0xFFFFFFFF,
     literal_overflow=0x7FF,
-    skip_counts_current=False,
 )
 
 CONFIG_10BIT = SwRleConfig(
@@ -273,12 +272,18 @@ CONFIG_10BIT = SwRleConfig(
     emit_literal=_emit_literal_block_10bit,
     eof=0xFFFF,
     literal_overflow=0xFFF,
-    skip_counts_current=True,
 )
 
 
 def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
     """Sliding-window RLE encoder, parametrised by `SwRleConfig`.
+
+    Ports compress_encode_plane_narrow @ 08054228 (12-bit),
+    compress_encode_plane_wide @ 08051fd4 (20-bit) and
+    compress_encode_plane_m @ 080530f8 (10-bit), which share one state
+    machine. The word that starts a context-predicted stretch is counted
+    in the context skip, never emitted as a run of one first; only the
+    10-bit model's longer context lets that case occur.
 
     Returns:
         Encoded byte stream produced by the configured emit callbacks.
@@ -287,46 +292,36 @@ def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
     emit_run_fn = cfg.emit_run
     emit_literal_fn = cfg.emit_literal
     lit_overflow = cfg.literal_overflow
-    skip_counts_current = cfg.skip_counts_current
 
-    n = len(words)
     output = bytearray()
     ctx = cfg.make_context()
     match_count = 0
 
-    wi = 0
+    word_iter = iter(words)
     word_buf: list[int] = []
     run_len = 0
 
-    def read_word() -> int:
-        nonlocal wi
-        if wi >= n:
-            return eof
-        w = words[wi]
-        wi += 1
-        return w
-
-    w0 = read_word()
+    w0 = next(word_iter, eof)
     if w0 == eof:
         return b""
     word_buf = [w0]
-    ctx.store_first(w0)
+    ctx.store(w0)
 
     if w0 == 0:
         match_count = 1
 
-    state = _State.MAIN
+    state = _MAIN
     cur = w0
 
     while True:
-        if state == _State.MAIN:
+        if state == _MAIN:
             ref = ctx.shift_and_get_ref()
             word_buf = [cur]
             run_len = 1
 
-            w1 = read_word()
+            w1 = next(word_iter, eof)
             if w1 == eof:
-                state = _State.FINALIZE_LIT
+                state = _FINALIZE_LIT
                 continue
 
             if ref == w1:
@@ -337,26 +332,24 @@ def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
 
             if cur == w1:
                 run_len = 2
-                state = _State.RUN
+                state = _RUN
                 continue
 
             if match_count == 2:
-                if not skip_counts_current:
-                    emit_run_fn(output, cur, 1)
-                state = _State.CONTEXT_SKIP
+                state = _CONTEXT_SKIP
                 continue
 
             word_buf.append(w1)
             run_len = 2
-            state = _State.LITERAL
+            state = _LITERAL
             continue
 
-        if state == _State.RUN:
+        if state == _RUN:
             ref = ctx.shift_and_get_ref()
-            w = read_word()
+            w = next(word_iter, eof)
             if w == eof:
                 emit_run_fn(output, cur, run_len)
-                state = _State.DONE
+                state = _DONE
                 continue
             if ref == w:
                 match_count += 1
@@ -370,14 +363,14 @@ def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
             cur = w
             if match_count != 0:
                 match_count = 1
-            state = _State.MAIN
+            state = _MAIN
             continue
 
-        if state == _State.LITERAL:
+        if state == _LITERAL:
             ref = ctx.shift_and_get_ref()
-            w = read_word()
+            w = next(word_iter, eof)
             if w == eof:
-                state = _State.FINALIZE_LIT
+                state = _FINALIZE_LIT
                 continue
 
             if ref == w:
@@ -393,11 +386,7 @@ def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
                         emit_run_fn(output, word_buf[0], 1)
                     else:
                         emit_literal_fn(output, word_buf[:lit_n])
-                    state = _State.CONTEXT_SKIP
-                    continue
-                if not skip_counts_current:
-                    emit_run_fn(output, word_buf[0], 1)
-                state = _State.CONTEXT_SKIP
+                state = _CONTEXT_SKIP
                 continue
 
             if word_buf[-1] == w:
@@ -408,8 +397,7 @@ def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
                 cur = w
                 word_buf = [w]
                 run_len = 2
-                match_count = min(match_count, 2)
-                state = _State.RUN
+                state = _RUN
                 continue
 
             if run_len + 1 > lit_overflow:
@@ -421,52 +409,49 @@ def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
                 cur = w
                 word_buf = [word_buf[-1], w]
                 run_len = 2
-                match_count = min(match_count, 2)
-                state = _State.LITERAL
+                state = _LITERAL
                 continue
 
             word_buf.append(w)
             run_len += 1
             continue
 
-        if state == _State.CONTEXT_SKIP:
+        if state == _CONTEXT_SKIP:
             ref = ctx.shift_and_get_ref()
-            w = read_word()
+            w = next(word_iter, eof)
             if w == eof:
                 emit_context_skip(output, match_count)
-                state = _State.DONE
+                state = _DONE
                 continue
             ctx.store(w)
             if ref != w:
                 emit_context_skip(output, match_count)
                 match_count = 0
                 cur = w
-                state = _State.MAIN
+                state = _MAIN
                 continue
             match_count += 1
             continue
 
-        if state == _State.FINALIZE_LIT:
+        if state == _FINALIZE_LIT:
             if match_count < run_len:
                 lit_n = run_len - match_count
                 if lit_n == 1:
                     emit_run_fn(output, word_buf[0], 1)
                 else:
                     emit_literal_fn(output, word_buf[:lit_n])
-            elif not skip_counts_current:
-                emit_run_fn(output, word_buf[0], 1)
             if match_count > 0:
                 emit_context_skip(output, match_count)
-            state = _State.DONE
+            state = _DONE
             continue
 
-        if state == _State.DONE:
+        if state == _DONE:
             break
 
     return bytes(output)
 
 
-def finalize_compressed(output: bytes, data: bytes, word_bits: int) -> bytes:
+def finalize_compressed(output: bytes, data: BytesLike, word_bits: int) -> bytes:
     """Fall back to a raw dump if the compressed output exceeds raw + 0x14 bytes.
 
     Returns:
