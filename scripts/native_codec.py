@@ -3,6 +3,9 @@
 Loads the i386 ELF's PT_LOAD segments into Unicorn and calls a function
 with the cdecl convention, so self-contained routines of the original
 (no calls, no syscalls) can serve as a reference for their Python ports.
+The x87 control word starts as 0x37F, as Linux sets it for a process
+(64-bit precision, round to nearest); Unicorn's default of 0 rounds every
+FPU result to 24 bits and gives false mismatches.
 
     uv run --with unicorn python scripts/native_codec.py [N] [--cython]
 
@@ -10,6 +13,13 @@ compares `fine_encoder` against the binary on N random scanlines
 (default 2000) and prints the first mismatch per stage. With --cython it
 checks the native `_fine_fast` codec instead (build it first, see
 setup_cython.py).
+
+    uv run --with unicorn python scripts/native_codec.py N --saturation [--cython]
+
+compares `adjust_saturation_py` (with --cython the `_color_fast` kernel)
+against `compress_adjust_saturation` on N random pixels per saturation
+value -20..20, a third of them with two equal channels, where the x87
+rounding matters most.
 """
 
 import argparse
@@ -20,23 +30,26 @@ import sys
 from pathlib import Path
 
 from unicorn import UC_ARCH_X86, UC_MODE_32, UC_PROT_ALL, Uc
-from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_EIP, UC_X86_REG_ESP
+from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_EIP, UC_X86_REG_ESP, UC_X86_REG_FPCW
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode  # noqa: E402
+from brother_xl2hb.color.saturation import adjust_saturation_py  # noqa: E402
 
 BINARY = ROOT / ".brother-blobs/hl4150cdn/extracted/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
 
 RLE_PREENCODE = 0x08050F6C  # (src, dst, len) -> len in eax
 PATTERN_ENCODE = 0x0805139C  # (src, dst, len, char *checksum) -> len in eax
+ADJUST_SATURATION = 0x0804F698  # (short sat_mode, r, g, b, uint8_t *rgb_out)
 
 _STACK_TOP = 0x7FF00000
 _STACK_SIZE = 0x100000
 _SCRATCH = 0x60000000  # input, output and checksum buffers
 _SCRATCH_SIZE = 0x40000
 _RETURN = 0x5FFFF000  # return address; emulation stops when it gets there
+_X87_LINUX_CW = 0x37F  # all exceptions masked, 64-bit precision, round to nearest
 
 
 def _page(n: int, *, up: bool = False) -> int:
@@ -61,6 +74,7 @@ class NativeFilter:
         self.uc.mem_map(_STACK_TOP - _STACK_SIZE, _STACK_SIZE, UC_PROT_ALL)
         self.uc.mem_map(_SCRATCH, _SCRATCH_SIZE, UC_PROT_ALL)
         self.uc.mem_map(_RETURN, 0x1000, UC_PROT_ALL)
+        self.uc.reg_write(UC_X86_REG_FPCW, _X87_LINUX_CW)
 
     def call(self, addr: int, *args: int) -> int:
         """Call `addr` with 32-bit cdecl arguments and return eax."""
@@ -89,6 +103,11 @@ class NativeFilter:
         """Stage 2 of the Fine codec, as the binary computes it."""
         return self._run_codec(PATTERN_ENCODE, data, checksum=True)
 
+    def adjust_saturation(self, sat_mode: int, r: int, g: int, b: int) -> bytes:
+        """One pixel through `compress_adjust_saturation`, as the binary computes it."""
+        self.call(ADJUST_SATURATION, sat_mode & 0xFFFFFFFF, r, g, b, _SCRATCH)
+        return bytes(self.uc.mem_read(_SCRATCH, 3))
+
 
 def random_line(rng: random.Random, n: int = 2380) -> bytes:
     """A 4bpp scanline mixing white/black runs, saturated nibbles and noise."""
@@ -106,20 +125,60 @@ def random_line(rng: random.Random, n: int = 2380) -> bytes:
     return bytes(out[:n])
 
 
+def saturation_pixels(rng: random.Random, n: int) -> list[tuple[int, int, int]]:
+    """`n` random pixels, a third of them with two equal channels in a random position.
+
+    Returns:
+        The pixels as (r, g, b) tuples.
+    """
+    pixels = []
+    for i in range(n):
+        r, g, b = (rng.randrange(256) for _ in range(3))
+        pixels.append(rng.choice(((r, r, b), (r, b, r), (b, r, r))) if i % 3 == 0 else (r, g, b))
+    return pixels
+
+
+def fuzz_saturation(native: "NativeFilter", rng: random.Random, count: int, *, cython: bool) -> int:
+    """Compare saturation against the binary on `count` pixels per saturation value -20..20.
+
+    Returns:
+        The number of mismatching pixels.
+    """
+    adjust = adjust_saturation_py
+    if cython:
+        adjust = importlib.import_module("brother_xl2hb._native._color_fast").adjust_saturation
+    bad = 0
+    for sat_mode in range(-20, 21):
+        pixels = saturation_pixels(rng, count)
+        ours = adjust(bytes(c for px in pixels for c in px), count, sat_mode)
+        for i, px in enumerate(pixels):
+            theirs, mine = native.adjust_saturation(sat_mode, *px), ours[3 * i : 3 * i + 3]
+            if mine != theirs:
+                if not bad:
+                    print(f"saturation {sat_mode} differs on {px}: native {theirs.hex()}, ours {mine.hex()}")
+                bad += 1
+    print(f"saturation: {41 * count - bad} of {41 * count} pixels identical")
+    return bad
+
+
 def main() -> int:
-    """Fuzz both Fine codec stages against the binary."""
+    """Fuzz the Fine codec stages, or saturation, against the binary."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("count", nargs="?", type=int, default=2000, help="random scanlines to test (default 2000)")
-    parser.add_argument("--cython", action="store_true", help="test the _fine_fast codec instead of fine_encoder")
-    parser.add_argument("--seed", type=int, default=1, help="seed for the random scanlines (default 1)")
+    parser.add_argument("count", nargs="?", type=int, default=2000, help="random scanlines (or pixels) to test")
+    parser.add_argument("--cython", action="store_true", help="test the native kernel instead of the Python port")
+    parser.add_argument("--saturation", action="store_true", help="test saturation; count is pixels per value")
+    parser.add_argument("--seed", type=int, default=1, help="seed for the random data (default 1)")
+    parser.add_argument("--binary", type=Path, default=BINARY, help="brhl4150cdnfilter to run (default: %(default)s)")
     args = parser.parse_args()
     count = args.count
+    native = NativeFilter(args.binary)
+    rng = random.Random(args.seed)  # noqa: S311 - reproducible test data
+    if args.saturation:
+        return 1 if fuzz_saturation(native, rng, count, cython=args.cython) else 0
     rle_preencode, pattern_encode = compress_rle_preencode, compress_pattern_encode
     if args.cython:
         fast = importlib.import_module("brother_xl2hb._native._fine_fast")
         rle_preencode, pattern_encode = fast.rle_preencode, fast.pattern_encode
-    native = NativeFilter()
-    rng = random.Random(args.seed)  # noqa: S311 - reproducible test data
     bad = {"stage 1": 0, "stage 2": 0}
     for i in range(count):
         line = random_line(rng)
