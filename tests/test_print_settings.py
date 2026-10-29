@@ -10,15 +10,15 @@ import tempfile
 
 import pytest
 
-from pipeline import filter_page, filter_pages
-from settings import DuplexMode, PrintSettings
-from xl2hb import (
+from brother_xl2hb.protocol.xl2hb import (
     MEDIA_SIZE,
     MEDIA_TYPE_STRINGS,
     PAPER_SIZES,
     generate_pjl_header,
     get_image_dimensions,
 )
+from brother_xl2hb.render.pipeline import filter_page, filter_pages
+from brother_xl2hb.settings import DuplexMode, PrintSettings
 
 # ---------------------------------------------------------------------------
 # Default settings
@@ -322,9 +322,9 @@ class TestTonerSave:
 
         import numpy as np
 
-        from dither import dither_channel_1bpp_arr, load_dither_tables
+        from brother_xl2hb.color.dither import dither_channel_1bpp_arr, load_dither_tables
 
-        lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
+        lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
         width = 256
         # Mid-gray row: ink level ~127 (pixel brightness 128 -> ink 127)
         row = np.full(width, 128, dtype=np.uint8)

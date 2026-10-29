@@ -19,7 +19,7 @@ from typing import BinaryIO
 import numpy as np
 import numpy.typing as npt
 
-from ppm import read_ppm_header
+from brother_xl2hb.render.ppm import read_ppm_header
 
 _END_OF_PAGE = object()
 _END_OF_STREAM = object()

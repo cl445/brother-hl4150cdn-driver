@@ -10,11 +10,11 @@ from io import BytesIO
 
 import pytest
 
-from fixture_utils import assert_bytes_equal
-from xl2hb import (
+from brother_xl2hb.protocol.xl2hb import (
     XL2HBWriter,
     get_image_dimensions,
 )
+from fixture_utils import assert_bytes_equal
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,7 +163,7 @@ class TestUnknownMediaDefaults:
         """Unknown media size defaults to A4 (enum 2) and logs a warning."""
         buf = BytesIO()
         w = XL2HBWriter(buf)
-        with caplog.at_level(logging.WARNING, logger="xl2hb"):
+        with caplog.at_level(logging.WARNING, logger="brother_xl2hb.protocol.xl2hb"):
             w.write_begin_page(media_size="Folio")
         assert "Unknown media size" in caplog.text
         # A4 enum value is 0x02 — verify it appears in the output
@@ -174,7 +174,7 @@ class TestUnknownMediaDefaults:
         """Unknown media type defaults to 'dRegular' and logs a warning."""
         buf = BytesIO()
         w = XL2HBWriter(buf)
-        with caplog.at_level(logging.WARNING, logger="xl2hb"):
+        with caplog.at_level(logging.WARNING, logger="brother_xl2hb.protocol.xl2hb"):
             w.write_begin_page(media_type="Cardstock")
         assert "Unknown media type" in caplog.text
         assert b"dRegular" in buf.getvalue()

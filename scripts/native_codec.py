@@ -25,7 +25,7 @@ from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_EIP, UC_X86_REG_ESP
 ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
-from fine_encoder import compress_pattern_encode, compress_rle_preencode  # noqa: E402
+from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode  # noqa: E402
 
 BINARY = ROOT / ".brother-blobs/extracted/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
 
@@ -116,7 +116,7 @@ def main() -> int:
     count = args.count
     rle_preencode, pattern_encode = compress_rle_preencode, compress_pattern_encode
     if args.cython:
-        fast = importlib.import_module("_fine_fast")
+        fast = importlib.import_module("brother_xl2hb._native._fine_fast")
         rle_preencode, pattern_encode = fast.rle_preencode, fast.pattern_encode
     native = NativeFilter()
     rng = random.Random(args.seed)  # noqa: S311 - reproducible test data

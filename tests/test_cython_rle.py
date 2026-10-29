@@ -5,8 +5,8 @@ import importlib
 import numpy as np
 import pytest
 
-import rle as rle_module
-from rle import group_bits_py, pack_groups_py
+from brother_xl2hb.codec import rle as rle_module
+from brother_xl2hb.codec.rle import group_bits_py, pack_groups_py
 
 pytestmark = pytest.mark.skipif(
     not rle_module.HAS_CYTHON_RLE,
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def cy():
-    return importlib.import_module("_rle_fast")
+    return importlib.import_module("brother_xl2hb._native._rle_fast")
 
 
 @pytest.mark.parametrize("group_size", [10, 12, 20])

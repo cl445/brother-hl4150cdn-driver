@@ -1,25 +1,18 @@
-"""Helpers in the CUPS filter script (loaded from cups/brhl4150cdn-filter)."""
+"""Helpers in the CUPS filter (brother_xl2hb.cups_filter)."""
 
-import importlib.machinery
-import importlib.util
 from pathlib import Path
 
 import pytest
 
-_FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn-filter"
+from brother_xl2hb import cups_filter as cups_filter_module
 
 
 @pytest.fixture(scope="module")
 def cups_filter():
-    loader = importlib.machinery.SourceFileLoader("brhl4150cdn_filter", str(_FILTER))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+    return cups_filter_module
 
 
-_PPD = _FILTER.parent / "brhl4150cdn.ppd"
+_PPD = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn.ppd"
 
 
 def _ppd_paper_dimensions() -> dict[str, tuple[int, int]]:
@@ -35,7 +28,7 @@ def _ppd_paper_dimensions() -> dict[str, tuple[int, int]]:
 
 def test_paper_points_match_the_ppd(cups_filter):
     """Ghostscript renders the page at the size the PPD advertises, for every PageSize."""
-    from settings import PageSize
+    from brother_xl2hb.settings import PageSize
 
     ppd = _ppd_paper_dimensions()
     assert set(ppd) == {size.value for size in PageSize}

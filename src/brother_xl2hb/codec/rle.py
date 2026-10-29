@@ -69,7 +69,7 @@ def pack_groups_py(groups: list[int], group_size: int) -> bytes:
 
 
 try:
-    from _rle_fast import group_bits, pack_groups  # type: ignore[import-not-found]
+    from brother_xl2hb._native._rle_fast import group_bits, pack_groups  # type: ignore[import-not-found]
 
     HAS_CYTHON_RLE = True
 except ImportError:

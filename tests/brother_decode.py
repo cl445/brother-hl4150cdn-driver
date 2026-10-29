@@ -9,8 +9,8 @@ See rle.py and plane_encoders.py for the encoding format documentation.
 
 from math import ceil
 
-from rle import group_bits, pack_groups
-from xl2hb import BPL
+from brother_xl2hb.codec.rle import group_bits, pack_groups
+from brother_xl2hb.protocol.xl2hb import BPL
 
 
 def _read_count_ext(data: bytes, pos: int) -> tuple[int, int]:

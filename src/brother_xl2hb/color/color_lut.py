@@ -17,8 +17,10 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
+from brother_xl2hb.blobs import COLOR_DATA_DIR
+
 try:
-    from _color_fast import gather_kcmy, interp_kcmy  # type: ignore[import-not-found]
+    from brother_xl2hb._native._color_fast import gather_kcmy, interp_kcmy  # type: ignore[import-not-found]
 
     HAS_CYTHON_COLOR = True
 except ImportError:
@@ -27,7 +29,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Data directory containing extracted binary tables
-_DATA_DIR = Path(__file__).resolve().parent / "color_data"
+_DATA_DIR = COLOR_DATA_DIR
 
 # LUT dimensions
 _LUT_DIM = 17  # 17x17x17 grid
@@ -109,7 +111,7 @@ def _load_lut(table: ColorTable = DEFAULT_TABLE) -> npt.NDArray[np.int32]:
     """
     path = _DATA_DIR / f"{table.name}_lut.bin"
     if not path.exists():
-        from color_lut_gen import generate_rgb_default_lut, generate_srgb_default_lut
+        from brother_xl2hb.color.color_lut_gen import generate_rgb_default_lut, generate_srgb_default_lut
 
         if table.name not in ("rgb_default", "srgb_default"):
             logger.warning("LUT binary %s missing (run scripts/extract_blobs.sh); using a generated grid", path.name)
@@ -143,7 +145,7 @@ def _load_interp_tables() -> npt.NDArray[np.uint8]:
     path = _DATA_DIR / "interp_tables.bin"
     if not path.exists():
         logger.info("Interpolation tables binary not found, generating analytically")
-        from color_lut_gen import generate_interp_tables
+        from brother_xl2hb.color.color_lut_gen import generate_interp_tables
 
         return generate_interp_tables()
     data = path.read_bytes()

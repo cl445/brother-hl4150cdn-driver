@@ -7,10 +7,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
-from color_lut import INVERSE_LUT_DIR, write_inverse_luts
-from pipeline import chain_peeked, drop_blank_pages, filter_pages
-from ppm import read_ppm
-from settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
+from brother_xl2hb.color.color_lut import INVERSE_LUT_DIR, write_inverse_luts
+from brother_xl2hb.render.pipeline import chain_peeked, drop_blank_pages, filter_pages
+from brother_xl2hb.render.ppm import read_ppm
+from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 
 logger = logging.getLogger(__name__)
 

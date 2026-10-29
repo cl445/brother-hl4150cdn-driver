@@ -9,7 +9,7 @@ import struct
 
 import pytest
 
-from xl2hb import (
+from brother_xl2hb.protocol.xl2hb import (
     BPL,
     FLUSH_ORDER,
     PLANE_BUF_FLUSH_THRESH,

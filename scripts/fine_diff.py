@@ -43,12 +43,12 @@ import numpy.typing as npt
 ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
-import pipeline  # noqa: E402
 from brother_decode import decode_fine_plane  # noqa: E402
+from brother_xl2hb.codec.fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
+from brother_xl2hb.protocol.xl2hb import PAPER_SIZES  # noqa: E402
+from brother_xl2hb.render import pipeline  # noqa: E402
+from brother_xl2hb.settings import PrintSettings, Resolution  # noqa: E402
 from extract_fixtures import PLANE_NAMES, parse_xl2hb_capture  # noqa: E402
-from fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
-from settings import PrintSettings, Resolution  # noqa: E402
-from xl2hb import PAPER_SIZES  # noqa: E402
 
 BROTHER_DIR = ROOT / ".brother-blobs" / "extracted" / "usr" / "local" / "Brother"
 RC_TEMPLATE = BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "brhl4150cdnrc"

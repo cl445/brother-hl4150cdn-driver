@@ -18,9 +18,9 @@ from brother_decode import (
     decode_rle,
     decode_rle_10bit,
 )
-from fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane
-from plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
-from rle import (
+from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane
+from brother_xl2hb.codec.plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
+from brother_xl2hb.codec.rle import (
     CONFIG_10BIT,
     CONFIG_12BIT,
     CONFIG_20BIT,
@@ -30,7 +30,7 @@ from rle import (
     pack_groups,
     sw_rle_encode,
 )
-from xl2hb import BPL
+from brother_xl2hb.protocol.xl2hb import BPL
 
 # ---------------------------------------------------------------------------
 # K-plane: 12-bit read, 12-bit RLE

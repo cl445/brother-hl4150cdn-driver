@@ -10,11 +10,20 @@ import struct
 import numpy as np
 import pytest
 
+from brother_xl2hb.protocol.xl2hb import PAPER_SIZES
+from brother_xl2hb.render.pipeline import drop_blank_pages, filter_page, filter_pages
+from brother_xl2hb.render.ppm import read_ppm
+from brother_xl2hb.settings import (
+    ColorMatching,
+    DuplexMode,
+    InputSlot,
+    MediaType,
+    MonoColor,
+    PageSize,
+    PrintSettings,
+    Resolution,
+)
 from fixture_utils import assert_matches_fixture, read_fixture
-from pipeline import drop_blank_pages, filter_page, filter_pages
-from ppm import read_ppm
-from settings import ColorMatching, DuplexMode, InputSlot, MediaType, MonoColor, PageSize, PrintSettings, Resolution
-from xl2hb import PAPER_SIZES
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -9,8 +9,8 @@ import struct
 
 import pytest
 
+from brother_xl2hb.protocol.xl2hb import BPL, PLANE_BUF_FLUSH_THRESH, PLANE_BUF_INIT_FREE, PLANE_PARAMS, PlaneBuffer
 from fixture_utils import capture_block_params
-from xl2hb import BPL, PLANE_BUF_FLUSH_THRESH, PLANE_BUF_INIT_FREE, PLANE_PARAMS, PlaneBuffer
 
 BLOCK_PARAMS = capture_block_params()
 

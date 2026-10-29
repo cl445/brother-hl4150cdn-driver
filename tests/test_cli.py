@@ -1,14 +1,14 @@
-"""Tests for the command-line entry point (src/cli.py)."""
+"""Tests for the command-line entry point (brother_xl2hb.cli)."""
 
 import io
 import sys
 
 import pytest
 
-import cli
+from brother_xl2hb import cli
+from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.settings import PrintSettings
 from fixture_utils import assert_matches_fixture
-from pipeline import filter_pages
-from settings import PrintSettings
 
 
 class _Stdio:

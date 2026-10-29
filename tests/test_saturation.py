@@ -1,6 +1,6 @@
 """Tests for saturation adjustment (compress_adjust_saturation reimplementation)."""
 
-from saturation import adjust_saturation
+from brother_xl2hb.color.saturation import adjust_saturation
 
 
 def _pixel(r: int, g: int, b: int) -> bytes:

@@ -11,6 +11,8 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 # Installation paths
 LIB_DIR="/usr/local/lib/brhl4150cdn"
 VENV_DIR="$LIB_DIR/.venv"
+PKG_SRC="$REPO_ROOT/src/brother_xl2hb"
+PKG_DIR="$LIB_DIR/brother_xl2hb"
 
 # CUPS paths (Linux). macOS is not supported: its CUPS only runs filters from
 # /usr/libexec/cups/filter and ships PPDs under /usr/share/cups/model, both on
@@ -91,23 +93,18 @@ fi
 echo "Installing library files to $LIB_DIR..."
 mkdir -p "$LIB_DIR"
 
-# Copy Python source files (all modules in src/)
-cp "$REPO_ROOT/src/"*.py "$LIB_DIR/"
-# Modules removed from src/ after 1.2.0
-rm -f "$LIB_DIR/brfilter.py" "$LIB_DIR/brother_encode.py"
+# Replace the previous installation; up to 1.2.0 the modules and data sat
+# flat in $LIB_DIR. The inverse LUTs are recomputed below anyway.
+rm -rf "$PKG_DIR" "$LIB_DIR/color_data" "$LIB_DIR/lut" "$LIB_DIR/__pycache__"
+rm -f "$LIB_DIR/"*.py "$LIB_DIR/"_*_fast*.so
 
-# Copy color data
-mkdir -p "$LIB_DIR/color_data"
-cp "$REPO_ROOT/src/color_data/"*.bin "$LIB_DIR/color_data/"
+# Copy the package with the tables extract_blobs.sh put into it
+cp -R "$PKG_SRC" "$PKG_DIR"
+find "$PKG_DIR" \( -name __pycache__ -o -name '*.so' -o -name '*.c' -o -name 'inverse_lut_*.npy' \) -prune -exec rm -rf {} +
+mkdir -p "$PKG_DIR/color_data"
 
-# Copy BRCD LUT files (extracted by scripts/extract_blobs.sh into src/lut/)
-LUT_SRC="$REPO_ROOT/src/lut"
-if [[ -d "$LUT_SRC" ]] && compgen -G "$LUT_SRC/*.bin" >/dev/null; then
-    echo "Installing BRCD dither tables..."
-    mkdir -p "$LIB_DIR/lut"
-    cp "$LUT_SRC/"*.bin "$LIB_DIR/lut/"
-else
-    echo "Warning: BRCD LUT files not found at $LUT_SRC"
+if ! compgen -G "$PKG_DIR/lut/*.bin" >/dev/null; then
+    echo "Warning: BRCD LUT files not found in $PKG_SRC/lut"
     echo "  Run scripts/extract_blobs.sh to fetch them from Brother's LPR package."
     echo "  The driver will fall back to built-in Bayer dithering otherwise."
 fi
@@ -123,7 +120,7 @@ python3 -m venv "$VENV_DIR"
 # computed from; LUTs from older grids (e.g. before extract_blobs.sh) are
 # removed here and ignored by the filter.
 echo "Precomputing inverse color LUTs (takes about four minutes on a Pi 3)..."
-if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" cli.py --precompute-lut); then
+if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" -m brother_xl2hb.cli --precompute-lut); then
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
 fi
 
@@ -134,14 +131,15 @@ fi
 # fallback otherwise.
 echo "Building Cython acceleration..."
 BUILD_DIR="$(mktemp -d)"
-mkdir -p "$BUILD_DIR/src"
+NATIVE_BUILD="$BUILD_DIR/src/brother_xl2hb/_native"
+mkdir -p "$NATIVE_BUILD"
 cp "$REPO_ROOT/setup_cython.py" "$BUILD_DIR/"
-cp "$REPO_ROOT/src/"_*_fast.pyx "$BUILD_DIR/src/"
-cp "$REPO_ROOT/src/"_*_fast.pxd "$BUILD_DIR/src/"
+cp "$PKG_SRC/__init__.py" "$BUILD_DIR/src/brother_xl2hb/"
+cp "$PKG_SRC/_native/"*.py "$PKG_SRC/_native/"*.pyx "$PKG_SRC/_native/"*.pxd "$NATIVE_BUILD/"
 if "$VENV_DIR/bin/pip" install --quiet cython setuptools \
     && (cd "$BUILD_DIR" && "$VENV_DIR/bin/python3" setup_cython.py build_ext --inplace >/dev/null) \
-    && compgen -G "$BUILD_DIR/src/_*_fast*.so" >/dev/null; then
-    cp "$BUILD_DIR/src/"_*_fast*.so "$LIB_DIR/"
+    && compgen -G "$NATIVE_BUILD/_*_fast*.so" >/dev/null; then
+    cp "$NATIVE_BUILD/"_*_fast*.so "$PKG_DIR/_native/"
     echo "  Cython extensions installed."
 else
     echo "Warning: Cython build failed (missing compiler or python3-dev?); using pure-Python fallbacks."
@@ -171,7 +169,7 @@ chmod 644 "$LIB_DIR/brhl4150cdn-filter.py"
 
 # Precompile bytecode: the CUPS filter user cannot write __pycache__ here,
 # so without this every job recompiles all modules.
-"$VENV_DIR/bin/python3" -m compileall -q "$LIB_DIR"/*.py
+"$VENV_DIR/bin/python3" -m compileall -q "$PKG_DIR" "$LIB_DIR/brhl4150cdn-filter.py"
 
 # Install PPD
 echo "Installing PPD to $CUPS_PPD_DIR..."

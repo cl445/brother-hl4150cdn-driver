@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# extract_blobs.sh - Pull Brother HL-4150CDN calibration tables into src/.
+# extract_blobs.sh - Pull Brother HL-4150CDN calibration tables into src/brother_xl2hb/.
 #
 # The driver needs the printer's calibration tables (colour LUTs and dither
 # tables) to drive the hardware. Those tables ship inside the official
 # Brother LPR driver and are not redistributed here — this script downloads the
-# `.deb`, verifies its MD5, and copies the tables into src/lut/ and
-# src/color_data/. Both directories are gitignored.
+# `.deb`, verifies its MD5, and copies the tables into src/brother_xl2hb/lut/
+# and src/brother_xl2hb/color_data/. Both directories are gitignored.
 #
 # Usage:  ./scripts/extract_blobs.sh
 #         (re-runs are idempotent; use --force to redownload)
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-LUT_DIR="$REPO_DIR/src/lut"
-COLOR_DATA_DIR="$REPO_DIR/src/color_data"
+LUT_DIR="$REPO_DIR/src/brother_xl2hb/lut"
+COLOR_DATA_DIR="$REPO_DIR/src/brother_xl2hb/color_data"
 WORK_DIR="$REPO_DIR/.brother-blobs"
 
 DEB_URL="https://download.brother.com/welcome/dlf005940/hl4150cdnlpr-1.1.1-5.i386.deb"
@@ -106,7 +106,7 @@ if [[ ! -d "$src_lut" ]]; then
 fi
 cp "$src_lut"/*.bin "$LUT_DIR/"
 lut_count=$(find "$LUT_DIR" -maxdepth 1 -name '*.bin' | wc -l | tr -d ' ')
-echo "[3/4] Copied $lut_count BRCD dither tables → src/lut/"
+echo "[3/4] Copied $lut_count BRCD dither tables → src/brother_xl2hb/lut/"
 
 # --- 4. Extract calibration blobs from the ELF binary ----------------------
 
@@ -146,7 +146,7 @@ if [[ "$actual_interp_size" != "$expected_interp_size" ]]; then
 fi
 
 total_blobs=$((${#BIN_BLOBS[@]} + 1))
-echo "[4/4] Extracted $total_blobs calibration blobs → src/color_data/"
+echo "[4/4] Extracted $total_blobs calibration blobs → src/brother_xl2hb/color_data/"
 
 echo ""
 echo "Done. The driver can now reproduce byte-identical Brother output."

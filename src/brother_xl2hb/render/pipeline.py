@@ -13,32 +13,28 @@ from collections import deque
 from collections.abc import Buffer, Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import cache, partial
-from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 
-import color_lut
-from dither import DitherChannel, dither_channel_1bpp_arr, dither_channel_4bpp_arr, load_dither_tables
-from fine_encoder import encode_fine_plane
-from plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
-from saturation import adjust_saturation
-from settings import (
-    DUPLEX_MAP,
-    MEDIA_SOURCE,
-    DuplexMode,
-    ImproveOutput,
-    MonoColor,
-    PrintSettings,
-    Resolution,
+from brother_xl2hb.blobs import LUT_DIR
+from brother_xl2hb.codec.fine_encoder import encode_fine_plane
+from brother_xl2hb.codec.plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
+from brother_xl2hb.color import color_lut
+from brother_xl2hb.color.dither import (
+    DitherChannel,
+    dither_channel_1bpp_arr,
+    dither_channel_4bpp_arr,
+    load_dither_tables,
 )
-from transforms import (
+from brother_xl2hb.color.saturation import adjust_saturation
+from brother_xl2hb.color.transforms import (
     apply_input_remap_rgb,
     build_input_remap_lut,
     color_table,
 )
-from xl2hb import (
+from brother_xl2hb.protocol.xl2hb import (
     FLUSH_ORDER,
     PAPER_SIZES,
     PlaneBuffer,
@@ -48,16 +44,25 @@ from xl2hb import (
     get_image_dimensions,
     get_image_dimensions_fine,
 )
+from brother_xl2hb.settings import (
+    DUPLEX_MAP,
+    MEDIA_SOURCE,
+    DuplexMode,
+    ImproveOutput,
+    MonoColor,
+    PrintSettings,
+    Resolution,
+)
 
 try:
-    from _band_fast import render_band  # type: ignore[import-not-found]
+    from brother_xl2hb._native._band_fast import render_band  # type: ignore[import-not-found]
 
     HAS_BAND_KERNEL = True
 except ImportError:
     HAS_BAND_KERNEL = False
 
 try:
-    from _fine_fast import render_band_fine  # type: ignore[import-not-found]
+    from brother_xl2hb._native._fine_fast import render_band_fine  # type: ignore[import-not-found]
 
     HAS_FINE_BAND_KERNEL = True
 except ImportError:
@@ -687,8 +692,8 @@ def _render_page(
 def _init_channels(settings: PrintSettings) -> dict[str, DitherChannel]:
     """Initialize dither channels for the current print settings.
 
-    The BRCD tables are read from the `lut/` directory next to this module
-    (`src/lut/` in the repository, the lib directory when installed).
+    The BRCD tables are read from `blobs.LUT_DIR` (`lut/` inside the
+    package, in the repository and when installed).
     `load_dither_tables` handles the fine→normal fallback and the Bayer
     fallback when no BRCD set matches.
 
@@ -696,7 +701,7 @@ def _init_channels(settings: PrintSettings) -> dict[str, DitherChannel]:
         Channel dict keyed by 'K', 'C', 'M', 'Y'.
     """
     return load_dither_tables(
-        str(Path(__file__).resolve().parent / "lut"),
+        str(LUT_DIR),
         fine=settings.resolution == Resolution.FINE,
         toner_save=settings.toner_save,
     )

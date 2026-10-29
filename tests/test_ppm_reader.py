@@ -8,7 +8,7 @@ import io
 
 import pytest
 
-from ppm import read_ppm
+from brother_xl2hb.render.ppm import read_ppm
 
 
 def _make_ppm(width: int, height: int, maxval: int = 255, pixels: bytes | None = None) -> bytes:

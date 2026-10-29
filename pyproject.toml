@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "brother-hl4150cdn-driver"
 version = "1.2.0"
@@ -22,9 +26,15 @@ dependencies = [
     "numpy>=2.5.3",
 ]
 
+[project.scripts]
+brother-xl2hb = "brother_xl2hb.cli:main"
+
 [project.optional-dependencies]
 test = ["pytest>=9.1.1", "pytest-cov>=7.1", "zstandard>=0.23"]
 dev = ["ruff>=0.16.8", "nox>=2026.8.17", "pyrefly>=1.3.1", "deptry>=0.21"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -115,8 +125,8 @@ ignore = [
     "SLF",     # tests legitimately poke private caches for isolation
     "DOC",     # Returns/Raises sections not required in tests
 ]
-"src/xl2hb.py" = ["FBT001", "FBT002"]  # boolean params map PJL options naturally
-"src/color_lut.py" = ["PLC0415"]   # local import keeps the parametric fallback generator out of the hot path
+"src/brother_xl2hb/protocol/xl2hb.py" = ["FBT001", "FBT002"]  # boolean params map PJL options naturally
+"src/brother_xl2hb/color/color_lut.py" = ["PLC0415"]   # local import keeps the parametric fallback generator out of the hot path
 "noxfile.py" = [
     "A001",    # format() shadows builtin - standard nox convention
 ]
@@ -150,13 +160,9 @@ exclude_lines = [
 ]
 
 [tool.deptry]
-# `pythonpath = ["src", "tests"]` makes these flat imports — they're first-party.
+# `pythonpath = ["src", "tests"]` makes these imports first-party.
 known_first_party = [
-    "cli", "color_lut", "color_lut_gen",
-    "dither", "fine_encoder", "page_stream", "pipeline", "plane_encoders", "ppm",
-    "rle", "saturation", "settings", "transforms", "xl2hb",
-    # Optional Cython modules built by setup_cython.py (pure-Python fallback).
-    "_band_fast", "_color_fast", "_dither_fast", "_fine_fast", "_rle_fast",
+    "brother_xl2hb",
     # Test helpers and harness scripts the RE scripts import from tests/ and scripts/.
     "brother_decode", "extract_fixtures", "fine_diff",
 ]

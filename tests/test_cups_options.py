@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from settings import (
+from brother_xl2hb.settings import (
     ColorMatching,
     DuplexMode,
     ImproveOutput,

@@ -4,8 +4,8 @@ dist/
 *.egg-info/
 
 # Cython-generated outputs (the .pyx is the source of truth)
-src/_*_fast.c
-src/*.so
+src/brother_xl2hb/_native/*.c
+src/brother_xl2hb/_native/*.so
 
 # Python
 __pycache__/
@@ -34,8 +34,8 @@ Thumbs.db
 # Not redistributed; the script downloads the official Brother driver and
 # extracts them locally so the user keeps Brother's calibration tables
 # under Brother's license (EU 2009/24/EC Art. 6 — interoperability).
-src/lut/
-src/color_data/
+src/brother_xl2hb/lut/
+src/brother_xl2hb/color_data/
 .brother-blobs/
 # Local code-intelligence / agent tooling — not part of the released project
 .gitnexus/

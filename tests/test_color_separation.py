@@ -8,10 +8,10 @@ tests/test_full_pipeline.py.
 
 import pytest
 
-from color_lut import ColorTable, rgb_to_cmyk_lut
-from dither import dither_channel_1bpp
-from settings import ColorMatching, MediaType, PrintSettings
-from transforms import color_table
+from brother_xl2hb.color.color_lut import ColorTable, rgb_to_cmyk_lut
+from brother_xl2hb.color.dither import dither_channel_1bpp
+from brother_xl2hb.color.transforms import color_table
+from brother_xl2hb.settings import ColorMatching, MediaType, PrintSettings
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,9 +68,9 @@ class TestOrderedDithering:
         """The driver loads dither matrices from BRCD cache files."""
         from pathlib import Path
 
-        from dither import load_brcd_tables
+        from brother_xl2hb.color.dither import load_brcd_tables
 
-        lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "lut")
+        lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
         if not (Path(lut_dir) / "0600-k_cache09.bin").exists():
             pytest.skip("Original BRCD files not available")
         channels = load_brcd_tables(lut_dir)
