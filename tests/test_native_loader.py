@@ -102,3 +102,7 @@ def test_stale_extensions(tmp_path) -> None:
     assert stale_extensions(tmp_path) == []
     at("_band_fast.pyx", 4000)
     assert stale_extensions(tmp_path) == [band]
+    # An old generic build beside the one Python imports does not count.
+    at(band, 5000)
+    at(f"_band_fast{EXTENSION_SUFFIXES[-1]}", 500)
+    assert stale_extensions(tmp_path) == []

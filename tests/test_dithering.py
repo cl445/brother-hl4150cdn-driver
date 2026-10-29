@@ -653,6 +653,21 @@ class TestBayerFallbackWarning:
         assert "Normal-mode tables 0600-*_cache09.bin" in message
         assert f"scripts/extract_blobs.sh {HL4150CDN.key}" in message
 
+    def test_partial_set_names_the_missing_files(self, tmp_path, caplog):
+        from brother_xl2hb.color.dither import load_dither_tables
+
+        lut_dir = HL4150CDN.lut_dir
+        if not (lut_dir / "0600-k_cache09.bin").exists():
+            pytest.skip("BRCD blobs not extracted")
+        model_dir = tmp_path / HL4150CDN.key
+        model_dir.mkdir()
+        for name in ("0600-k_cache09.bin", "0600-m_cache09.bin"):
+            (model_dir / name).symlink_to(lut_dir / name)
+        with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
+            load_dither_tables(str(model_dir), cache=HL4150CDN.dither_cache)
+        [warning] = self._fallback_warnings(caplog)
+        assert "Dither tables 0600-c_cache09.bin, 0600-y_cache09.bin missing" in warning.getMessage()
+
     def test_present_tables_do_not_warn(self, caplog):
 
         from brother_xl2hb.color.dither import load_dither_tables

@@ -21,7 +21,8 @@ def stale_extensions(native_dir: Path = _NATIVE_DIR) -> list[str]:
     The sources of `_x` are `_x.pyx`, `_x.pxd` and the `.pxd` of every
     module it cimports from `_native`. The tests would otherwise check an
     old build against the pure-Python reference and miss what the `.pyx`
-    now does.
+    now does. Only the file Python imports counts: the first one in
+    `EXTENSION_SUFFIXES` order.
 
     Returns:
         File names of the stale extensions.
@@ -31,10 +32,11 @@ def stale_extensions(native_dir: Path = _NATIVE_DIR) -> list[str]:
         names = {pyx.stem, *_CIMPORT.findall(pyx.read_text())}
         sources = [pyx, *(native_dir / f"{name}.pxd" for name in names)]
         source_mtime = max(path.stat().st_mtime for path in sources if path.exists())
-        for suffix in EXTENSION_SUFFIXES:
-            built = pyx.with_name(pyx.stem + suffix)
-            if built.exists() and built.stat().st_mtime < source_mtime:
-                stale.append(built.name)
+        built = next(
+            (path for suffix in EXTENSION_SUFFIXES if (path := pyx.with_name(pyx.stem + suffix)).exists()), None
+        )
+        if built is not None and built.stat().st_mtime < source_mtime:
+            stale.append(built.name)
     return stale
 
 

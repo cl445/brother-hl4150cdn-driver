@@ -232,12 +232,10 @@ def load_brcd_tables(
         Channel dict keyed by 'K', 'C', 'M', 'Y', or None if any
         expected file is missing.
     """
-    prefix = _BRCD_PREFIX[fine]
-    suffix = _BRCD_SUFFIX[toner_save]
     lut_path = Path(lut_dir)
     channels: dict[str, DitherChannel] = {}
     for ch in "KCMY":
-        fpath = lut_path / f"{prefix}-{ch.lower()}{suffix}_{cache}.bin"
+        fpath = lut_path / _brcd_name(ch, cache, fine=fine, toner_save=toner_save)
         if not fpath.exists():
             logger.debug("BRCD file not found: %s", fpath)
             return None
@@ -274,13 +272,22 @@ def _build_bayer_tables(*, toner_save: bool, width: int = 32, height: int = 32) 
 _fallback_warned: set[tuple[str, str, bool, bool]] = set()
 
 
+def _brcd_name(channel: str, cache: str, *, fine: bool, toner_save: bool) -> str:
+    """File name of one channel's BRCD table, e.g. `capt-k-TS_cache09.bin`.
+
+    Returns:
+        The file name.
+    """
+    return f"{_BRCD_PREFIX[fine]}-{channel.lower()}{_BRCD_SUFFIX[toner_save]}_{cache}.bin"
+
+
 def _brcd_pattern(cache: str, *, fine: bool, toner_save: bool) -> str:
     """File name pattern of a BRCD set, e.g. `capt-*-TS_cache09.bin`.
 
     Returns:
         The pattern, `*` standing for the channel letter.
     """
-    return f"{_BRCD_PREFIX[fine]}-*{_BRCD_SUFFIX[toner_save]}_{cache}.bin"
+    return _brcd_name("*", cache, fine=fine, toner_save=toner_save)
 
 
 def _warn_fallback(lut_dir: str, *, cache: str, fine: bool, toner_save: bool, stand_in: str) -> None:
@@ -292,10 +299,12 @@ def _warn_fallback(lut_dir: str, *, cache: str, fine: bool, toner_save: bool, st
     if key in _fallback_warned:
         return
     _fallback_warned.add(key)
+    names = [_brcd_name(ch, cache, fine=fine, toner_save=toner_save) for ch in "KCMY"]
+    missing = [name for name in names if not (Path(lut_dir) / name).exists()]
     logger.warning(
         "Dither tables %s missing in %s (run scripts/extract_blobs.sh %s); "
         "using %s, output will differ from the original driver",
-        _brcd_pattern(cache, fine=fine, toner_save=toner_save),
+        _brcd_pattern(cache, fine=fine, toner_save=toner_save) if len(missing) == len(names) else ", ".join(missing),
         lut_dir,
         Path(lut_dir).name,
         stand_in,
