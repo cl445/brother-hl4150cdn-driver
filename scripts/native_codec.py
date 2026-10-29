@@ -19,8 +19,8 @@ import struct
 import sys
 from pathlib import Path
 
-from unicorn import UC_ARCH_X86, UC_MODE_32, UC_PROT_ALL, Uc
-from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_EIP, UC_X86_REG_ESP
+from unicorn import UC_ARCH_X86, UC_MODE_32, UC_PROT_ALL, Uc  # type: ignore[import-not-found]
+from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_EIP, UC_X86_REG_ESP  # type: ignore[import-not-found]
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
