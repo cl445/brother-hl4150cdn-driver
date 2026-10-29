@@ -181,8 +181,8 @@ extend_exclude = ["noxfile\\.py", "setup_cython\\.py"]
 
 [tool.pyrefly]
 python-version = "3.13"
-search-path = ["src", "tests"]
-project-includes = ["src/**/*.py", "tests/**/*.py", "noxfile.py", "cups/brhl4150cdn-filter"]
+search-path = ["src", "tests", "scripts"]
+project-includes = ["src/**/*.py", "tests/**/*.py", "scripts/**/*.py", "noxfile.py", "cups/brhl4150cdn-filter"]
 project-excludes = [".venv/**", ".nox/**", "__pycache__/**"]
 untyped-def-behavior = "check-and-infer-return-type"
 strict-callable-subtyping = true

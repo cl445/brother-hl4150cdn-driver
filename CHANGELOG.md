@@ -59,6 +59,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
   repeats the last word after the flush. A scanline has at most about 425
   words, so printed output does not change (#3).
+- Grayscale (BRMonoColor=Mono) ignores the Red, Green and Blue keys and
+  keeps Brightness and Contrast with BRColorMatching=None, as the
+  original does.
 
 ## [1.2.0] — 2026-10-28
 

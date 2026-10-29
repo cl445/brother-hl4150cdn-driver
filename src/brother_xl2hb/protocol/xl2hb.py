@@ -322,17 +322,17 @@ class PlaneBuffer:
         """
         return self.free_space < PLANE_BUF_FLUSH_THRESH
 
-    def append_scanline(self, compressed: bytes, line_idx: int = -1) -> None:
-        """Add a scanline entry if compressed data is non-empty.
+    def append_scanline(self, compressed: bytes, line_idx: int) -> None:
+        """Add the entry of scanline `line_idx` if its compressed data is non-empty.
 
         Empty compressed data (all-zero scanline) is skipped — the driver
-        only emits entries for lines that have actual data.
+        only emits entries for lines that have actual data. The first entry
+        after a reset sets the block's start line.
         """
         if not compressed:
             return
         if self._first:
-            if line_idx >= 0:
-                self.start_line = line_idx
+            self.start_line = line_idx
             self._first = False
         comp_len = len(compressed)
         # Leading size (big-endian)
@@ -415,14 +415,14 @@ class XL2HBWriter:
         """Emit the XL2HB stream identifier line."""
         self.out.write(self.STREAM_HEADER)
 
-    def write_begin_session(self, y_resolution: int = 600) -> None:
-        """Emit BeginSession with inch units.
+    def write_begin_session(self) -> None:
+        """Emit BeginSession with inch units at 600 x 600 units per inch.
 
-        Args:
-            y_resolution: Vertical resolution in dpi. 600 for Normal, 1200 for Fine.
+        Fine mode sends the same units; its higher resolution is in the
+        BeginImage band configuration, not in the session.
         """
         emit_ubyte_attr(self.buf, 0, ATTR_MEASURE)  # eInch
-        emit_uint16_xy_attr(self.buf, 600, y_resolution, ATTR_UNITS_PER_MEASURE)
+        emit_uint16_xy_attr(self.buf, 600, 600, ATTR_UNITS_PER_MEASURE)
         emit_opcode(self.buf, OP_BEGIN_SESSION)
         self._flush()
 
@@ -435,22 +435,24 @@ class XL2HBWriter:
 
     def write_begin_page(
         self,
-        media_size: int | bytes = 2,
-        media_source: int = 1,
+        *,
+        media_size: int | bytes,
+        media_source: int,
+        media_type: bytes,
         orientation: int = 0,
-        media_type: bytes = b"dRegular",
         duplex_mode: int | None = None,
         back_side_marker: bool = False,
     ) -> None:
         """Emit BeginPage with media size, source, type, and simplex/duplex mode.
 
-        `media_size` is a PCL XL media-size enum value or a name string and
-        `media_type` the MediaType string, as the model writes them (see
-        `models.hl4150cdn.media_size_code` / `media_type_code`); the
-        defaults are A4 and plain paper. `duplex_mode` None writes
-        SimplexPageMode=0; otherwise DuplexPageMode carries the value (0x00
-        long edge, 0x81 short edge, as Brother's filter). `back_side_marker`
-        prefixes the long-edge back-page marker attribute.
+        `media_size` is a PCL XL media-size enum value or a name string,
+        `media_source` the tray code and `media_type` the MediaType string,
+        as the model writes them (see `PrinterModel.media_size_code`,
+        `PrinterModel.media_source` and `PrinterModel.media_type_code`).
+        `duplex_mode` None writes SimplexPageMode=0; otherwise DuplexPageMode
+        carries the value (0x00 long edge, 0x81 short edge, as Brother's
+        filter). `back_side_marker` prefixes the long-edge back-page marker
+        attribute.
         """
         if back_side_marker:
             emit_ubyte_attr(self.buf, DUPLEX_BACK_SIDE_MARKER, ATTR_DUPLEX_BACK_SIDE)
@@ -482,15 +484,12 @@ class XL2HBWriter:
         source_width: int,
         source_height: int,
         copies: int = 1,
-        dest_width: int | None = None,
-        dest_height: int | None = None,
         fine: bool = False,
         color: bool = True,
     ) -> None:
         """Emit BeginImage with dimensions, band config, and copy count.
 
-        dest_width/dest_height override the physical output size (in session units).
-        When None, they default to source dimensions (correct for 600 dpi).
+        The destination size equals the source size, in Fine mode too.
         For Fine mode, uses build_band_config_fine() and Fine dimensions.
         `color` False marks a grayscale (K-only) image.
         """
@@ -499,9 +498,7 @@ class XL2HBWriter:
         emit_ubyte_attr(self.buf, color_depth, ATTR_COLOR_DEPTH)
         emit_uint16_attr(self.buf, source_width, ATTR_SOURCE_WIDTH)
         emit_uint16_attr(self.buf, source_height, ATTR_SOURCE_HEIGHT)
-        dw = dest_width if dest_width is not None else source_width
-        dh = dest_height if dest_height is not None else source_height
-        emit_uint16_xy_attr(self.buf, dw, dh, ATTR_DESTINATION_SIZE)
+        emit_uint16_xy_attr(self.buf, source_width, source_height, ATTR_DESTINATION_SIZE)
         band_config = build_band_config_fine(color=color) if fine else build_band_config(color=color)
         emit_uint16_array_attr(self.buf, band_config, ATTR_COLOR_TREATMENT)
         emit_uint16_attr(self.buf, copies, ATTR_PAGE_COPIES)
