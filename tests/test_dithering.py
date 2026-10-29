@@ -11,6 +11,8 @@ output, one channel at a time.
 
 import pytest
 
+from brother_xl2hb.models.hl4150cdn import DITHER_CACHE
+
 # ---------------------------------------------------------------------------
 # Dither module API
 # ---------------------------------------------------------------------------
@@ -254,7 +256,7 @@ class TestBRCDTables:
         """Bayer matrix fallback produces valid dither tables."""
         from brother_xl2hb.color.dither import load_dither_tables
 
-        channels = load_dither_tables()
+        channels = load_dither_tables(cache=DITHER_CACHE)
         assert "K" in channels
         assert "C" in channels
         assert "M" in channels
@@ -303,7 +305,7 @@ class TestCaptureVerification:
         assert ppm is not None, "test_fullwidth_k.ppm is malformed"
         width, height, _, pixels = ppm
 
-        channels = load_dither_tables()
+        channels = load_dither_tables(cache=DITHER_CACHE)
         sw = ((width + 31) // 32) * 32  # 32-pixel aligned
         bpl = sw // 8
         pad = bytes([255] * (sw - width)) if sw > width else b""
@@ -360,7 +362,7 @@ class TestCaptureVerification:
         width, height, _, pixels = ppm
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
-        channels = load_brcd_tables(lut_dir)
+        channels = load_brcd_tables(lut_dir, cache=DITHER_CACHE)
         assert channels is not None, "BRCD tables missing; run scripts/extract_blobs.sh"
         sw = ((width + 31) // 32) * 32
         bpl = sw // 8
@@ -417,7 +419,7 @@ class TestCaptureVerification:
         from brother_xl2hb.color.dither import dither_channel_1bpp, load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
-        channels = load_brcd_tables(lut_dir)
+        channels = load_brcd_tables(lut_dir, cache=DITHER_CACHE)
         assert channels is not None, "BRCD tables missing; run scripts/extract_blobs.sh"
         sw = 4768  # standard 32-pixel aligned width for A4
         width = 4760
@@ -475,7 +477,7 @@ class TestFineBRCDTables:
         from brother_xl2hb.color.dither import load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
-        channels = load_brcd_tables(lut_dir, fine=True)
+        channels = load_brcd_tables(lut_dir, fine=True, cache=DITHER_CACHE)
         if channels is None:
             pytest.skip("Fine BRCD files not available")
         assert set(channels.keys()) == {"K", "C", "M", "Y"}
@@ -487,7 +489,7 @@ class TestFineBRCDTables:
         from brother_xl2hb.color.dither import load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
-        channels = load_brcd_tables(lut_dir, fine=True)
+        channels = load_brcd_tables(lut_dir, fine=True, cache=DITHER_CACHE)
         if channels is None:
             pytest.skip("Fine BRCD files not available")
         # K: 96x12, C: 160x20, M: 160x20, Y: 48x12 (from captures)
@@ -507,7 +509,7 @@ class TestFineBRCDTables:
         from brother_xl2hb.color.dither import dither_channel_4bpp, load_brcd_tables
 
         lut_dir = str(Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "lut")
-        channels = load_brcd_tables(lut_dir, fine=True)
+        channels = load_brcd_tables(lut_dir, fine=True, cache=DITHER_CACHE)
         if channels is None:
             pytest.skip("Fine BRCD files not available")
 
@@ -549,7 +551,7 @@ def test_native_1bpp_dither_matches_numpy(monkeypatch):
     if not dither.HAS_CYTHON_DITHER:
         pytest.skip("_dither_fast extension not built")
     rng = np.random.default_rng(1)
-    channels = dither.load_dither_tables()
+    channels = dither.load_dither_tables(cache=DITHER_CACHE)
     for width in (4768, 4761, 5):
         row = rng.integers(0, 256, width + 190, dtype=np.uint8)
         strided = np.repeat(row, 2)[::2]  # non-contiguous view, as from a KCMY column
@@ -582,7 +584,7 @@ class TestBayerFallbackWarning:
         from brother_xl2hb.color.dither import load_dither_tables
 
         with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
-            load_dither_tables(str(tmp_path))
+            load_dither_tables(str(tmp_path), cache=DITHER_CACHE)
         warnings = self._fallback_warnings(caplog)
         assert len(warnings) == 1
         assert "scripts/extract_blobs.sh" in warnings[0].getMessage()
@@ -593,13 +595,13 @@ class TestBayerFallbackWarning:
 
         with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
             for _ in range(3):
-                load_dither_tables(str(tmp_path))
-                load_dither_tables(str(tmp_path), fine=True)
+                load_dither_tables(str(tmp_path), cache=DITHER_CACHE)
+                load_dither_tables(str(tmp_path), fine=True, cache=DITHER_CACHE)
         assert len(self._fallback_warnings(caplog)) == 1
 
         with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
-            load_dither_tables(str(tmp_path), toner_save=True)
-            load_dither_tables(str(tmp_path), toner_save=True)
+            load_dither_tables(str(tmp_path), toner_save=True, cache=DITHER_CACHE)
+            load_dither_tables(str(tmp_path), toner_save=True, cache=DITHER_CACHE)
         warnings = self._fallback_warnings(caplog)
         assert len(warnings) == 2
         assert "-TS_cache09.bin" in warnings[1].getMessage()
@@ -613,5 +615,5 @@ class TestBayerFallbackWarning:
         if not (lut_dir / "0600-k_cache09.bin").exists():
             pytest.skip("BRCD blobs not extracted")
         with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
-            load_dither_tables(str(lut_dir))
+            load_dither_tables(str(lut_dir), cache=DITHER_CACHE)
         assert not self._fallback_warnings(caplog)

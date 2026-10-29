@@ -8,6 +8,7 @@ import pytest
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.color.transforms import color_table
 from brother_xl2hb.job import filter_pages
+from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render import bands
 from brother_xl2hb.render.bands import HAS_BAND_KERNEL, band_kernel_colour, render_threads
 from brother_xl2hb.render.page import init_channels
@@ -154,13 +155,13 @@ def test_kernel_reports_short_pages(monkeypatch):
 def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
     from brother_xl2hb.settings import Resolution
 
-    fine_channels = init_channels(PrintSettings(resolution=Resolution.FINE))
+    fine_channels = init_channels(PrintSettings(resolution=Resolution.FINE), HL4150CDN)
     # Without the Fine kernel (_fine_fast, see test_cython_fine.py) Fine renders per line.
     monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", False)
     assert band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=True) is None
     # Fine channels hold per-level nibbles, not the threshold matrix the Normal kernel needs.
     assert band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=False) is None
-    normal_channels = init_channels(PrintSettings())
+    normal_channels = init_channels(PrintSettings(), HL4150CDN)
     assert band_kernel_colour(color_lut.DEFAULT_TABLE, normal_channels, is_fine=False) is not None
 
 
@@ -175,7 +176,7 @@ def test_render_threads_from_environment(monkeypatch):
 def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
     """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
     table = color_table(settings)
-    assert band_kernel_colour(table, init_channels(settings), is_fine=False) is not None
+    assert band_kernel_colour(table, init_channels(settings, HL4150CDN), is_fine=False) is not None
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "3")
     _run_settings_variant(name, settings)
 

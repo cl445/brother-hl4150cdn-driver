@@ -11,7 +11,13 @@ import tempfile
 import pytest
 
 from brother_xl2hb.job import filter_page, filter_pages
-from brother_xl2hb.models.hl4150cdn import MEDIA_SIZE, MEDIA_TYPE_STRINGS, PAPER_SIZES, get_image_dimensions
+from brother_xl2hb.models import HL4150CDN
+from brother_xl2hb.models.hl4150cdn import (
+    DITHER_CACHE,
+    MEDIA_SIZE,
+    MEDIA_TYPE_STRINGS,
+    PAPER_SIZES,
+)
 from brother_xl2hb.protocol.pjl import generate_pjl_header
 from brother_xl2hb.settings import DuplexMode, PrintSettings
 
@@ -152,7 +158,7 @@ class TestPaperSizes:
     @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
     def test_image_dimensions_32bit_aligned(self, name):
         """Image width must be rounded up to 32-pixel boundary."""
-        sw, _sh = get_image_dimensions(name)
+        sw, _sh = HL4150CDN.image_dimensions(name)
         assert sw % 32 == 0, f"{name}: source_width {sw} not 32-aligned"
 
     @pytest.mark.parametrize(
@@ -183,7 +189,7 @@ class TestPaperSizes:
     )
     def test_height_and_media_size_match_original(self, name, height, media_size):
         """Source height and MediaSize as brhl4150cdnfilter writes them."""
-        assert get_image_dimensions(name)[1] == height
+        assert HL4150CDN.image_dimensions(name)[1] == height
         assert MEDIA_SIZE[name] == media_size
 
 
@@ -324,8 +330,8 @@ class TestTonerSave:
         # Mid-gray row: ink level ~127 (pixel brightness 128 -> ink 127)
         row = np.full(width, 128, dtype=np.uint8)
 
-        normal_ch = load_dither_tables(lut_dir)
-        ts_ch = load_dither_tables(lut_dir, toner_save=True)
+        normal_ch = load_dither_tables(lut_dir, cache=DITHER_CACHE)
+        ts_ch = load_dither_tables(lut_dir, toner_save=True, cache=DITHER_CACHE)
 
         normal_dots = 0
         ts_dots = 0

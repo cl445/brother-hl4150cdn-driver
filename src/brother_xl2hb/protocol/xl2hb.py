@@ -471,8 +471,8 @@ class XL2HBWriter:
         emit_opcode(self.buf, OP_BEGIN_PAGE)
         self._flush()
 
-    def write_set_page_origin(self, x: int = 100, y: int = 100) -> None:
-        """Emit SetPageOrigin (default 100,100 = printable area offset)."""
+    def write_set_page_origin(self, x: int, y: int) -> None:
+        """Emit SetPageOrigin: where the image starts on the sheet, in pixels."""
         emit_sint16_xy_attr(self.buf, x, y, ATTR_PAGE_ORIGIN)
         emit_opcode(self.buf, OP_SET_PAGE_ORIGIN)
         self._flush()

@@ -1,15 +1,21 @@
-"""Brother HL-4150CDN: paper geometry, media codes and tray values.
+"""Brother HL-4150CDN: the `HL4150CDN` model and its tables.
 
 What brhl4150cdnfilter writes for this model, taken from its paperinfij2
 and ImagingArea files and verified against its output. The protocol
 itself is in `brother_xl2hb.protocol`.
 """
 
-import logging
-
-from brother_xl2hb.settings import DuplexMode, InputSlot
-
-logger = logging.getLogger(__name__)
+from brother_xl2hb.color.transforms import color_table
+from brother_xl2hb.models.base import PrinterModel
+from brother_xl2hb.protocol.pjl import generate_pjl_footer, generate_pjl_header
+from brother_xl2hb.settings import (
+    DuplexMode,
+    ImproveOutput,
+    InputSlot,
+    MonoColor,
+    PrintSettings,
+    Resolution,
+)
 
 # ---------------------------------------------------------------------------
 # MediaSize enum
@@ -137,65 +143,89 @@ MEDIA_SOURCE: dict[InputSlot, int] = {
 }
 
 
-def image_height(page_size: str) -> int:
-    """Rows of the page image, as the original computes its band height.
+# The printable area starts 100 px (at 600 dpi) from the physical page edge;
+# SetPageOrigin(100, 100).
+PAGE_ORIGIN = (100, 100)
 
-    The printable height in points, capped at the paper height in whole
-    points, converted to 600 dpi: `min(ury - lly, paper_h * 72 // 600) *
-    600 // 72`. Verified against brhl4150cdnfilter for every paper size
-    (A4 6812 -> 6808, Letter 6400 -> 6400, EnvDL 4996 -> 4991).
+# Paper dimensions in PostScript points (the PPD's PaperDimension).
+PAPER_POINTS = {
+    "A4": (595, 842),
+    "Letter": (612, 792),
+    "Legal": (612, 1008),
+    "Executive": (522, 756),
+    "A5": (420, 595),
+    "JISB5": (516, 729),
+    "Postcard": (284, 419),
+    "EnvDL": (312, 624),
+    "EnvC5": (459, 649),
+    "Env10": (297, 684),
+    "EnvMonarch": (279, 540),
+    "PRA5Rotated": (595, 420),
+    "A6": (297, 420),
+    "ISOB5": (499, 709),
+    "ISOB6": (354, 499),
+    "JISB6": (363, 516),
+    "Br3x5": (216, 360),
+    "FanFoldGermanLegal": (612, 936),
+    "EnvPRC5Rotated": (624, 312),
+    "EnvYou4": (298, 666),
+    "EnvChou3": (340, 666),
+}
 
-    Returns:
-        Source height in rows.
-    """
-    _, ph = PAPER_SIZES[page_size]
-    points = min(IMAGING_HEIGHT_PT[page_size], ph * 72 // 600)
-    return points * 600 // 72
-
-
-def get_image_dimensions(page_size: str) -> tuple[int, int]:
-    """Return (source_width, source_height) for BeginImage.
-
-    Width = paper_width rounded up to 32-pixel boundary; height see
-    `image_height`.
-    """
-    pw, _ = PAPER_SIZES[page_size]
-    return (pw + 31) & ~31, image_height(page_size)
-
-
-def get_image_dimensions_fine(page_size: str) -> tuple[int, int]:
-    """Return (source_width, source_height) for Fine mode BeginImage.
-
-    Fine mode rounds the paper width up to 8 pixels instead of 32
-    (raster_encode.c:352): A4 4760 stays 4760 (Normal 4768), Letter 4900
-    becomes 4904. Height is the same as Normal. Verified against
-    brhl4150cdnfilter for all 21 paper sizes.
-    """
-    pw, _ = PAPER_SIZES[page_size]
-    return (pw + 7) & ~7, image_height(page_size)
+# BRCD dither files: 0600-k_cache09.bin, capt-k-TS_cache09.bin, ...
+DITHER_CACHE = "cache09"
 
 
-def media_size_code(page_size: str) -> int | bytes:
-    """BeginPage MediaSize for `page_size`: enum value or name string.
+def pjl_header(settings: PrintSettings) -> bytes:
+    """The PJL header brhl4150cdnfilter writes for `settings`.
 
     Returns:
-        The `MEDIA_SIZE` entry; A4 (2) with a warning for unknown sizes.
+        Encoded PJL header bytes.
     """
-    size = MEDIA_SIZE.get(page_size)
-    if size is None:
-        logger.warning("Unknown media size %r, defaulting to A4", page_size)
-        return 2
-    return size
+    # PJL header always reports 600 dpi; Fine mode differs only in dithering.
+    color = settings.mono_color != MonoColor.MONO
+    return generate_pjl_header(
+        resolution=600,
+        color=color,
+        # Only BRMonoColor=Auto sets the colour-adapt flag (printer_config_init).
+        color_adapt=settings.mono_color == MonoColor.AUTO,
+        # ECONOMODE is always OFF; toner-save is implemented through the
+        # -TS_cache09.bin dither tables instead.
+        economode=False,
+        less_paper_curl=settings.improve_output == ImproveOutput.LESS_PAPER_CURL,
+        fix_intensity=settings.improve_output == ImproveOutput.FIX_INTENSITY,
+        apt_mode=(settings.resolution == Resolution.FINE),
+        improve_gray=settings.improve_gray,
+        ucrgcr=settings.enhance_black,
+    )
 
 
-def media_type_code(media_type: str) -> bytes:
-    """BeginPage MediaType string for `media_type`.
+def page_is_flipped(settings: PrintSettings, back_side: bool) -> bool:  # noqa: FBT001 - PrinterModel hook signature
+    """Whether a page is sent bottom-up with the back-side marker.
+
+    Long-edge back pages are sent that way (rows mirrored, columns not).
+    BRReverse makes Brother's filter send every page that way, so on a
+    long-edge back page the two cancel out (verified against captures).
 
     Returns:
-        The `MEDIA_TYPE_STRINGS` entry; dRegular with a warning for unknown types.
+        True if the page is mirrored top to bottom.
     """
-    type_str = MEDIA_TYPE_STRINGS.get(media_type)
-    if type_str is None:
-        logger.warning("Unknown media type %r, defaulting to Regular", media_type)
-        return b"dRegular"
-    return type_str
+    return (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+
+
+HL4150CDN = PrinterModel(
+    name="HL-4150CDN",
+    paper_sizes=PAPER_SIZES,
+    imaging_height_pt=IMAGING_HEIGHT_PT,
+    paper_points=PAPER_POINTS,
+    page_origin=PAGE_ORIGIN,
+    media_size=MEDIA_SIZE,
+    media_types=MEDIA_TYPE_STRINGS,
+    media_source=MEDIA_SOURCE,
+    duplex_page_mode=DUPLEX_MAP,
+    dither_cache=DITHER_CACHE,
+    color_table=color_table,
+    pjl_header=pjl_header,
+    pjl_footer=generate_pjl_footer,
+    page_is_flipped=page_is_flipped,
+)

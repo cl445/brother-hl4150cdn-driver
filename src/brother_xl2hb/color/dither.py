@@ -209,7 +209,7 @@ def dither_load_brcd(path: str, *, nibbles: bool = False) -> DitherChannel:
     )
 
 
-# BRCD filename templates: f"{prefix}-{ch}{suffix}_cache09.bin"
+# BRCD filename templates: f"{prefix}-{ch}{suffix}_{cache}.bin", `cache` per model (e.g. cache09)
 _BRCD_PREFIX = {False: "0600", True: "capt"}  # keyed by `fine`
 _BRCD_SUFFIX = {False: "", True: "-TS"}  # keyed by `toner_save`
 
@@ -217,10 +217,11 @@ _BRCD_SUFFIX = {False: "", True: "-TS"}  # keyed by `toner_save`
 def load_brcd_tables(
     lut_dir: str,
     *,
+    cache: str,
     fine: bool = False,
     toner_save: bool = False,
 ) -> dict[str, DitherChannel] | None:
-    """Try to load all 4 BRCD channel files from `lut_dir`.
+    """Try to load all 4 BRCD channel files of the `cache` set from `lut_dir`.
 
     Returns:
         Channel dict keyed by 'K', 'C', 'M', 'Y', or None if any
@@ -231,7 +232,7 @@ def load_brcd_tables(
     lut_path = Path(lut_dir)
     channels: dict[str, DitherChannel] = {}
     for ch in "KCMY":
-        fpath = lut_path / f"{prefix}-{ch.lower()}{suffix}_cache09.bin"
+        fpath = lut_path / f"{prefix}-{ch.lower()}{suffix}_{cache}.bin"
         if not fpath.exists():
             logger.debug("BRCD file not found: %s", fpath)
             return None
@@ -265,20 +266,20 @@ def _build_bayer_tables(*, toner_save: bool, width: int = 32, height: int = 32) 
     return {"K": channel, "C": channel, "M": channel, "Y": channel}
 
 
-_bayer_fallback_warned: set[tuple[str, bool]] = set()
+_bayer_fallback_warned: set[tuple[str, str, bool]] = set()
 
 
-def _warn_bayer_fallback(lut_dir: str, *, toner_save: bool) -> None:
+def _warn_bayer_fallback(lut_dir: str, *, cache: str, toner_save: bool) -> None:
     """Warn, once per process and table set, that BRCD tables are missing.
 
     The Bayer matrix only stands in for the dither tables; the output then
     differs from the original driver's on every page.
     """
-    key = (lut_dir, toner_save)
+    key = (lut_dir, cache, toner_save)
     if key in _bayer_fallback_warned:
         return
     _bayer_fallback_warned.add(key)
-    variant = f"0600-*{_BRCD_SUFFIX[toner_save]}_cache09.bin"
+    variant = f"0600-*{_BRCD_SUFFIX[toner_save]}_{cache}.bin"
     logger.warning(
         "Dither tables %s missing in %s (run scripts/extract_blobs.sh); "
         "using a generated Bayer matrix, output will differ from the original driver",
@@ -290,12 +291,13 @@ def _warn_bayer_fallback(lut_dir: str, *, toner_save: bool) -> None:
 def load_dither_tables(
     lut_dir: str | None = None,
     *,
+    cache: str,
     fine: bool = False,
     toner_save: bool = False,
 ) -> dict[str, DitherChannel]:
     """Return the dither channels for the requested mode.
 
-    If `lut_dir` is given, BRCD files matching `(fine, toner_save)` are
+    If `lut_dir` is given, the `cache` set's BRCD files matching `(fine, toner_save)` are
     tried first. Fine-mode lookup falls through to Normal-mode BRCD if
     the Fine tables are absent. When no BRCD set is found a Bayer matrix
     is generated as fallback (with a one-time warning).
@@ -305,14 +307,14 @@ def load_dither_tables(
     """
     if lut_dir is not None:
         if fine:
-            tables = load_brcd_tables(lut_dir, fine=True, toner_save=toner_save)
+            tables = load_brcd_tables(lut_dir, cache=cache, fine=True, toner_save=toner_save)
             if tables is not None:
                 return tables
             logger.info("Fine BRCD tables not available, falling through to Normal")
-        tables = load_brcd_tables(lut_dir, fine=False, toner_save=toner_save)
+        tables = load_brcd_tables(lut_dir, cache=cache, fine=False, toner_save=toner_save)
         if tables is not None:
             return tables
-        _warn_bayer_fallback(lut_dir, toner_save=toner_save)
+        _warn_bayer_fallback(lut_dir, cache=cache, toner_save=toner_save)
     return _build_bayer_tables(toner_save=toner_save)
 
 

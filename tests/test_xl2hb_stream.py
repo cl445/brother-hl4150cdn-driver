@@ -10,7 +10,7 @@ from io import BytesIO
 
 import pytest
 
-from brother_xl2hb.models.hl4150cdn import get_image_dimensions, media_size_code, media_type_code
+from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
 from fixture_utils import assert_bytes_equal
 
@@ -29,9 +29,9 @@ def _reconstruct_stream(cap) -> bytes:
     w.write_begin_session()
     w.write_open_data_source()
     w.write_begin_page()
-    w.write_set_page_origin()
+    w.write_set_page_origin(100, 100)
 
-    sw, sh = get_image_dimensions("A4")
+    sw, sh = HL4150CDN.image_dimensions("A4")
     w.write_begin_image(sw, sh)
 
     for block in cap.blocks:
@@ -160,7 +160,7 @@ class TestUnknownMediaDefaults:
     def test_unknown_media_size(self, caplog):
         """Unknown media size defaults to A4 (enum 2) and logs a warning."""
         with caplog.at_level(logging.WARNING, logger="brother_xl2hb.models.hl4150cdn"):
-            size = media_size_code("Folio")
+            size = HL4150CDN.media_size_code("Folio")
         assert "Unknown media size" in caplog.text
         assert size == 2
         buf = BytesIO()
@@ -170,7 +170,7 @@ class TestUnknownMediaDefaults:
     def test_unknown_media_type(self, caplog):
         """Unknown media type defaults to 'dRegular' and logs a warning."""
         with caplog.at_level(logging.WARNING, logger="brother_xl2hb.models.hl4150cdn"):
-            media_type = media_type_code("Cardstock")
+            media_type = HL4150CDN.media_type_code("Cardstock")
         assert "Unknown media type" in caplog.text
         buf = BytesIO()
         XL2HBWriter(buf).write_begin_page(media_type=media_type)

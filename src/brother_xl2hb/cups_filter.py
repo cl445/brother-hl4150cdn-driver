@@ -19,39 +19,11 @@ from pathlib import Path
 from typing import BinaryIO, cast
 
 from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
-from brother_xl2hb.models.hl4150cdn import PAPER_SIZES
+from brother_xl2hb.models import DEFAULT_MODEL
+from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.render.page_stream import iter_ppm_pages
 from brother_xl2hb.render.rows import PageData
 from brother_xl2hb.settings import PrintSettings, read_ppd_defaults
-
-# The printable area starts 100 px (at 600 dpi) from the physical page edge;
-# corresponds to SetPageOrigin(100, 100).
-PRINTABLE_OFFSET = (100, 100)
-
-# Paper dimensions in PostScript points (the PPD's PaperDimension).
-PAPER_POINTS = {
-    "A4": (595, 842),
-    "Letter": (612, 792),
-    "Legal": (612, 1008),
-    "Executive": (522, 756),
-    "A5": (420, 595),
-    "JISB5": (516, 729),
-    "Postcard": (284, 419),
-    "EnvDL": (312, 624),
-    "EnvC5": (459, 649),
-    "Env10": (297, 684),
-    "EnvMonarch": (279, 540),
-    "PRA5Rotated": (595, 420),
-    "A6": (297, 420),
-    "ISOB5": (499, 709),
-    "ISOB6": (354, 499),
-    "JISB6": (363, 516),
-    "Br3x5": (216, 360),
-    "FanFoldGermanLegal": (612, 936),
-    "EnvPRC5Rotated": (624, 312),
-    "EnvYou4": (298, 666),
-    "EnvChou3": (340, 666),
-}
 
 # Seconds to wait for Ghostscript to exit on its own after the job failed
 # (it has usually closed its output already) before it is killed.
@@ -82,8 +54,8 @@ def find_gs() -> str:
     return gs
 
 
-def build_gs_command(input_path: str, page_size: str) -> list[str]:
-    """Build the Ghostscript command for rasterizing PS to PPM.
+def build_gs_command(input_path: str, page_size: str, model: PrinterModel) -> list[str]:
+    """Build the Ghostscript command for rasterizing PS to PPM at the model's paper size.
 
     Returns:
         The argument vector; `input_path` "-" reads the job from stdin.
@@ -99,12 +71,12 @@ def build_gs_command(input_path: str, page_size: str) -> list[str]:
         "-sOutputFile=-",
     ]
 
-    w_pt, h_pt = PAPER_POINTS[page_size]
+    w_pt, h_pt = model.paper_points[page_size]
     cmd.extend([f"-dDEVICEWIDTHPOINTS={w_pt}", f"-dDEVICEHEIGHTPOINTS={h_pt}", input_path])
     return cmd
 
 
-def iter_printable_pages(stream: BinaryIO, page_size: str) -> Iterator[Page]:
+def iter_printable_pages(stream: BinaryIO, page_size: str, model: PrinterModel) -> Iterator[Page]:
     """Yield (width, height, row_blocks) per GS page, cut to the printable area.
 
     Pages are read on a background thread in blocks of scanlines (see
@@ -114,8 +86,8 @@ def iter_printable_pages(stream: BinaryIO, page_size: str) -> Iterator[Page]:
     Yields:
         Printable width and height, and the page's row blocks.
     """
-    target_w, target_h = PAPER_SIZES[page_size]
-    window = (*PRINTABLE_OFFSET, target_w, target_h)
+    target_w, target_h = model.paper_sizes[page_size]
+    window = (*model.page_origin, target_w, target_h)
     for page_num, (src_w, src_h, blocks) in enumerate(iter_ppm_pages(stream, window), start=1):
         logger.info("page %d: %dx%d pixels from GS, printable %dx%d", page_num, src_w, src_h, target_w, target_h)
         yield target_w, target_h, blocks
@@ -140,7 +112,7 @@ class PageCounter:
             yield page
 
 
-def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO) -> int:
+def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO, model: PrinterModel) -> int:
     """Render Ghostscript's PPM stream into one XL2HB job on `output`.
 
     Each page is rendered and sent as soon as it is read, like Brother's
@@ -152,7 +124,7 @@ def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO) -
     Returns:
         Number of pages read from Ghostscript.
     """
-    counter = PageCounter(iter_printable_pages(gs_stdout, settings.page_size))
+    counter = PageCounter(iter_printable_pages(gs_stdout, settings.page_size, model))
     pages: Iterable[Page] = counter
     if settings.skip_blank:
         pages = drop_blank_pages(pages)
@@ -162,7 +134,7 @@ def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO) -
         if first is not None:
             pages = chain_peeked(first, pages)
             del first
-            filter_pages(pages, settings, output)
+            filter_pages(pages, settings, output, model)
     except Exception as exc:
         exc.add_note(f"while reading page {counter.count} from Ghostscript")
         raise
@@ -194,13 +166,13 @@ def log_gs_stderr(stderr_file: BinaryIO, level: int) -> None:
             logger.log(level, "GS: %s", line.rstrip())
 
 
-def print_job(input_path: str, settings: PrintSettings, output: BinaryIO) -> int:
+def print_job(input_path: str, settings: PrintSettings, output: BinaryIO, model: PrinterModel = DEFAULT_MODEL) -> int:
     """Run Ghostscript on `input_path` and send its pages to `output`.
 
     Returns:
         The filter's exit status: 0 on success, 1 on any failure.
     """
-    gs_cmd = build_gs_command(input_path, settings.page_size)
+    gs_cmd = build_gs_command(input_path, settings.page_size, model)
     logger.info("running: %s", " ".join(gs_cmd))
 
     # Ghostscript's stderr goes to a file: a pipe nobody reads while the
@@ -211,7 +183,7 @@ def print_job(input_path: str, settings: PrintSettings, output: BinaryIO) -> int
         gs_stdout = cast("BinaryIO", gs_proc.stdout)  # a pipe: stdout=PIPE
         try:
             try:
-                page_count = send_pages(gs_stdout, settings, output)
+                page_count = send_pages(gs_stdout, settings, output, model)
             except Exception as exc:
                 status = stop_gs(gs_proc, GS_EXIT_GRACE)
                 if status:
@@ -243,8 +215,8 @@ def print_job(input_path: str, settings: PrintSettings, output: BinaryIO) -> int
             gs_stdout.close()
 
 
-def main() -> None:
-    """Run as CUPS calls a filter: ``job-id user title copies options [filename]``."""
+def main(model: PrinterModel = DEFAULT_MODEL) -> None:
+    """Run as CUPS calls a filter for `model`: ``job-id user title copies options [filename]``."""
     # CUPS puts every stderr line into its error_log, keyed by the prefix.
     logging.basicConfig(
         level=logging.INFO,
@@ -286,7 +258,7 @@ def main() -> None:
 
     # Ghostscript reads the job straight from stdin, so it starts
     # rasterising while pdftops is still producing PostScript.
-    status = print_job(input_file or "-", settings, sys.stdout.buffer)
+    status = print_job(input_file or "-", settings, sys.stdout.buffer, model)
     if status == 0:
         logger.info("done")
     sys.exit(status)
