@@ -1,0 +1,162 @@
+"""One page of the XL2HB stream, from BeginPage to EndPage."""
+
+from brother_xl2hb.blobs import LUT_DIR
+from brother_xl2hb.color.dither import (
+    DitherChannel,
+    load_dither_tables,
+)
+from brother_xl2hb.color.transforms import build_input_remap_lut, color_table
+from brother_xl2hb.models.hl4150cdn import (
+    DUPLEX_MAP,
+    MEDIA_SOURCE,
+    PAPER_SIZES,
+    get_image_dimensions,
+    get_image_dimensions_fine,
+    media_size_code,
+    media_type_code,
+)
+from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
+from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
+from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, encode_lines, encode_lines_mono
+from brother_xl2hb.render.rows import BUFFER_TYPES, PageData, RowBlocks, collect_rows, flip_vertical, page_rows
+from brother_xl2hb.settings import MonoColor, PrintSettings, Resolution
+
+
+def render_page(
+    w: XL2HBWriter,
+    width: int,
+    height: int,
+    pixel_data: PageData,
+    settings: PrintSettings,
+    channels: dict[str, DitherChannel],
+    *,
+    flip: bool = False,
+) -> None:
+    """Render one page within an already-open session.
+
+    Handles: BeginPage -> scanline loop -> flush -> EndPage. `flip` sends
+    the page bottom-up with the back-side marker (which pages: see
+    `job.page_is_flipped`). Scanlines are read as views into `pixel_data`,
+    which may also be a stream of row blocks; only flipped pages are
+    collected into one buffer to be mirrored.
+
+    Raises:
+        ValueError: If `pixel_data` has fewer than `height` rows.
+    """
+    is_fine = settings.resolution == Resolution.FINE
+    page_size = settings.page_size
+    _, paper_h = PAPER_SIZES[page_size]
+
+    if is_fine:
+        sw, sh = get_image_dimensions_fine(page_size)
+        bpl = (sw + 1) // 2  # 4bpp: 2 pixels per byte
+    else:
+        sw, sh = get_image_dimensions(page_size)
+        bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
+
+    # A flipped page is mirrored top to bottom, columns stay.
+    if flip:
+        blocks: RowBlocks = (flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
+        height = paper_h
+    elif isinstance(pixel_data, BUFFER_TYPES):
+        blocks = (page_rows(pixel_data, width, height),)
+    else:
+        blocks = pixel_data
+
+    w.write_begin_page(
+        media_size=media_size_code(page_size),
+        media_source=MEDIA_SOURCE[settings.input_slot],
+        media_type=media_type_code(settings.media_type),
+        duplex_mode=DUPLEX_MAP.get(settings.duplex),
+        back_side_marker=flip,
+    )
+    w.write_set_page_origin()
+    mono = settings.mono_color == MonoColor.MONO
+    w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine, color=not mono)
+
+    plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
+
+    def write_plane(pid: int) -> None:
+        result = plane_bufs[pid].flush()
+        if result:
+            start, count, blob = result
+            w.write_read_image(start, count, pid, blob)
+
+    def flush_plane(pid: int, next_line: int) -> None:
+        write_plane(pid)
+        plane_bufs[pid].reset(next_line)
+
+    # Pre-build LUTs (constant per page). The cmyk profile (colour matching
+    # None) takes no brightness/contrast/RGB-key remap: the original sends it
+    # through cmyk_basic, which skips compress_color_manage.
+    table = color_table(settings)
+    input_remap = None
+    if table.profile != "cmyk" and (
+        settings.brightness != 0
+        or settings.contrast != 0
+        or settings.red != 0
+        or settings.green != 0
+        or settings.blue != 0
+    ):
+        input_remap = (
+            build_input_remap_lut(settings.brightness, settings.contrast, settings.red),
+            build_input_remap_lut(settings.brightness, settings.contrast, settings.green),
+            build_input_remap_lut(settings.brightness, settings.contrast, settings.blue),
+        )
+
+    colour = ColourSetup(settings, table, input_remap)
+    kernel_colour = None if mono else band_kernel_colour(colour.table, channels, is_fine=is_fine)
+    if mono:
+        lines = encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
+    elif kernel_colour is not None:
+        lines = encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour, is_fine=is_fine)
+    else:
+        lines = encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
+
+    for line_idx in range(paper_h):
+        if line_idx < height:
+            line = next(lines, None)
+            if line is None:
+                msg = f"page ended after {line_idx} rows, expected {height}"
+                raise ValueError(msg)
+            plane_comp = line
+        else:
+            plane_comp = BLANK_LINE
+
+        # Per-plane independent flush. Process planes in order C, M, Y, K.
+        # Empty line + accumulated data → flush that plane. Non-empty line →
+        # append; if buffer nearly full → flush that plane.
+        for pid in FLUSH_ORDER:
+            comp = plane_comp[pid]
+            pb = plane_bufs[pid]
+            if not comp:
+                if pb.line_count > 0:
+                    flush_plane(pid, line_idx)
+            else:
+                pb.append_scanline(comp, line_idx)
+                if pb.is_nearly_full():
+                    flush_plane(pid, line_idx + 1)
+
+    for pid in FLUSH_ORDER:
+        write_plane(pid)
+
+    w.write_end_image()
+    w.write_end_page(copies=settings.copies)
+
+
+def init_channels(settings: PrintSettings) -> dict[str, DitherChannel]:
+    """Initialize dither channels for the current print settings.
+
+    The BRCD tables are read from `blobs.LUT_DIR` (`lut/` inside the
+    package, in the repository and when installed).
+    `load_dither_tables` handles the fine→normal fallback and the Bayer
+    fallback when no BRCD set matches.
+
+    Returns:
+        Channel dict keyed by 'K', 'C', 'M', 'Y'.
+    """
+    return load_dither_tables(
+        str(LUT_DIR),
+        fine=settings.resolution == Resolution.FINE,
+        toner_save=settings.toner_save,
+    )

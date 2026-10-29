@@ -1,7 +1,7 @@
 """Differential harness for Fine mode: original filter vs. the Python pipeline.
 
 Renders a test page (or job), prints it with Brother's brhl4150cdnfilter
-(i386, in Docker) and with `pipeline.filter_pages`, then compares the two
+(i386, in Docker) and with `job.filter_pages`, then compares the two
 XL2HB streams: PJL header, block layout, and every compressed scanline
 entry per plane. It decodes the original's entries
 (`brother_decode.decode_fine_plane`) and checks two things separately:
@@ -36,6 +36,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -45,10 +46,15 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 from brother_decode import decode_fine_plane  # noqa: E402
 from brother_xl2hb.codec.fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
-from brother_xl2hb.protocol.xl2hb import PAPER_SIZES  # noqa: E402
-from brother_xl2hb.render import pipeline  # noqa: E402
+from brother_xl2hb.job import drop_blank_pages, filter_pages  # noqa: E402
+from brother_xl2hb.models.hl4150cdn import PAPER_SIZES  # noqa: E402
+from brother_xl2hb.render import bands  # noqa: E402
+from brother_xl2hb.render.lines import DITHER_FNS, PLANE_ENCODERS  # noqa: E402
 from brother_xl2hb.settings import PrintSettings, Resolution  # noqa: E402
 from extract_fixtures import PLANE_NAMES, parse_xl2hb_capture  # noqa: E402
+
+if TYPE_CHECKING:
+    from brother_xl2hb.render.rows import PageData
 
 BROTHER_DIR = ROOT / ".brother-blobs" / "extracted" / "usr" / "local" / "Brother"
 RC_TEMPLATE = BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "brhl4150cdnrc"
@@ -226,8 +232,8 @@ def run_python(
 
     Without `record` the job takes the production path (the native Fine
     band kernel when it is built). With `record` the band kernel is
-    switched off and the Fine entries of `pipeline._DITHER_FNS` and
-    `_PLANE_ENCODERS` are wrapped for the duration of the call; the dither
+    switched off and the Fine entries of `lines.DITHER_FNS` and
+    `PLANE_ENCODERS` are wrapped for the duration of the call; the dither
     call for a plane immediately precedes its encoder call, which is how
     each encoder input gets its line index.
 
@@ -237,8 +243,8 @@ def run_python(
     """
     calls: dict[int, list] = defaultdict(list)
     current = {"line": -1, "plane": 0}
-    dither_fns = pipeline._DITHER_FNS  # noqa: SLF001
-    plane_encoders = pipeline._PLANE_ENCODERS[True]  # noqa: SLF001
+    dither_fns = DITHER_FNS
+    plane_encoders = PLANE_ENCODERS[True]
     dither = dither_fns[True]
     encoders = dict(plane_encoders)
 
@@ -257,23 +263,23 @@ def run_python(
 
         return encode
 
-    has_kernel = pipeline.HAS_FINE_BAND_KERNEL
+    has_kernel = bands.HAS_FINE_BAND_KERNEL
     if record:
         # The band kernel bypasses the hooks; the per-line path is its reference.
-        pipeline.HAS_FINE_BAND_KERNEL = False
+        bands.HAS_FINE_BAND_KERNEL = False
         dither_fns[True] = recording_dither
         for plane in encoders:
             plane_encoders[plane] = recording_encoder(plane)
     try:
         out = io.BytesIO()
-        job: list[tuple[int, int, pipeline.PageData]] = [(page.shape[1], page.shape[0], page) for page in pages]
+        job: list[tuple[int, int, PageData]] = [(page.shape[1], page.shape[0], page) for page in pages]
         if settings.skip_blank:
-            job = list(pipeline.drop_blank_pages(job))
+            job = list(drop_blank_pages(job))
         # Production prints nothing at all when every page is blank.
         if job:
-            pipeline.filter_pages(job, settings, out)
+            filter_pages(job, settings, out)
     finally:
-        pipeline.HAS_FINE_BAND_KERNEL = has_kernel
+        bands.HAS_FINE_BAND_KERNEL = has_kernel
         dither_fns[True] = dither
         plane_encoders.update(encoders)
     return out.getvalue(), calls
@@ -491,7 +497,7 @@ def main() -> int:
         # Every page was skipped as blank: compare the original's empty
         # session with the one filter_pages would write for no pages.
         empty = io.BytesIO()
-        pipeline.filter_pages([], settings, empty)
+        filter_pages([], settings, empty)
         same = expected == empty.getvalue()
         print(f"all pages blank: python prints nothing; original {len(expected)} bytes,", end=" ")
         print("an empty session" if same else "NOT an empty session")

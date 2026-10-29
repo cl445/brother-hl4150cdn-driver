@@ -676,13 +676,13 @@ def render_band_fine(
 ):
     """Colour-convert, 4bpp-dither and Fine-encode `rows` (page lines from `first_line`).
 
-    Byte-identical to pipeline._encode_lines with is_fine=True.
+    Byte-identical to lines.encode_lines with is_fine=True.
 
     Args:
         rows: (n, >= width * 3) RGB scanlines; each row contiguous, any row
             stride (cropped or reversed views are fine).
         skip: n flags; a set flag emits a blank line without looking at it.
-        overrun: n flags, the RGB part of pipeline._fine_overrun_planes (image
+        overrun: n flags, the RGB part of lines.fine_overrun_planes (image
             geometry and the last two input pixels equal); the kernel adds
             the no-ink test of the last pixel and then clears byte 0 of the
             K, M and Y rows.

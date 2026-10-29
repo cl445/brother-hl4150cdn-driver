@@ -125,7 +125,8 @@ ignore = [
     "SLF",     # tests legitimately poke private caches for isolation
     "DOC",     # Returns/Raises sections not required in tests
 ]
-"src/brother_xl2hb/protocol/xl2hb.py" = ["FBT001", "FBT002"]  # boolean params map PJL options naturally
+"src/brother_xl2hb/protocol/xl2hb.py" = ["FBT001", "FBT002"]  # boolean params map stream options naturally
+"src/brother_xl2hb/protocol/pjl.py" = ["FBT001", "FBT002"]  # boolean params map PJL options naturally
 "src/brother_xl2hb/color/color_lut.py" = ["PLC0415"]   # local import keeps the parametric fallback generator out of the hot path
 "noxfile.py" = [
     "A001",    # format() shadows builtin - standard nox convention

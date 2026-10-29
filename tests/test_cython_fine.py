@@ -9,8 +9,10 @@ import pytest
 from brother_xl2hb.codec import fine_encoder
 from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane_py
 from brother_xl2hb.color import color_lut, dither
-from brother_xl2hb.render import pipeline
-from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.job import filter_pages
+from brother_xl2hb.render import bands
+from brother_xl2hb.render.bands import band_kernel_colour
+from brother_xl2hb.render.page import init_channels
 from brother_xl2hb.settings import ColorMatching, MediaType, PageSize, PrintSettings, Resolution
 
 _fine_fast = pytest.importorskip("brother_xl2hb._native._fine_fast")
@@ -135,7 +137,7 @@ _A4_W = 4760
 
 @pytest.fixture(scope="module")
 def fine_channels():
-    channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
+    channels = init_channels(PrintSettings(resolution=Resolution.FINE))
     if any(channel.nibble_levels is None for channel in channels.values()):
         pytest.skip("Fine BRCD tables not available (run scripts/extract_blobs.sh)")
     return channels
@@ -171,7 +173,7 @@ def _fine_page(width: int, height: int, seed: int) -> bytes:
 
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
-    monkeypatch.setattr(pipeline, "HAS_FINE_BAND_KERNEL", kernel)
+    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", kernel)
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
@@ -219,12 +221,12 @@ def test_fine_kernel_matches_per_line_path_for_widths(width, page_size, fine_cha
 
 def test_fine_kernel_selection(fine_channels, monkeypatch):
     table = color_lut.DEFAULT_TABLE
-    assert pipeline._band_kernel_colour(table, fine_channels, is_fine=True) is not None
-    monkeypatch.setattr(pipeline, "HAS_FINE_BAND_KERNEL", False)
-    assert pipeline._band_kernel_colour(table, fine_channels, is_fine=True) is None
-    monkeypatch.setattr(pipeline, "HAS_FINE_BAND_KERNEL", True)
+    assert band_kernel_colour(table, fine_channels, is_fine=True) is not None
+    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", False)
+    assert band_kernel_colour(table, fine_channels, is_fine=True) is None
+    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", True)
     # Bayer fallback channels (no BRCD tables) have no nibble tables: per-line path.
-    assert pipeline._band_kernel_colour(table, dither._build_bayer_tables(toner_save=False), is_fine=True) is None
+    assert band_kernel_colour(table, dither._build_bayer_tables(toner_save=False), is_fine=True) is None
 
 
 def test_fine_kernel_rejects_bad_shapes(fine_channels):

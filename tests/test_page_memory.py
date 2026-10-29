@@ -14,7 +14,7 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
-from brother_xl2hb.render.pipeline import chain_peeked, drop_blank_pages, filter_pages
+from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.settings import DuplexMode, PrintSettings
 
 W, H = 64, 48

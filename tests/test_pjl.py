@@ -6,7 +6,7 @@ Verifies our PJL generation matches the format in all captures.
 
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import generate_pjl_footer, generate_pjl_header
+from brother_xl2hb.protocol.pjl import generate_pjl_footer, generate_pjl_header
 
 
 class TestPJLHeader:

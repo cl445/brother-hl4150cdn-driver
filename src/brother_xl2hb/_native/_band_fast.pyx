@@ -3,7 +3,7 @@
 
 Colour lookup, ordered dither and sliding-window RLE for a whole band in
 one call without the GIL, so bands can render on several threads. Output
-is byte-identical to the per-line path in pipeline._render_page: colour
+is byte-identical to the per-line path in lines.encode_lines: colour
 through the inverse LUT (or interpolated in the colour grid), 1bpp
 threshold dither, then encode_plane / encode_c_plane / encode_m_plane_10.
 """

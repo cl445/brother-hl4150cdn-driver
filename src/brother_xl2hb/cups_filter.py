@@ -1,7 +1,7 @@
 """CUPS filter for the Brother HL-4150CDN.
 
 Receives PostScript from CUPS, rasterizes it with Ghostscript and streams
-the pages through the XL2HB pipeline (pipeline.filter_pages).
+the pages through the XL2HB pipeline (job.filter_pages).
 
 Usage (called by CUPS through cups/brhl4150cdn-filter):
     brhl4150cdn-filter job-id user title copies options [filename]
@@ -18,9 +18,10 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import BinaryIO, cast
 
-from brother_xl2hb.protocol.xl2hb import PAPER_SIZES
+from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
+from brother_xl2hb.models.hl4150cdn import PAPER_SIZES
 from brother_xl2hb.render.page_stream import iter_ppm_pages
-from brother_xl2hb.render.pipeline import PageData, chain_peeked, drop_blank_pages, filter_pages
+from brother_xl2hb.render.rows import PageData
 from brother_xl2hb.settings import PrintSettings, read_ppd_defaults
 
 # The printable area starts 100 px (at 600 dpi) from the physical page edge;

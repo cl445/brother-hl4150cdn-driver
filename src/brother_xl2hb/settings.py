@@ -300,21 +300,3 @@ _SIDES_TO_DUPLEX = {
     "two-sided-long-edge": DuplexMode.NO_TUMBLE,
     "two-sided-short-edge": DuplexMode.TUMBLE,
 }
-
-# XL2HB DuplexPageMode values as written by Brother's filter; None = simplex.
-DUPLEX_MAP: dict[DuplexMode, int | None] = {
-    DuplexMode.NONE: None,
-    DuplexMode.NO_TUMBLE: 0x00,
-    DuplexMode.TUMBLE: 0x81,
-}
-
-# XL2HB MediaSource values as brhl4150cdnfilter writes them. The tray goes
-# only into BeginPage; the original never emits @PJL SET SOURCETRAY for
-# this model.
-MEDIA_SOURCE: dict[InputSlot, int] = {
-    InputSlot.AUTO: 1,
-    InputSlot.TRAY1: 1001,
-    InputSlot.TRAY2: 1005,
-    InputSlot.MP_TRAY: 1004,
-    InputSlot.MANUAL: 2,
-}

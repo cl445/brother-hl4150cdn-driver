@@ -10,8 +10,8 @@ import struct
 import numpy as np
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import PAPER_SIZES
-from brother_xl2hb.render.pipeline import drop_blank_pages, filter_page, filter_pages
+from brother_xl2hb.job import drop_blank_pages, filter_page, filter_pages
+from brother_xl2hb.models.hl4150cdn import PAPER_SIZES
 from brother_xl2hb.render.ppm import read_ppm
 from brother_xl2hb.settings import (
     ColorMatching,

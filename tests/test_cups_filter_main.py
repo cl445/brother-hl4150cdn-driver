@@ -16,8 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import OP_END_SESSION, generate_pjl_footer
-from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.job import filter_pages
+from brother_xl2hb.protocol.pjl import generate_pjl_footer
+from brother_xl2hb.protocol.xl2hb import OP_END_SESSION
 from brother_xl2hb.settings import PrintSettings
 
 _FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn-filter"
@@ -189,19 +190,19 @@ def test_ppd_offers_normal_and_fine():
 
 @pytest.mark.parametrize(("value", "expected"), [("2", 2), ("0", 0), ("-1", 0)])
 def test_render_threads_from_environment(monkeypatch, value, expected):
-    from brother_xl2hb.render import pipeline
+    from brother_xl2hb.render import bands
 
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", value)
-    assert pipeline._render_threads() == expected
+    assert bands.render_threads() == expected
 
 
 def test_non_numeric_render_threads_fall_back_to_the_default(monkeypatch, caplog):
-    from brother_xl2hb.render import pipeline
+    from brother_xl2hb.render import bands
 
     monkeypatch.delenv("BRHL4150CDN_RENDER_THREADS", raising=False)
-    default = pipeline._render_threads()
+    default = bands.render_threads()
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "four")
-    assert pipeline._render_threads() == default
+    assert bands.render_threads() == default
     assert "non-numeric BRHL4150CDN_RENDER_THREADS='four'" in caplog.text
 
 

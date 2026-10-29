@@ -7,13 +7,15 @@ import pytest
 
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.color.transforms import color_table
-from brother_xl2hb.render import pipeline
-from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.job import filter_pages
+from brother_xl2hb.render import bands
+from brother_xl2hb.render.bands import HAS_BAND_KERNEL, band_kernel_colour, render_threads
+from brother_xl2hb.render.page import init_channels
 from brother_xl2hb.settings import ColorMatching, DuplexMode, MediaType, PrintSettings
 from fixture_utils import read_fixture
 from test_full_pipeline import _SETTING_VARIANTS, _duplex_test_pages, _run_settings_variant
 
-if not pipeline.HAS_BAND_KERNEL:
+if not HAS_BAND_KERNEL:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
 
 _A4_W, _A4_H = 4760, 6812
@@ -69,7 +71,7 @@ def _page(width: int, height: int, seed: int) -> bytes:
 
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
-    monkeypatch.setattr(pipeline, "HAS_BAND_KERNEL", kernel)
+    monkeypatch.setattr(bands, "HAS_BAND_KERNEL", kernel)
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
@@ -152,28 +154,28 @@ def test_kernel_reports_short_pages(monkeypatch):
 def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
     from brother_xl2hb.settings import Resolution
 
-    fine_channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
+    fine_channels = init_channels(PrintSettings(resolution=Resolution.FINE))
     # Without the Fine kernel (_fine_fast, see test_cython_fine.py) Fine renders per line.
-    monkeypatch.setattr(pipeline, "HAS_FINE_BAND_KERNEL", False)
-    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=True) is None
+    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", False)
+    assert band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=True) is None
     # Fine channels hold per-level nibbles, not the threshold matrix the Normal kernel needs.
-    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=False) is None
-    normal_channels = pipeline._init_channels(PrintSettings())
-    assert pipeline._band_kernel_colour(color_lut.DEFAULT_TABLE, normal_channels, is_fine=False) is not None
+    assert band_kernel_colour(color_lut.DEFAULT_TABLE, fine_channels, is_fine=False) is None
+    normal_channels = init_channels(PrintSettings())
+    assert band_kernel_colour(color_lut.DEFAULT_TABLE, normal_channels, is_fine=False) is not None
 
 
 def test_render_threads_from_environment(monkeypatch):
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "0")
-    assert pipeline._render_threads() == 0
+    assert render_threads() == 0
     monkeypatch.delenv("BRHL4150CDN_RENDER_THREADS")
-    assert 1 <= pipeline._render_threads() <= 3
+    assert 1 <= render_threads() <= 3
 
 
 @pytest.mark.parametrize(("name", "settings"), _SETTING_VARIANTS)
 def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
     """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
     table = color_table(settings)
-    assert pipeline._band_kernel_colour(table, pipeline._init_channels(settings), is_fine=False) is not None
+    assert band_kernel_colour(table, init_channels(settings), is_fine=False) is not None
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "3")
     _run_settings_variant(name, settings)
 

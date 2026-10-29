@@ -11,8 +11,8 @@ import io
 import numpy as np
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import PAPER_SIZES
-from brother_xl2hb.render.pipeline import filter_page, filter_pages
+from brother_xl2hb.job import filter_page, filter_pages
+from brother_xl2hb.models.hl4150cdn import PAPER_SIZES
 from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 from fixture_utils import assert_matches_fixture
 
