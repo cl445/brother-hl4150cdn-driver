@@ -14,8 +14,8 @@ from collections.abc import Buffer
 import numpy as np
 import numpy.typing as npt
 
-from color_lut import ColorTable, Profile, Variant
-from settings import ColorMatching, MediaType, PrintSettings
+from brother_xl2hb.color.color_lut import ColorTable, Profile, Variant
+from brother_xl2hb.settings import ColorMatching, MediaType, PrintSettings
 
 _NDArrayU8 = npt.NDArray[np.uint8]
 

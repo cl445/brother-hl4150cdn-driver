@@ -5,13 +5,13 @@ import io
 import numpy as np
 import pytest
 
-import color_lut
-import pipeline
+from brother_xl2hb.color import color_lut
+from brother_xl2hb.color.transforms import color_table
+from brother_xl2hb.render import pipeline
+from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.settings import ColorMatching, DuplexMode, MediaType, PrintSettings
 from fixture_utils import read_fixture
-from pipeline import filter_pages
-from settings import ColorMatching, DuplexMode, MediaType, PrintSettings
 from test_full_pipeline import _SETTING_VARIANTS, _duplex_test_pages, _run_settings_variant
-from transforms import color_table
 
 if not pipeline.HAS_BAND_KERNEL:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
@@ -150,7 +150,7 @@ def test_kernel_reports_short_pages(monkeypatch):
 
 
 def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
-    from settings import Resolution
+    from brother_xl2hb.settings import Resolution
 
     fine_channels = pipeline._init_channels(PrintSettings(resolution=Resolution.FINE))
     # Without the Fine kernel (_fine_fast, see test_cython_fine.py) Fine renders per line.

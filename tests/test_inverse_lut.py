@@ -5,8 +5,8 @@ import logging
 import numpy as np
 import pytest
 
-import color_lut
-from color_lut import (
+from brother_xl2hb.color import color_lut
+from brother_xl2hb.color.color_lut import (
     INVERSE_LUT_TABLES,
     ColorTable,
     _rgb_to_cmyk_interp_arr,
@@ -125,7 +125,7 @@ def test_special_values_match(installed, table, rgb) -> None:
 
 def test_lut_from_other_grid_is_ignored(tmp_path, monkeypatch, caplog) -> None:
     """A LUT computed from the generated fallback grid is not used once the real grid is present."""
-    from color_lut_gen import generate_rgb_default_lut
+    from brother_xl2hb.color.color_lut_gen import generate_rgb_default_lut
 
     table = color_lut.DEFAULT_TABLE
     real_digest = source_digest(table)
@@ -139,7 +139,7 @@ def test_lut_from_other_grid_is_ignored(tmp_path, monkeypatch, caplog) -> None:
 
     monkeypatch.setattr(color_lut, "_load_data", real_load)
     source_digest.cache_clear()
-    with caplog.at_level(logging.WARNING, logger="color_lut"):
+    with caplog.at_level(logging.WARNING, logger="brother_xl2hb.color.color_lut"):
         assert inverse_lut(table) is None
     assert stale.name in caplog.text
     sample = _sample_rgb(seed=5, width=256)
@@ -149,7 +149,7 @@ def test_lut_from_other_grid_is_ignored(tmp_path, monkeypatch, caplog) -> None:
 def test_digest_less_legacy_lut_is_ignored(tmp_path, monkeypatch, caplog) -> None:
     monkeypatch.setattr(color_lut, "INVERSE_LUT_DIR", tmp_path)
     np.save(tmp_path / "inverse_lut.npy", np.zeros((1,), np.uint8))
-    with caplog.at_level(logging.WARNING, logger="color_lut"):
+    with caplog.at_level(logging.WARNING, logger="brother_xl2hb.color.color_lut"):
         assert inverse_lut() is None
     assert "inverse_lut.npy" in caplog.text
 

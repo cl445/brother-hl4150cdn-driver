@@ -12,8 +12,8 @@ from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.stdlib cimport free, malloc
 from libc.string cimport memset
 
-from _color_fast cimport interp_pixel
-from _rle_fast cimport OutBuf, encode_line, encode_scratch_words
+from brother_xl2hb._native._color_fast cimport interp_pixel
+from brother_xl2hb._native._rle_fast cimport OutBuf, encode_line, encode_scratch_words
 
 # RLE word size per plane (K, C, M, Y), as in
 # plane_encoders.encode_plane / encode_c_plane / encode_m_plane_10.

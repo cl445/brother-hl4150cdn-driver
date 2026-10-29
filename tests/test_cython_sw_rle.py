@@ -3,9 +3,16 @@
 import numpy as np
 import pytest
 
-from rle import CONFIG_10BIT, CONFIG_12BIT, CONFIG_20BIT, finalize_compressed, group_bits_py, sw_rle_encode
+from brother_xl2hb.codec.rle import (
+    CONFIG_10BIT,
+    CONFIG_12BIT,
+    CONFIG_20BIT,
+    finalize_compressed,
+    group_bits_py,
+    sw_rle_encode,
+)
 
-_rle_fast = pytest.importorskip("_rle_fast")
+_rle_fast = pytest.importorskip("brother_xl2hb._native._rle_fast")
 if not hasattr(_rle_fast, "encode_sw_rle"):
     pytest.skip("_rle_fast built without encode_sw_rle; rebuild the extension", allow_module_level=True)
 encode_sw_rle = _rle_fast.encode_sw_rle

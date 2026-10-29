@@ -56,6 +56,6 @@ jobs:
         # The Cython comparison tests skip when a module is missing; fail
         # here instead so a broken build cannot pass silently.
         if: matrix.variant == 'cython'
-        run: uv run python -c "import sys; sys.path.insert(0, 'src'); import _rle_fast, _color_fast, _dither_fast, _band_fast, _fine_fast"
+        run: uv run python -c "import sys; sys.path.insert(0, 'src'); from brother_xl2hb._native import _rle_fast, _color_fast, _dither_fast, _band_fast, _fine_fast"
       - name: Run pytest
         run: uv run pytest tests/

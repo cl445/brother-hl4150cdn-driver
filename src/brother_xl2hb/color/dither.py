@@ -25,14 +25,14 @@ import numpy as np
 import numpy.typing as npt
 
 try:
-    from _dither_fast import dither_row_1bpp  # type: ignore[import-not-found]
+    from brother_xl2hb._native._dither_fast import dither_row_1bpp  # type: ignore[import-not-found]
 
     HAS_CYTHON_DITHER = True
 except ImportError:
     HAS_CYTHON_DITHER = False
 
 try:
-    from _fine_fast import dither_row_4bpp  # type: ignore[import-not-found]
+    from brother_xl2hb._native._fine_fast import dither_row_4bpp  # type: ignore[import-not-found]
 
     HAS_CYTHON_DITHER_4BPP = True
 except ImportError:

@@ -27,7 +27,7 @@ wheels = [
 [[package]]
 name = "brother-hl4150cdn-driver"
 version = "1.2.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "numpy" },
 ]

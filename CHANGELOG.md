@@ -7,10 +7,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
-- The CLI without CUPS is `src/cli.py`; `src/brfilter.py` and the
-  `brother_encode` re-export module are gone, code imports the modules
-  that define the functions. `cups/install.sh` removes both from an
-  existing installation.
+- The code is one package, `brother_xl2hb`, with the subpackages `codec`,
+  `color`, `protocol`, `render` and `_native` (Cython). The CLI without
+  CUPS is `uv run brother-xl2hb`; `src/brfilter.py` and the
+  `brother_encode` re-export module are gone.
+- `scripts/extract_blobs.sh` puts Brother's tables into
+  `src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`; re-run it
+  after pulling. `cups/install.sh` replaces the flat module layout of
+  1.2.0 in `/usr/local/lib/brhl4150cdn/`.
 
 ### Fixed
 - Literal stretches longer than one block are encoded as in the original:

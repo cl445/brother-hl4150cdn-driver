@@ -6,15 +6,14 @@ import random
 import numpy as np
 import pytest
 
-import color_lut
-import dither
-import fine_encoder
-import pipeline
-from fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane_py
-from pipeline import filter_pages
-from settings import ColorMatching, MediaType, PageSize, PrintSettings, Resolution
+from brother_xl2hb.codec import fine_encoder
+from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane_py
+from brother_xl2hb.color import color_lut, dither
+from brother_xl2hb.render import pipeline
+from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.settings import ColorMatching, MediaType, PageSize, PrintSettings, Resolution
 
-_fine_fast = pytest.importorskip("_fine_fast")
+_fine_fast = pytest.importorskip("brother_xl2hb._native._fine_fast")
 
 _LENGTHS = [0, 1, 2, 11, 12, 13, 1023, 1024, 1025, 2380, 4000]
 _PALETTE = [0x00, 0xFF, 0x0F, 0xF0, 0x0E, 0xE0, 0xF6, 0x6F, 0x44, 0x20, 0x02, 0x11, 0xEE, 0x1F, 0xF1]

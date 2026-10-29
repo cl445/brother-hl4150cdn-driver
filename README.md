@@ -109,15 +109,15 @@ Copies come from the standard `-n` / `copies` option.
 
 ```bash
 # PPM in, XL2HB raw stream out
-cat page.ppm | uv run python src/cli.py \
+cat page.ppm | uv run brother-xl2hb \
     --paper Letter --duplex long --toner-save \
   > page.xl2hb
 
 # Send straight to the printer (network)
-cat page.ppm | uv run python src/cli.py | nc <printer-ip> 9100
+cat page.ppm | uv run brother-xl2hb | nc <printer-ip> 9100
 
 # …or via USB
-cat page.ppm | uv run python src/cli.py > /dev/usb/lp0
+cat page.ppm | uv run brother-xl2hb > /dev/usb/lp0
 ```
 
 ## Development
@@ -133,6 +133,21 @@ uv run nox -s typecheck       # pyrefly
 uv run nox -s deps            # deptry
 uv run nox -s tests           # pytest (needs extracted blobs)
 ```
+
+The code is one package, `src/brother_xl2hb/`:
+
+| Subpackage | Contents |
+|---|---|
+| `codec` | plane RLE encoders (Normal) and the APT codec (Fine) |
+| `color` | colour grids, input remap, saturation, ordered dither |
+| `protocol` | XL2HB stream writer and PJL |
+| `render` | PPM input, band rendering, the job pipeline |
+| `_native` | optional Cython kernels, each with a pure-Python fallback |
+
+`settings`, `cli` and `cups_filter` sit at the top; `cups/brhl4150cdn-filter`
+only puts the package on the path and calls `cups_filter.main`.
+`scripts/extract_blobs.sh` writes Brother's tables to
+`src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`.
 
 The Cython modules are optional in development too; build them in place
 with:

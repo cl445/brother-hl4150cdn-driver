@@ -310,8 +310,8 @@ def check_model(trace: DitherTrace) -> bool:
 
 
 def compare_python_tables(trace: DitherTrace) -> None:
-    """Compare the dumped tables with what src/dither.py loads for Fine mode."""
-    from dither import load_brcd_tables  # noqa: PLC0415
+    """Compare the dumped tables with what brother_xl2hb.color.dither loads for Fine mode."""
+    from brother_xl2hb.color.dither import load_brcd_tables  # noqa: PLC0415
 
     lut_dir = fine_diff.BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "lut"
     py = load_brcd_tables(str(lut_dir), fine=True) or {}
@@ -393,7 +393,7 @@ def main() -> int:
     print("VALIDATION", "PASSED" if ok else "FAILED")
     print("table-lookup model on the traced input:")
     check_model(trace)
-    print("dumped tables vs src/dither.py load_brcd_tables(fine=True):")
+    print("dumped tables vs dither.load_brcd_tables(fine=True):")
     compare_python_tables(trace)
     if args.save:
         save_npz(trace, args.save)

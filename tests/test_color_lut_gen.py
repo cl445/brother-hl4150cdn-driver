@@ -12,14 +12,14 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from color_lut_gen import (
+from brother_xl2hb.color.color_lut_gen import (
     generate_interp_tables,
     generate_rgb_default_lut,
     generate_srgb_default_lut,
 )
 
 # Data directory containing original binary tables
-_DATA_DIR = Path(__file__).resolve().parent.parent / "src" / "color_data"
+_DATA_DIR = Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "color_data"
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ class TestFallbackIntegration:
     @pytest.fixture(autouse=True)
     def _fresh_caches(self):
         """The tests swap the data directory; start and end with empty caches."""
-        import color_lut
+        from brother_xl2hb.color import color_lut
 
         color_lut._load_data.cache_clear()
         yield
@@ -221,7 +221,7 @@ class TestFallbackIntegration:
 
     def test_color_lut_fallback(self):
         """color_lut module should fall back to generation when binaries missing."""
-        import color_lut
+        from brother_xl2hb.color import color_lut
 
         with (
             tempfile.TemporaryDirectory() as tmpdir,
@@ -233,14 +233,14 @@ class TestFallbackIntegration:
 
     def test_pipeline_without_binaries(self):
         """Full pipeline should work without binary data files."""
-        import color_lut
+        from brother_xl2hb.color import color_lut
 
         with (
             tempfile.TemporaryDirectory() as tmpdir,
             mock.patch.object(color_lut, "_DATA_DIR", Path(tmpdir)),
         ):
-            from pipeline import filter_page
-            from settings import PrintSettings
+            from brother_xl2hb.render.pipeline import filter_page
+            from brother_xl2hb.settings import PrintSettings
 
             w, h = 100, 10
             pixels = bytes([128, 0, 0]) * (w * h)  # Red pixels

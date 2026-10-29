@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import filter_pages
-from settings import PrintSettings
-from xl2hb import OP_END_SESSION, generate_pjl_footer
+from brother_xl2hb.protocol.xl2hb import OP_END_SESSION, generate_pjl_footer
+from brother_xl2hb.render.pipeline import filter_pages
+from brother_xl2hb.settings import PrintSettings
 
 _FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn-filter"
 
@@ -189,14 +189,14 @@ def test_ppd_offers_normal_and_fine():
 
 @pytest.mark.parametrize(("value", "expected"), [("2", 2), ("0", 0), ("-1", 0)])
 def test_render_threads_from_environment(monkeypatch, value, expected):
-    import pipeline
+    from brother_xl2hb.render import pipeline
 
     monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", value)
     assert pipeline._render_threads() == expected
 
 
 def test_non_numeric_render_threads_fall_back_to_the_default(monkeypatch, caplog):
-    import pipeline
+    from brother_xl2hb.render import pipeline
 
     monkeypatch.delenv("BRHL4150CDN_RENDER_THREADS", raising=False)
     default = pipeline._render_threads()

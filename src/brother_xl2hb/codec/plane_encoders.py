@@ -9,7 +9,7 @@ All three return an empty bytestring when the input scanline is all-zero
 output would otherwise exceed the input length.
 """
 
-from rle import (
+from brother_xl2hb.codec.rle import (
     CONFIG_10BIT,
     CONFIG_12BIT,
     CONFIG_20BIT,
@@ -20,7 +20,7 @@ from rle import (
 )
 
 try:
-    from _rle_fast import encode_sw_rle  # type: ignore[import-not-found]
+    from brother_xl2hb._native._rle_fast import encode_sw_rle  # type: ignore[import-not-found]
 
     _HAS_CYTHON_SW_RLE = True
 except ImportError:

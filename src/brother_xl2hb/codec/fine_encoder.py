@@ -14,7 +14,7 @@ uses the native `_fine_fast` codec when it is built and falls back to
 """
 
 try:
-    from _fine_fast import encode_fine_plane as _encode_fine_plane_native  # type: ignore[import-not-found]
+    from brother_xl2hb._native._fine_fast import encode_fine_plane as _encode_fine_plane_native  # type: ignore[import-not-found]
 
     HAS_CYTHON_FINE = True
 except ImportError:

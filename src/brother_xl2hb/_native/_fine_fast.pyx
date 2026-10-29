@@ -16,7 +16,7 @@ from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.stdlib cimport free, malloc, realloc
 from libc.string cimport memset
 
-from _color_fast cimport interp_pixel
+from brother_xl2hb._native._color_fast cimport interp_pixel
 
 ctypedef unsigned char uchar
 
