@@ -15,7 +15,6 @@ matrix of ready-made nibbles, indexed by page row and column. Without
 BRCD tables, a Bayer threshold matrix interpolates between levels.
 """
 
-import functools
 import logging
 import struct
 from dataclasses import dataclass, field
@@ -136,6 +135,10 @@ def _extract_threshold_matrix(patterns: list[bytes], width: int, height: int) ->
 
     Returns:
         Threshold matrix of shape (height, width), uint8.
+
+    Raises:
+        ValueError: If a dot is set at ink level 0, which no uint8 threshold
+            can express (it would have to be -1).
     """
     total = height * width
 
@@ -147,6 +150,10 @@ def _extract_threshold_matrix(patterns: list[bytes], width: int, height: int) ->
     # argmax on bool array returns index of first True
     ever_set = np.any(bits, axis=0)  # (total,)
     first_set = np.argmax(bits, axis=0)  # (total,)
+    if np.any(bits[0]):
+        # A dot already at ink 0 would need threshold -1; as uint8 it would wrap to 255 and never print.
+        msg = f"BRCD 1bpp table has {int(np.count_nonzero(bits[0]))} dots at ink level 0, not a threshold matrix"
+        raise ValueError(msg)
 
     # threshold = first_set - 1 where bit is ever set, else 255
     thresholds = np.where(ever_set, first_set - 1, 255).astype(np.uint8)
@@ -169,15 +176,22 @@ def dither_load_brcd(path: str, *, nibbles: bool = False) -> DitherChannel:
         DitherChannel with the threshold matrix or, with `nibbles`, the per-level nibbles.
 
     Raises:
-        ValueError: If the magic bytes are wrong, pattern data is truncated, or a
-            Fine table's width is not a whole number of bytes.
+        ValueError: If the magic bytes are wrong, the version does not match
+            `nibbles`, pattern data is truncated, a Fine table's width is not
+            a whole number of bytes, or a 1bpp table sets a dot at ink 0.
     """
     with Path(path).open("rb") as f:
         magic = f.read(4)
         if magic != b"BRCD":
             msg = f"Not a BRCD file: {magic!r}"
             raise ValueError(msg)
-        f.read(2)  # version + reserved
+        version = f.read(1)
+        expected = b"1" if nibbles else b"0"
+        if version != expected:
+            kind = "Fine (nibble)" if nibbles else "Normal (1bpp)"
+            msg = f"BRCD version {version!r} in {path}, a {kind} table has {expected!r}"
+            raise ValueError(msg)
+        f.read(1)  # reserved
         width, height = struct.unpack("<HH", f.read(4))
         row_bytes = (width * height + 7) // 8
         patterns = []
@@ -192,8 +206,8 @@ def dither_load_brcd(path: str, *, nibbles: bool = False) -> DitherChannel:
             msg = f"Fine BRCD width must be a multiple of 8 bits, got {width} in {path}"
             raise ValueError(msg)
         cols = width >> 3
-        levels = np.frombuffer(b"".join(patterns), dtype=np.uint8).reshape(256, row_bytes)
-        levels = levels[:, : height * cols].reshape(256, height, cols).copy()
+        flat = np.frombuffer(b"".join(patterns), dtype=np.uint8).reshape(256, row_bytes)
+        levels = flat[:, : height * cols].reshape(256, height, cols).copy()
         return DitherChannel(width=cols, height=height, threshold_matrix=None, nibble_levels=levels)
     return DitherChannel(
         width=width, height=height, threshold_matrix=_extract_threshold_matrix(patterns, width, height)
@@ -323,19 +337,7 @@ def load_dither_tables(
     return _build_bayer_tables(toner_save=toner_save)
 
 
-@functools.cache
-def _ensure_defaults() -> dict[str, DitherChannel]:
-    """Return the default (Bayer) dither channels, built once.
-
-    Returns:
-        Channel dict keyed by 'K', 'C', 'M', 'Y'.
-    """
-    return _build_bayer_tables(toner_save=False)
-
-
-def dither_channel_1bpp_arr(
-    row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel | None = None
-) -> bytes:
+def dither_channel_1bpp_arr(row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel) -> bytes:
     """Dither a single-channel pixel row to a 1bpp packed bitmap.
 
     Args:
@@ -343,14 +345,11 @@ def dither_channel_1bpp_arr(
             extra pixels are ignored
         y: scanline index (selects the threshold row)
         width: number of pixels
-        channel: DitherChannel (uses the default K channel if None)
+        channel: the plane's DitherChannel
 
     Returns:
         ceil(width/8) bytes of packed 1bpp bitmap (MSB-first).
     """
-    if channel is None:
-        channel = _ensure_defaults()["K"]
-
     thresholds = channel.tiled_thresholds(width)[y % channel.height]
     if _dither_fast is not None:
         return _dither_fast.dither_row_1bpp(row_arr, thresholds, width)
@@ -358,7 +357,7 @@ def dither_channel_1bpp_arr(
     return bytes(np.packbits(dots)[: (width + 7) // 8])
 
 
-def dither_channel_1bpp(row: bytes, y: int, width: int, channel: DitherChannel | None = None) -> bytes:
+def dither_channel_1bpp(row: bytes, y: int, width: int, channel: DitherChannel) -> bytes:
     """Bytes form of :func:`dither_channel_1bpp_arr`.
 
     Returns:
@@ -381,9 +380,7 @@ def _nibble_pack(levels: npt.NDArray[np.uint8], width: int) -> bytes:
     return bytes((levels[0::2].astype(np.uint8) << 4) | levels[1::2].astype(np.uint8))
 
 
-def dither_channel_4bpp_arr(
-    row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel | None = None
-) -> bytes:
+def dither_channel_4bpp_arr(row_arr: npt.NDArray[np.uint8], y: int, width: int, channel: DitherChannel) -> bytes:
     """Dither a single-channel pixel row to 4bpp nibble-packed output.
 
     Args:
@@ -391,15 +388,12 @@ def dither_channel_4bpp_arr(
             extra pixels are ignored
         y: scanline index (selects the threshold row)
         width: number of pixels
-        channel: DitherChannel (uses the default K channel if None)
+        channel: the plane's DitherChannel
 
     Returns:
         (width + 1) // 2 bytes of nibble-packed output (high nibble = first pixel).
         Each nibble is 0-15 (0=no ink, 15=full ink).
     """
-    if channel is None:
-        channel = _ensure_defaults()["K"]
-
     if channel.nibble_levels is not None:
         # Plain table lookup, as dither_ordered_4ch_4bpp: levels[ink][y % h][x % w].
         if _fine_fast is not None:
@@ -417,7 +411,7 @@ def dither_channel_4bpp_arr(
     return _nibble_pack(levels.astype(np.uint8), width)
 
 
-def dither_channel_4bpp(row: bytes, y: int, width: int, channel: DitherChannel | None = None) -> bytes:
+def dither_channel_4bpp(row: bytes, y: int, width: int, channel: DitherChannel) -> bytes:
     """Bytes form of :func:`dither_channel_4bpp_arr`.
 
     Returns:

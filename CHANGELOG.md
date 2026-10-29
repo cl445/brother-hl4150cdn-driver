@@ -52,12 +52,26 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   INFO). The Bayer warning names the Fine tables when those are missing.
 - pytest stops when a built native extension is older than its
   `.pyx`/`.pxd`.
+- `scripts/extract_blobs.sh` checks the downloaded package's SHA-256
+  instead of its MD5.
+- `cups/install.sh` installs numpy below 3 and builds the native modules
+  with Cython 3.3.0 and setuptools 84.2.1, the versions CI uses. It
+  warns about missing colour grids as well as missing dither tables.
+- `scripts/fine_diff.py` and `scripts/trace_dither.py` cache in `.cache/`
+  instead of `build/`, which is left to setuptools.
+- CI also runs the tests on Python 3.14.
 
 ### Fixed
+- The CUPS filter imports the package installed beside it first; a
+  `src/` directory next to its own directory (the repository layout) is
+  only a fallback when that package is missing.
 - Literal stretches longer than one block are encoded as in the original:
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
   repeats the last word after the flush. A scanline has at most about 425
   words, so printed output does not change (#3).
+- Grayscale (BRMonoColor=Mono) ignores the Red, Green and Blue keys and
+  keeps Brightness and Contrast with BRColorMatching=None, as the
+  original does.
 
 ## [1.2.0] — 2026-10-28
 
