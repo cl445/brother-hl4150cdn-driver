@@ -200,10 +200,15 @@ def _pattern_flush(
     pattern_mode: int,
     match_count: int,
     pat_bytes: tuple[int, int, int],
-    ring: bytearray,
+    ring: bytes,
     pattern_start: int,
 ) -> int:
     """Flush a detected pattern to output.
+
+    The short headers (match counts below 6/4/5/4/3/3 for modes 0-5) are
+    unreachable, since the encoder never ends a pattern that short. They
+    mirror the binary's flush code at 0805145a, 08051543, 080515ed,
+    080516bd, 0805178d and 08051853.
 
     Returns:
         Updated `pattern_start` index after consuming the matched bytes.
@@ -296,7 +301,10 @@ def compress_pattern_encode(data: bytes) -> bytes:
     """
     output = bytearray()
 
-    ring = bytearray()
+    # The binary copies the input into a 1 KiB ring buffer; patterns never
+    # look back past `pattern_start`, so indexing the input directly is
+    # equivalent.
+    ring = bytes(data)
     pattern_start = 0
 
     has_pattern = False
@@ -307,9 +315,8 @@ def compress_pattern_encode(data: bytes) -> bytes:
     pat_byte_1 = 0
     pat_byte_2 = 0
 
-    for src_val in data:
-        ring.append(src_val)
-        buf_len = len(ring) - pattern_start
+    for pos, src_val in enumerate(ring):
+        buf_len = pos + 1 - pattern_start
 
         do_flush = False
         skip_phase_reset = False
@@ -410,12 +417,12 @@ def compress_pattern_encode(data: bytes) -> bytes:
                 stride2_half += 2
             stride2_half >>= 1
 
-            # Stride-3 first: pat_byte_0 at positions 0,3,6,9
-            stride3_first = 3
-            stride2_len = 1
-            while stride3_first < 12 and ring[pp + stride3_first] == pat_byte_0:
-                stride3_first += 3
-                stride2_len += 1
+            # Stride-3 A: pat_byte_0 at positions 0,3,6,9
+            s = 3
+            stride3_a_len = 1
+            while s < 12 and ring[pp + s] == pat_byte_0:
+                s += 3
+                stride3_a_len += 1
 
             pat_byte_1 = ring[pp + 1]
 
@@ -431,7 +438,7 @@ def compress_pattern_encode(data: bytes) -> bytes:
             pat_byte_2 = ring[pp + 2]
 
             # Stride-3 B and C lengths
-            if stride2_len < 2:
+            if stride3_a_len < 2:
                 stride3_b_len = 1
                 stride3_c_len = 1
             else:
@@ -440,14 +447,14 @@ def compress_pattern_encode(data: bytes) -> bytes:
                 while s < 12 and ring[pp + s] == pat_byte_1:
                     s += 3
                     stride3_b_len += 1
-                stride3_b_len = min(stride3_b_len, stride2_len)
+                stride3_b_len = min(stride3_b_len, stride3_a_len)
 
                 s = 5
                 stride3_c_len = 1
                 while s < 12 and ring[pp + s] == pat_byte_2:
                     s += 3
                     stride3_c_len += 1
-                stride3_c_len = min(stride3_c_len, stride2_len)
+                stride3_c_len = min(stride3_c_len, stride3_a_len)
 
             # Min of stride3_b and stride3_c
             stride3_alt_len = 1
@@ -483,7 +490,7 @@ def compress_pattern_encode(data: bytes) -> bytes:
                 for _ in range(2):
                     output.append(ring[pattern_start])
                     pattern_start += 1
-            elif stride2_len == 4:
+            elif stride3_a_len == 4:
                 pattern_mode = 3
                 has_pattern = True
                 match_count = 4
@@ -510,17 +517,18 @@ def compress_pattern_encode(data: bytes) -> bytes:
                     else:
                         lit_count = stride3_b_len * 3
                         do_literal_copy = True
-                elif stride3_c_len >= 2 if stride2_len >= 2 else False:
+                elif stride3_c_len >= 2:
                     lit_count = 2
                     do_literal_copy = True
-                elif stride2_len >= 3:
-                    lit_count = stride2_len
-                    if stride2_len > 3:
+                elif stride3_a_len >= 3:
+                    lit_count = stride3_a_len
+                    # At most 4, and 4 is taken above; mirrors the jump to 080516bd.
+                    if stride3_a_len > 3:
                         pattern_mode = 3
-                        match_count = stride2_len
+                        match_count = stride3_a_len
                         do_flush = True
                     else:
-                        lit_count = stride2_len * 3
+                        lit_count = stride3_a_len * 3
                         do_literal_copy = True
                 elif stride2_b_len >= 2:
                     lit_count = stride2_b_len
@@ -545,6 +553,8 @@ def compress_pattern_encode(data: bytes) -> bytes:
                         lit_count = 1
                     else:
                         lit_count = stride1_len
+                        # Six equal bytes give stride2_half >= 3 above;
+                        # mirrors the jump to 0805145a.
                         if stride1_len > 5:
                             pattern_mode = 0
                             match_count = stride1_len
@@ -583,10 +593,7 @@ def compress_pattern_encode(data: bytes) -> bytes:
             pattern_start,
         )
 
-    while pattern_start < len(ring):
-        output.append(ring[pattern_start])
-        pattern_start += 1
-
+    output += ring[pattern_start:]
     return bytes(output)
 
 
@@ -609,7 +616,4 @@ def encode_fine_plane_py(data: bytes) -> bytes:
     """
     if not any(data):
         return b""
-    stage1 = compress_rle_preencode(data)
-    if not stage1:
-        return b""
-    return compress_pattern_encode(stage1)
+    return compress_pattern_encode(compress_rle_preencode(data))
