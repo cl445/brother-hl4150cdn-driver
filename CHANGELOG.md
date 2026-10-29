@@ -16,6 +16,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `protocol.pjl`. `render.pipeline` is split into `job` (session, page
   order, duplex and reverse flips, skip blank) and `render.rows`,
   `render.lines`, `render.bands` and `render.page`.
+- Everything model-specific is one `PrinterModel`, `models.HL4150CDN`:
+  paper sizes and points, page origin, media and tray codes, the dither
+  table set, the colour grid choice, PJL and which pages are sent
+  bottom-up. `job.filter_pages`, the CUPS filter and the CLI take a model
+  and default to the HL-4150CDN; the CLI has `--model`.
 - `scripts/extract_blobs.sh` puts Brother's tables into
   `src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`; re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of

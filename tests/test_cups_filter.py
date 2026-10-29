@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from brother_xl2hb import cups_filter as cups_filter_module
+from brother_xl2hb.models import HL4150CDN
 
 
 @pytest.fixture(scope="module")
@@ -32,13 +33,13 @@ def test_paper_points_match_the_ppd(cups_filter):
 
     ppd = _ppd_paper_dimensions()
     assert set(ppd) == {size.value for size in PageSize}
-    assert ppd == cups_filter.PAPER_POINTS
+    assert ppd == HL4150CDN.paper_points
 
 
 @pytest.mark.parametrize("page_size", sorted(_ppd_paper_dimensions()))
 def test_gs_command_sets_the_page_size_in_points(cups_filter, monkeypatch, page_size):
     monkeypatch.setattr(cups_filter, "find_gs", lambda: "gs")
-    cmd = cups_filter.build_gs_command("job.ps", page_size)
+    cmd = cups_filter.build_gs_command("job.ps", page_size, HL4150CDN)
     width, height = _ppd_paper_dimensions()[page_size]
     assert f"-dDEVICEWIDTHPOINTS={width}" in cmd
     assert f"-dDEVICEHEIGHTPOINTS={height}" in cmd
@@ -54,7 +55,7 @@ def test_ghostscript_renders_the_requested_size(cups_filter, tmp_path, page_size
     job = tmp_path / "job.ps"
     job.write_bytes(b"%!PS\nshowpage\n")
     proc = cups_filter.subprocess.Popen(
-        cups_filter.build_gs_command(str(job), page_size),
+        cups_filter.build_gs_command(str(job), page_size, HL4150CDN),
         stdout=cups_filter.subprocess.PIPE,
         stderr=cups_filter.subprocess.DEVNULL,
     )
@@ -65,5 +66,5 @@ def test_ghostscript_renders_the_requested_size(cups_filter, tmp_path, page_size
         proc.wait()
     fields = [line for line in header.split(b"\n")[:4] if not line.startswith(b"#")]
     width, height = (int(v) for v in fields[1].split())
-    w_pt, h_pt = cups_filter.PAPER_POINTS[page_size]
+    w_pt, h_pt = HL4150CDN.paper_points[page_size]
     assert (width, height) == (round(w_pt * 600 / 72), round(h_pt * 600 / 72))

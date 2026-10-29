@@ -2,7 +2,8 @@
 
 `filter_pages` renders a whole job (simplex or duplex) inside one XL2HB
 session, as the manufacturer's filter does; `filter_page` is the
-single-page entry point.
+single-page entry point. Both drive the HL-4150CDN unless given another
+`PrinterModel`.
 """
 
 import contextlib
@@ -14,14 +15,12 @@ from typing import BinaryIO
 from brother_xl2hb.color.dither import (
     DitherChannel,
 )
-from brother_xl2hb.models.hl4150cdn import (
-    PAPER_SIZES,
-)
-from brother_xl2hb.protocol.pjl import generate_pjl_footer, generate_pjl_header
+from brother_xl2hb.models import DEFAULT_MODEL
+from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
 from brother_xl2hb.render.page import init_channels, render_page
 from brother_xl2hb.render.rows import PageBuffer, PageData, collect_rows, is_blank_page
-from brother_xl2hb.settings import DuplexMode, ImproveOutput, MonoColor, PrintSettings, Resolution
+from brother_xl2hb.settings import DuplexMode, PrintSettings
 
 logger = logging.getLogger(__name__)
 
@@ -72,28 +71,16 @@ def filter_page(
     pixel_data: PageBuffer,
     settings: PrintSettings,
     output: BinaryIO,
+    model: PrinterModel = DEFAULT_MODEL,
 ) -> None:
     """Convert PPM pixel data to XL2HB and write to output."""
     if settings.skip_blank and is_blank_page(pixel_data):
         return
 
-    filter_pages([(width, height, pixel_data)], settings, output)
+    filter_pages([(width, height, pixel_data)], settings, output, model)
 
-    _, paper_h = PAPER_SIZES[settings.page_size]
+    _, paper_h = model.paper_sizes[settings.page_size]
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
-
-
-def page_is_flipped(settings: PrintSettings, *, back_side: bool) -> bool:
-    """Whether a page is sent bottom-up with the back-side marker.
-
-    Long-edge back pages are sent that way (rows mirrored, columns not).
-    BRReverse makes Brother's filter send every page that way, so on a
-    long-edge back page the two cancel out (verified against captures).
-
-    Returns:
-        True if the page is mirrored top to bottom.
-    """
-    return (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
 
 
 def _render_pages(
@@ -101,6 +88,7 @@ def _render_pages(
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
     output: BinaryIO,
+    model: PrinterModel,
 ) -> None:
     """Render pages in input order; with duplex every second page is a back side.
 
@@ -125,7 +113,8 @@ def _render_pages(
             pixel_data,
             settings,
             channels,
-            flip=page_is_flipped(settings, back_side=duplex and index % 2 == 1),
+            model,
+            flip=model.page_is_flipped(settings, duplex and index % 2 == 1),
         )
         # Release the page's raster before the next page is read; with
         # whole-page buffers (skip blank, flipped pages) two would add up.
@@ -139,12 +128,14 @@ def filter_pages(
     pages: Iterable[tuple[int, int, PageData]],
     settings: PrintSettings,
     output: BinaryIO,
+    model: PrinterModel = DEFAULT_MODEL,
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
     Pages are consumed lazily in input order; with duplex, every second
-    page is a back side. `settings.reverse` keeps the page order and sends
-    each page bottom-up with the back-side marker, as Brother's filter does.
+    page is a back side. Which pages go bottom-up with the back-side
+    marker (long-edge back sides, `settings.reverse`) is the model's
+    `page_is_flipped`.
     `settings.skip_blank` drops pure-white pages before sides are assigned.
 
     If reading or rendering a page fails, the exception propagates after
@@ -155,28 +146,13 @@ def filter_pages(
         pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings of the job
         output: writable binary stream
+        model: the printer to drive
     """
     if settings.skip_blank:
         # Idempotent: callers that drop blanks first to detect an empty job
         # hand over whole-page buffers, which are only viewed again here.
         pages = drop_blank_pages(pages)
-    # PJL header always reports 600 dpi; Fine mode differs only in dithering.
-    color = settings.mono_color != MonoColor.MONO
-    pjl = generate_pjl_header(
-        resolution=600,
-        color=color,
-        # Only BRMonoColor=Auto sets the colour-adapt flag (printer_config_init).
-        color_adapt=settings.mono_color == MonoColor.AUTO,
-        # ECONOMODE is always OFF; toner-save is implemented through the
-        # -TS_cache09.bin dither tables instead.
-        economode=False,
-        less_paper_curl=settings.improve_output == ImproveOutput.LESS_PAPER_CURL,
-        fix_intensity=settings.improve_output == ImproveOutput.FIX_INTENSITY,
-        apt_mode=(settings.resolution == Resolution.FINE),
-        improve_gray=settings.improve_gray,
-        ucrgcr=settings.enhance_black,
-    )
-    output.write(pjl)
+    output.write(model.pjl_header(settings))
 
     # XL2HB stream — one session wrapping all pages.
     w = XL2HBWriter(output)
@@ -185,21 +161,21 @@ def filter_pages(
     w.write_open_data_source()
 
     try:
-        channels = init_channels(settings)
-        _render_pages(pages, settings, channels, output)
+        channels = init_channels(settings, model)
+        _render_pages(pages, settings, channels, output, model)
     except Exception:
         # Only whole pages have reached `output` (see _render_pages), so
         # the session can still be closed: the printer prints the pages it
         # got and ends the job instead of waiting for the rest of a page.
         # If `output` itself failed there is nothing more to do.
         with contextlib.suppress(OSError):
-            _end_session(w, output)
+            _end_session(w, output, model)
         raise
-    _end_session(w, output)
+    _end_session(w, output, model)
 
 
-def _end_session(w: XL2HBWriter, output: BinaryIO) -> None:
+def _end_session(w: XL2HBWriter, output: BinaryIO, model: PrinterModel) -> None:
     """Close the data source and the session, then write the PJL footer."""
     w.write_close_data_source()
     w.write_end_session()
-    output.write(generate_pjl_footer())
+    output.write(model.pjl_footer())

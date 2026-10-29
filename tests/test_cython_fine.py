@@ -10,6 +10,7 @@ from brother_xl2hb.codec import fine_encoder
 from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane_py
 from brother_xl2hb.color import color_lut, dither
 from brother_xl2hb.job import filter_pages
+from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render import bands
 from brother_xl2hb.render.bands import band_kernel_colour
 from brother_xl2hb.render.page import init_channels
@@ -137,7 +138,7 @@ _A4_W = 4760
 
 @pytest.fixture(scope="module")
 def fine_channels():
-    channels = init_channels(PrintSettings(resolution=Resolution.FINE))
+    channels = init_channels(PrintSettings(resolution=Resolution.FINE), HL4150CDN)
     if any(channel.nibble_levels is None for channel in channels.values()):
         pytest.skip("Fine BRCD tables not available (run scripts/extract_blobs.sh)")
     return channels

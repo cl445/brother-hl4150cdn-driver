@@ -5,16 +5,8 @@ from brother_xl2hb.color.dither import (
     DitherChannel,
     load_dither_tables,
 )
-from brother_xl2hb.color.transforms import build_input_remap_lut, color_table
-from brother_xl2hb.models.hl4150cdn import (
-    DUPLEX_MAP,
-    MEDIA_SOURCE,
-    PAPER_SIZES,
-    get_image_dimensions,
-    get_image_dimensions_fine,
-    media_size_code,
-    media_type_code,
-)
+from brother_xl2hb.color.transforms import build_input_remap_lut
+from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
 from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
 from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, encode_lines, encode_lines_mono
@@ -29,14 +21,15 @@ def render_page(
     pixel_data: PageData,
     settings: PrintSettings,
     channels: dict[str, DitherChannel],
+    model: PrinterModel,
     *,
     flip: bool = False,
 ) -> None:
     """Render one page within an already-open session.
 
     Handles: BeginPage -> scanline loop -> flush -> EndPage. `flip` sends
-    the page bottom-up with the back-side marker (which pages: see
-    `job.page_is_flipped`). Scanlines are read as views into `pixel_data`,
+    the page bottom-up with the back-side marker (which pages:
+    `PrinterModel.page_is_flipped`). Scanlines are read as views into `pixel_data`,
     which may also be a stream of row blocks; only flipped pages are
     collected into one buffer to be mirrored.
 
@@ -45,14 +38,10 @@ def render_page(
     """
     is_fine = settings.resolution == Resolution.FINE
     page_size = settings.page_size
-    _, paper_h = PAPER_SIZES[page_size]
+    _, paper_h = model.paper_sizes[page_size]
 
-    if is_fine:
-        sw, sh = get_image_dimensions_fine(page_size)
-        bpl = (sw + 1) // 2  # 4bpp: 2 pixels per byte
-    else:
-        sw, sh = get_image_dimensions(page_size)
-        bpl = (sw + 7) // 8  # 1bpp: 8 pixels per byte
+    sw, sh = model.image_dimensions(page_size, fine=is_fine)
+    bpl = (sw + 1) // 2 if is_fine else (sw + 7) // 8  # 4bpp: 2 pixels per byte, 1bpp: 8
 
     # A flipped page is mirrored top to bottom, columns stay.
     if flip:
@@ -64,13 +53,13 @@ def render_page(
         blocks = pixel_data
 
     w.write_begin_page(
-        media_size=media_size_code(page_size),
-        media_source=MEDIA_SOURCE[settings.input_slot],
-        media_type=media_type_code(settings.media_type),
-        duplex_mode=DUPLEX_MAP.get(settings.duplex),
+        media_size=model.media_size_code(page_size),
+        media_source=model.media_source[settings.input_slot],
+        media_type=model.media_type_code(settings.media_type),
+        duplex_mode=model.duplex_page_mode.get(settings.duplex),
         back_side_marker=flip,
     )
-    w.write_set_page_origin()
+    w.write_set_page_origin(*model.page_origin)
     mono = settings.mono_color == MonoColor.MONO
     w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine, color=not mono)
 
@@ -89,7 +78,7 @@ def render_page(
     # Pre-build LUTs (constant per page). The cmyk profile (colour matching
     # None) takes no brightness/contrast/RGB-key remap: the original sends it
     # through cmyk_basic, which skips compress_color_manage.
-    table = color_table(settings)
+    table = model.color_table(settings)
     input_remap = None
     if table.profile != "cmyk" and (
         settings.brightness != 0
@@ -144,11 +133,11 @@ def render_page(
     w.write_end_page(copies=settings.copies)
 
 
-def init_channels(settings: PrintSettings) -> dict[str, DitherChannel]:
+def init_channels(settings: PrintSettings, model: PrinterModel) -> dict[str, DitherChannel]:
     """Initialize dither channels for the current print settings.
 
-    The BRCD tables are read from `blobs.LUT_DIR` (`lut/` inside the
-    package, in the repository and when installed).
+    The BRCD tables are `model.dither_cache`'s set in `blobs.LUT_DIR`
+    (`lut/` inside the package, in the repository and when installed).
     `load_dither_tables` handles the fine→normal fallback and the Bayer
     fallback when no BRCD set matches.
 
@@ -157,6 +146,7 @@ def init_channels(settings: PrintSettings) -> dict[str, DitherChannel]:
     """
     return load_dither_tables(
         str(LUT_DIR),
+        cache=model.dither_cache,
         fine=settings.resolution == Resolution.FINE,
         toner_save=settings.toner_save,
     )

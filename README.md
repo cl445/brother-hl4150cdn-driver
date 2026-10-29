@@ -141,7 +141,7 @@ The code is one package, `src/brother_xl2hb/`:
 | `codec` | plane RLE encoders (Normal) and the APT codec (Fine) |
 | `color` | colour grids, input remap, saturation, ordered dither |
 | `protocol` | XL2HB stream writer and PJL, without model data |
-| `models` | per printer: paper geometry, media and tray codes |
+| `models` | `PrinterModel` per printer: paper geometry, media and tray codes, dither set, colour grid choice, PJL, page flips |
 | `render` | one page: PPM input, the per-line and the band path |
 | `_native` | optional Cython kernels, each with a pure-Python fallback |
 
@@ -150,6 +150,13 @@ The code is one package, `src/brother_xl2hb/`:
 only puts the package on the path and calls `cups_filter.main`.
 `scripts/extract_blobs.sh` writes Brother's tables to
 `src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`.
+
+A printer model is one `PrinterModel` (`models/base.py`): the data its
+filter writes plus a few hooks where Brother's filters differ. The
+HL-4150CDN's is `models/hl4150cdn.py`. Adding a model means a module
+like it, an entry in `models.MODELS`, its PPD, and the captures that
+show its output is byte-identical; `tests/test_models.py` checks that
+its tables cover every setting.
 
 The Cython modules are optional in development too; build them in place
 with:

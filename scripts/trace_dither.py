@@ -312,9 +312,10 @@ def check_model(trace: DitherTrace) -> bool:
 def compare_python_tables(trace: DitherTrace) -> None:
     """Compare the dumped tables with what brother_xl2hb.color.dither loads for Fine mode."""
     from brother_xl2hb.color.dither import load_brcd_tables  # noqa: PLC0415
+    from brother_xl2hb.models.hl4150cdn import DITHER_CACHE  # noqa: PLC0415
 
     lut_dir = fine_diff.BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "lut"
-    py = load_brcd_tables(str(lut_dir), fine=True) or {}
+    py = load_brcd_tables(str(lut_dir), fine=True, cache=DITHER_CACHE) or {}
     for c in CHANNELS:
         t, p = trace.tables[c], py.get(c)
         if p is None or getattr(p, "nibble_levels", None) is None:

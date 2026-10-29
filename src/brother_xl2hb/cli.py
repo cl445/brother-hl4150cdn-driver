@@ -9,6 +9,7 @@ from typing import BinaryIO
 
 from brother_xl2hb.color.color_lut import INVERSE_LUT_DIR, write_inverse_luts
 from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
+from brother_xl2hb.models import MODELS
 from brother_xl2hb.render.ppm import read_ppm
 from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 
@@ -38,6 +39,9 @@ def main(argv: list[str] | None = None) -> None:
     rendered into one XL2HB session, like the CUPS filter does.
     """
     parser = argparse.ArgumentParser(description="Brother HL-4150CDN filter (PPM -> XL2HB)")
+    parser.add_argument(
+        "--model", choices=sorted(MODELS), default="hl4150cdn", help="Printer model (default: hl4150cdn)"
+    )
     parser.add_argument("--rc", "-r", help="Path to RC file (brhl4150cdnrc)", default=None)
     parser.add_argument("--paper", "-p", help="Paper size (e.g. A4, Letter)", default=None)
     parser.add_argument("--mono", "-m", action="store_true", help="Print monochrome")
@@ -113,7 +117,7 @@ def main(argv: list[str] | None = None) -> None:
     pages = chain_peeked(first, pages)
     del first
     output = sys.stdout.buffer
-    filter_pages(pages, settings, output)
+    filter_pages(pages, settings, output, MODELS[args.model])
     output.flush()
 
 
