@@ -7,8 +7,7 @@ updates:
     schedule:
       interval: "monthly"
     # Bump uv.lock only. The lower bounds in pyproject.toml stay where they
-    # are, so installs against an older system numpy (Raspberry Pi OS,
-    # Debian) keep working.
+    # are, so installs on distributions with an older numpy keep working.
     versioning-strategy: "lockfile-only"
     groups:
       python:
