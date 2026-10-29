@@ -9,8 +9,10 @@ import sys
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_SRC_DIR = _SCRIPT_DIR.parent / "src"
-sys.path.insert(0, str(_SRC_DIR if _SRC_DIR.is_dir() else _SCRIPT_DIR))
+for _dir in (_SCRIPT_DIR, _SCRIPT_DIR.parent / "src"):
+    if (_dir / "brother_xl2hb" / "__init__.py").is_file():
+        sys.path.insert(0, str(_dir))
+        break
 
 from brother_xl2hb.cups_filter import main  # noqa: E402
 from brother_xl2hb.models import MODELS  # noqa: E402
