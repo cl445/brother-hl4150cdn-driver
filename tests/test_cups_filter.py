@@ -45,16 +45,16 @@ def test_ghostscript_renders_the_requested_size(cups_filter, tmp_path, page_size
         pytest.skip("Ghostscript not installed")
     job = tmp_path / "job.ps"
     job.write_bytes(b"%!PS\nshowpage\n")
-    proc = cups_filter.subprocess.Popen(
+    # Leaving the block closes gs's stdout and reaps it.
+    with cups_filter.subprocess.Popen(
         cups_filter.build_gs_command(str(job), page_size, HL4150CDN),
         stdout=cups_filter.subprocess.PIPE,
         stderr=cups_filter.subprocess.DEVNULL,
-    )
-    try:
-        header = proc.stdout.read(512)
-    finally:
-        proc.kill()
-        proc.wait()
+    ) as proc:
+        try:
+            header = proc.stdout.read(512)
+        finally:
+            proc.kill()
     fields = [line for line in header.split(b"\n")[:4] if not line.startswith(b"#")]
     width, height = (int(v) for v in fields[1].split())
     w_pt, h_pt = HL4150CDN.paper_points[page_size]
