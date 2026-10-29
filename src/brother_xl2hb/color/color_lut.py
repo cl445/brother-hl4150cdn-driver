@@ -482,13 +482,14 @@ def _rgb_to_cmyk_interp_arr(
         total = np.maximum(total, 1)
     w = weights[:, 1:9].astype(np.int32)
 
-    # Cube base index + 8 corner gathering
+    # Cube base index + 8 corner gathering. _HI tops out at 15, so the
+    # largest index is 15 * 307 + 307 = 4912 = _LUT_ENTRIES - 1.
     cube_base = r_hi * 289 + g_hi * 17 + b_hi
     corner_idx = cube_base[:, None] + _CORNER_OFFSETS
-    np.clip(corner_idx, 0, _LUT_ENTRIES - 1, out=corner_idx)
     corners = lut[corner_idx]
 
-    # Per channel, max accumulator value is 255*255*8 = 520200 — fits int32.
+    # Per channel the weights sum to the entry's total (at most 229), so the
+    # accumulator stays below 229 * 255 = 58395 — fits int32.
     accum = (w[:, :, None] * corners).sum(axis=1)
 
     rounding = (total >> 1)[:, None]
