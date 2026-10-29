@@ -1,0 +1,41 @@
+name: Printer support
+description: Propose support for another Brother printer, ideally because you want to work on it.
+title: "Support for <printer model>"
+labels: ["printer-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check docs/other-printers.md first and comment on the existing
+        issue for your printer's family if there is one. The maintainer has no
+        access to other printers and will not add them alone, but reviews pull
+        requests and helps with the tooling (see docs/adding-a-model.md).
+  - type: input
+    id: printer
+    attributes:
+      label: Printer model
+      placeholder: e.g. HL-3170CDW
+    validations:
+      required: true
+  - type: input
+    id: package
+    attributes:
+      label: Brother's Linux LPR package
+      description: Name or URL of the `.deb` from download.brother.com, if you found it.
+      placeholder: e.g. hl3170cdwlpr-1.1.2-1.i386.deb
+  - type: dropdown
+    id: help
+    attributes:
+      label: How can you help?
+      options:
+        - I can write the code and the captures
+        - I can test prints on my printer
+        - I can do both
+        - I am only asking
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: What you already found out, e.g. differences in a capture of Brother's filter.

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Which other printers could be supported?
+    url: https://github.com/cl445/brother-hl4150cdn-driver/blob/main/docs/other-printers.md
+    about: Models that share the HL-4150CDN's filter, and what each family needs.

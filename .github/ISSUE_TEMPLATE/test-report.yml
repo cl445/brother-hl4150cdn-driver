@@ -1,0 +1,57 @@
+name: Test report
+description: Tell us how the driver prints on your printer, whether it works or not.
+title: "Test report: <printer model>"
+labels: ["test-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! Reports from printers other than the HL-4150CDN are
+        especially welcome; see docs/other-printers.md for models that should
+        work as they are.
+  - type: input
+    id: printer
+    attributes:
+      label: Printer model
+      placeholder: e.g. MFC-9970CDW
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Machine and OS
+      placeholder: e.g. Raspberry Pi 4, Raspberry Pi OS (Debian 13), CUPS 2.4
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Driver version or commit
+      placeholder: e.g. 1.2.0 or the output of `git rev-parse --short HEAD`
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - Network (socket://)
+        - USB
+        - Other
+  - type: checkboxes
+    id: tested
+    attributes:
+      label: What printed correctly?
+      description: Tick only what you tried and what came out right.
+      options:
+        - label: Colour page, Normal quality
+        - label: Grayscale page
+        - label: Fine quality
+        - label: Duplex (long edge)
+        - label: Duplex (short edge)
+        - label: Several copies
+        - label: Other paper size or tray (say which below)
+  - type: textarea
+    id: problems
+    attributes:
+      label: What went wrong, if anything?
+      description: Describe the print, and paste the relevant lines of the CUPS error log (`/var/log/cups/error_log`, with `LogLevel debug` if possible).
+      render: text
