@@ -153,6 +153,7 @@ class PrintSettings:
     input_slot: InputSlot = InputSlot.AUTO
     resolution: Resolution = Resolution.NORMAL
     copies: int = 1
+    collate: bool = False
     duplex: DuplexMode = DuplexMode.NONE
     mono_color: MonoColor = MonoColor.AUTO
     color_matching: ColorMatching = ColorMatching.NORMAL
@@ -191,6 +192,7 @@ class PrintSettings:
         settings.input_slot = InputSlot(spelled("input_slot", s.get("InputSlot", settings.input_slot)))
         settings.resolution = Resolution(s.get("BRResolution", settings.resolution))
         settings.copies = int(s.get("Copies", str(settings.copies)))
+        settings.collate = s.get("Collate", "OFF") == "ON"
         settings.duplex = DuplexMode(spelled("duplex", s.get("Duplex", settings.duplex)))
         settings.mono_color = MonoColor(spelled("mono_color", s.get("BRMonoColor", settings.mono_color)))
         settings.color_matching = ColorMatching(s.get("BRColorMatching", settings.color_matching))

@@ -48,6 +48,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
   repeats the last word after the flush. A scanline has at most about 425
   words, so printed output does not change (#3).
+- `Copies` and `Collate` from an rc file (CLI `--rc`) give the original's
+  bytes: uncollated, each page is sent `Copies` times in a row with
+  PageCopies = Copies, duplex sides counting sends; with `Collate=ON`
+  each page goes once with PageCopies 1. Repeated sends reuse the
+  rendered bytes. CUPS jobs carry one copy and are unchanged.
 
 ## [1.2.0] — 2026-10-28
 
