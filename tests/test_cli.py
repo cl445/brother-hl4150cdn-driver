@@ -7,6 +7,7 @@ import pytest
 
 from brother_xl2hb import cli
 from brother_xl2hb.job import filter_pages
+from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.settings import PageSize, PrintSettings
 from fixture_utils import assert_matches_fixture
 
@@ -118,3 +119,28 @@ def test_cli_paper_takes_the_models_spellings(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         _run_cli(monkeypatch, ["--paper", "Tabloid"], _ppm(8, 4, (0, 0, 0)))
     assert "unknown paper size 'Tabloid'" in capsys.readouterr().err
+
+
+def test_cli_model_defaults_to_the_packages_default(monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", "500")
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert f"Printer model (default: {DEFAULT_MODEL.key})" in capsys.readouterr().out
+
+
+def test_cli_without_rc_keeps_brothers_default_gray(monkeypatch):
+    """Brother's default rc (brhl4150cdnrc) has BRGray=OFF; only the PPD defaults it ON."""
+    out = _run_cli(monkeypatch, [], _ppm(8, 4, (90, 90, 90)))
+    expected = io.BytesIO()
+    filter_pages([(8, 4, bytes((90, 90, 90)) * 32)], PrintSettings(improve_gray=False), expected)
+    assert out == expected.getvalue()
+
+
+def test_cli_rc_with_odd_values_falls_back(monkeypatch, tmp_path):
+    """Unknown choices and a % in a value fall back as in Brother's filter instead of failing."""
+    rc = tmp_path / "brhl4150cdnrc"
+    rc.write_text("[hl4150cdn]\nPageSize=Foo\nBrightness=5%\nCopies=-1\n")
+    out = _run_cli(monkeypatch, ["--rc", str(rc)], _ppm(8, 4, (0, 0, 0)))
+    expected = io.BytesIO()
+    filter_pages([(8, 4, bytes(3) * 32)], PrintSettings(brightness=5), expected)
+    assert out == expected.getvalue()
