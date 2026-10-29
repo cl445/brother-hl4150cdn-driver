@@ -192,18 +192,28 @@ def test_ppd_offers_normal_and_fine():
 def test_render_threads_from_environment(monkeypatch, value, expected):
     from brother_xl2hb.render import bands
 
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", value)
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", value)
     assert bands.render_threads() == expected
 
 
 def test_non_numeric_render_threads_fall_back_to_the_default(monkeypatch, caplog):
     from brother_xl2hb.render import bands
 
-    monkeypatch.delenv("BRHL4150CDN_RENDER_THREADS", raising=False)
+    monkeypatch.delenv("BRXL2HB_RENDER_THREADS", raising=False)
     default = bands.render_threads()
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "four")
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "four")
     assert bands.render_threads() == default
-    assert "non-numeric BRHL4150CDN_RENDER_THREADS='four'" in caplog.text
+    assert "non-numeric BRXL2HB_RENDER_THREADS='four'" in caplog.text
+
+
+def test_render_threads_from_the_old_variable(monkeypatch):
+    from brother_xl2hb.render import bands
+
+    monkeypatch.delenv("BRXL2HB_RENDER_THREADS", raising=False)
+    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "2")
+    assert bands.render_threads() == 2
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "1")
+    assert bands.render_threads() == 1
 
 
 def test_filter_pages_closes_the_session_when_a_page_breaks_off():

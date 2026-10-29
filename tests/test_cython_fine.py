@@ -175,7 +175,7 @@ def _fine_page(width: int, height: int, seed: int) -> bytes:
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
     monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", kernel)
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
     return out.getvalue()

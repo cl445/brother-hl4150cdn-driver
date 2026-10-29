@@ -1,19 +1,12 @@
 #!/bin/bash
 #
-# Install the open-source Brother HL-4150CDN CUPS driver.
-# Requires: sudo, Python 3.13+, Ghostscript
+# Install the open-source CUPS driver for one Brother printer model
+# (default: the HL-4150CDN). Requires: sudo, Python 3.13+, Ghostscript
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-
-# Installation paths
-LIB_DIR="/usr/local/lib/brhl4150cdn"
-VENV_DIR="$LIB_DIR/.venv"
-MODEL="hl4150cdn"
-PKG_SRC="$REPO_ROOT/src/brother_xl2hb"
-PKG_DIR="$LIB_DIR/brother_xl2hb"
 
 # CUPS paths (Linux). macOS is not supported: its CUPS only runs filters from
 # /usr/libexec/cups/filter and ships PPDs under /usr/share/cups/model, both on
@@ -26,13 +19,15 @@ fi
 CUPS_PPD_DIR="/usr/share/cups/model"
 CUPS_FILTER_DIR="/usr/lib/cups/filter"
 
+MODEL="hl4150cdn"
 ADD_PRINTER=false
 PRINTER_URI=""
 
 usage() {
-    echo "Usage: $0 [--add-printer [URI]]"
+    echo "Usage: $0 [--model MODEL] [--add-printer [URI]]"
     echo ""
     echo "Options:"
+    echo "  --model MODEL        Printer model to install (hl4150cdn, the default)."
     echo "  --add-printer [URI]  Create a CUPS printer queue after installing."
     echo "                       If URI is omitted, attempts auto-detection via"
     echo "                       lpinfo or falls back to socket://BRW.local:9100"
@@ -44,6 +39,10 @@ usage() {
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --model)
+            MODEL="${2:?--model needs a value}"
+            shift 2
+            ;;
         --add-printer)
             ADD_PRINTER=true
             if [[ ${2:-} && ! ${2:-} == --* ]]; then
@@ -61,6 +60,29 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Per-model names: the model's PPD and CUPS filter are cups/br<model>.ppd and
+# cups/br<model>-filter; it installs to /usr/local/lib/br<model>/.
+case "$MODEL" in
+    hl4150cdn)
+        MODEL_NAME="HL-4150CDN"
+        DETECT_PATTERN="hl-4150"
+        ;;
+    *)
+        echo "Error: unknown model $MODEL (known: hl4150cdn)"
+        exit 1
+        ;;
+esac
+DRIVER="br$MODEL"
+FILTER="$DRIVER-filter"
+PPD="$DRIVER.ppd"
+QUEUE="Brother_$MODEL_NAME"
+
+# Installation paths
+LIB_DIR="/usr/local/lib/$DRIVER"
+VENV_DIR="$LIB_DIR/.venv"
+PKG_SRC="$REPO_ROOT/src/brother_xl2hb"
+PKG_DIR="$LIB_DIR/brother_xl2hb"
 
 # Check root
 if [[ $EUID -ne 0 ]]; then
@@ -152,31 +174,31 @@ echo "Installing CUPS filter to $CUPS_FILTER_DIR..."
 mkdir -p "$CUPS_FILTER_DIR"
 
 # Create a wrapper script that activates the venv
-cat > "$CUPS_FILTER_DIR/brhl4150cdn-filter" << 'WRAPPER_EOF'
+cat > "$CUPS_FILTER_DIR/$FILTER" << WRAPPER_EOF
 #!/bin/bash
-# CUPS filter wrapper for Brother HL-4150CDN (Open Source)
+# CUPS filter wrapper for Brother $MODEL_NAME (Open Source)
 # Activates the venv and runs the Python filter.
-LIB_DIR="/usr/local/lib/brhl4150cdn"
-VENV_DIR="$LIB_DIR/.venv"
-export PATH="$VENV_DIR/bin:$PATH"
-export PYTHONPATH="$LIB_DIR"
-exec "$VENV_DIR/bin/python3" "$LIB_DIR/brhl4150cdn-filter.py" "$@"
+LIB_DIR="$LIB_DIR"
+VENV_DIR="\$LIB_DIR/.venv"
+export PATH="\$VENV_DIR/bin:\$PATH"
+export PYTHONPATH="\$LIB_DIR"
+exec "\$VENV_DIR/bin/python3" "\$LIB_DIR/$FILTER.py" "\$@"
 WRAPPER_EOF
-chmod 755 "$CUPS_FILTER_DIR/brhl4150cdn-filter"
+chmod 755 "$CUPS_FILTER_DIR/$FILTER"
 
 # Copy the actual filter script to the lib dir
-cp "$SCRIPT_DIR/brhl4150cdn-filter" "$LIB_DIR/brhl4150cdn-filter.py"
-chmod 644 "$LIB_DIR/brhl4150cdn-filter.py"
+cp "$SCRIPT_DIR/$FILTER" "$LIB_DIR/$FILTER.py"
+chmod 644 "$LIB_DIR/$FILTER.py"
 
 # Precompile bytecode: the CUPS filter user cannot write __pycache__ here,
 # so without this every job recompiles all modules.
-"$VENV_DIR/bin/python3" -m compileall -q "$PKG_DIR" "$LIB_DIR/brhl4150cdn-filter.py"
+"$VENV_DIR/bin/python3" -m compileall -q "$PKG_DIR" "$LIB_DIR/$FILTER.py"
 
 # Install PPD
 echo "Installing PPD to $CUPS_PPD_DIR..."
 mkdir -p "$CUPS_PPD_DIR"
-cp "$SCRIPT_DIR/brhl4150cdn.ppd" "$CUPS_PPD_DIR/brhl4150cdn.ppd"
-chmod 644 "$CUPS_PPD_DIR/brhl4150cdn.ppd"
+cp "$SCRIPT_DIR/$PPD" "$CUPS_PPD_DIR/$PPD"
+chmod 644 "$CUPS_PPD_DIR/$PPD"
 
 echo ""
 echo "Installation complete!"
@@ -189,7 +211,7 @@ if $ADD_PRINTER; then
     # Auto-detect printer URI if not specified
     if [[ -z "$PRINTER_URI" ]]; then
         echo "  Searching for printer..."
-        DETECTED=$(lpinfo -v 2>/dev/null | grep -i "hl-4150" | head -1 | awk '{print $2}' || true)
+        DETECTED=$(lpinfo -v 2>/dev/null | grep -i "$DETECT_PATTERN" | head -1 | awk '{print $2}' || true)
         if [[ -n "$DETECTED" ]]; then
             PRINTER_URI="$DETECTED"
             echo "  Found: $PRINTER_URI"
@@ -198,26 +220,26 @@ if $ADD_PRINTER; then
             PRINTER_URI="socket://BRW.local:9100"
             echo "  Not auto-detected, using: $PRINTER_URI"
             echo "  You may need to update the URI with:"
-            echo "    lpadmin -p Brother_HL-4150CDN -v <actual-uri>"
+            echo "    lpadmin -p $QUEUE -v <actual-uri>"
         fi
     fi
 
-    lpadmin -p Brother_HL-4150CDN \
+    lpadmin -p "$QUEUE" \
         -E \
         -v "$PRINTER_URI" \
-        -P "$CUPS_PPD_DIR/brhl4150cdn.ppd" \
-        -D "Brother HL-4150CDN (Open Source)" \
+        -P "$CUPS_PPD_DIR/$PPD" \
+        -D "Brother $MODEL_NAME (Open Source)" \
         -L "Network Printer"
 
-    echo "  Printer queue 'Brother_HL-4150CDN' created."
-    echo "  Test with: lp -d Brother_HL-4150CDN testpage.pdf"
+    echo "  Printer queue '$QUEUE' created."
+    echo "  Test with: lp -d $QUEUE testpage.pdf"
 else
     echo "To add a printer queue, run:"
-    echo "  sudo lpadmin -p Brother_HL-4150CDN -E \\"
+    echo "  sudo lpadmin -p $QUEUE -E \\"
     echo "    -v socket://YOUR_PRINTER_IP:9100 \\"
-    echo "    -P $CUPS_PPD_DIR/brhl4150cdn.ppd \\"
-    echo "    -D 'Brother HL-4150CDN (Open Source)'"
+    echo "    -P $CUPS_PPD_DIR/$PPD \\"
+    echo "    -D 'Brother $MODEL_NAME (Open Source)'"
     echo ""
     echo "Or re-run this script with --add-printer:"
-    echo "  sudo $0 --add-printer"
+    echo "  sudo $0 --model $MODEL --add-printer"
 fi

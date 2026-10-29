@@ -70,7 +70,7 @@ def _page(width: int, height: int, seed: int) -> bytes:
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
     monkeypatch.setattr(bands, "HAS_BAND_KERNEL", kernel)
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
     return out.getvalue()
@@ -143,7 +143,7 @@ def test_kernel_matches_for_long_edge_back_pages_and_streamed_blocks(monkeypatch
 
 
 def test_kernel_reports_short_pages(monkeypatch):
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "2")
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "2")
     rows = np.zeros((300, _A4_W * 3), np.uint8)
     with pytest.raises(ValueError, match="page ended after 300 rows"):
         filter_pages([(_A4_W, 500, iter([rows]))], PrintSettings(), io.BytesIO())
@@ -163,9 +163,9 @@ def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
 
 
 def test_render_threads_from_environment(monkeypatch):
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "0")
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "0")
     assert render_threads() == 0
-    monkeypatch.delenv("BRHL4150CDN_RENDER_THREADS")
+    monkeypatch.delenv("BRXL2HB_RENDER_THREADS")
     assert 1 <= render_threads() <= 3
 
 
@@ -174,7 +174,7 @@ def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
     """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
     table = HL4150CDN.color_table(settings)
     assert band_kernel_colour(table, init_channels(settings, HL4150CDN), is_fine=False) is not None
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", "3")
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "3")
     _run_settings_variant(name, settings)
 
 

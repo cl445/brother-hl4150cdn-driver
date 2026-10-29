@@ -81,30 +81,37 @@ def band_kernel_colour(
     return KernelColour(_EMPTY_TABLE, *color_lut.interp_arrays(table))
 
 
+# Environment variables for the thread count, in order: the current name and
+# the one of releases up to 1.2.0.
+_RENDER_THREADS_VARS = ("BRXL2HB_RENDER_THREADS", "BRHL4150CDN_RENDER_THREADS")
+
+
 def render_threads() -> int:
     """Number of band render threads.
 
-    `BRHL4150CDN_RENDER_THREADS` overrides the default of one thread per
-    spare core, at most three; 0 renders on the calling thread.
+    `BRXL2HB_RENDER_THREADS` (formerly `BRHL4150CDN_RENDER_THREADS`, still
+    read) overrides the default of one thread per spare core, at most
+    three; 0 renders on the calling thread.
 
     Returns:
         Thread count, >= 0.
     """
     default = max(1, min(3, (os.cpu_count() or 1) - 1))
-    configured = os.environ.get("BRHL4150CDN_RENDER_THREADS")
-    if configured is None:
+    name = next((var for var in _RENDER_THREADS_VARS if var in os.environ), None)
+    if name is None:
         return default
+    configured = os.environ[name]
     try:
         return max(0, int(configured))
     except ValueError:
-        logger.warning("ignoring non-numeric BRHL4150CDN_RENDER_THREADS=%r, using %d threads", configured, default)
+        logger.warning("ignoring non-numeric %s=%r, using %d threads", name, configured, default)
         return default
 
 
 @cache
 def _band_executor(workers: int) -> ThreadPoolExecutor:
     """Return the process-wide pool of `workers` render threads."""
-    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="brhl4150cdn-band")
+    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="brxl2hb-band")
 
 
 def _split_bands(blocks: RowBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], int]]:

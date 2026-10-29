@@ -27,6 +27,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   support falls back to the default with a warning.
 - The HL-4150CDN's tables are reached through `models.HL4150CDN` only;
   the module constants of `models/hl4150cdn.py` are private.
+- `cups/install.sh` and `cups/uninstall.sh` take `--model` (default
+  hl4150cdn); paths, filter, PPD and queue names follow from it. The
+  CUPS log prefix comes from the model, and the render threads are set
+  with `BRXL2HB_RENDER_THREADS` (`BRHL4150CDN_RENDER_THREADS` still works).
 - The model decides how each page is sent (`page_sends`: bottom-up or
   not, PageCopies, and how often); the job no longer knows about duplex
   sides.

@@ -38,11 +38,11 @@ def main(argv: list[str] | None = None) -> None:
     All pages of a concatenated PPM stream (as Ghostscript writes it) are
     rendered into one XL2HB session, like the CUPS filter does.
     """
-    parser = argparse.ArgumentParser(description="Brother HL-4150CDN filter (PPM -> XL2HB)")
+    parser = argparse.ArgumentParser(description="Brother XL2HB printer filter (PPM -> PJL + XL2HB)")
     parser.add_argument(
         "--model", choices=sorted(MODELS), default="hl4150cdn", help="Printer model (default: hl4150cdn)"
     )
-    parser.add_argument("--rc", "-r", help="Path to RC file (brhl4150cdnrc)", default=None)
+    parser.add_argument("--rc", "-r", help="Path to the model's Brother RC file (e.g. brhl4150cdnrc)", default=None)
     parser.add_argument("--paper", "-p", help="Paper size (e.g. A4, Letter)", default=None)
     parser.add_argument("--mono", "-m", action="store_true", help="Print monochrome")
     parser.add_argument("--toner-save", "-t", action="store_true", help="Toner save mode")

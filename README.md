@@ -67,6 +67,11 @@ sudo lpadmin -p Brother_HL-4150CDN -E \
 
 `sudo cups/uninstall.sh --remove-printer` cleans up.
 
+All three scripts take the printer model: `extract_blobs.sh <model>`,
+`install.sh --model <model>`, `uninstall.sh --model <model>`. It defaults
+to `hl4150cdn`, the only model so far; each model installs to its own
+`/usr/local/lib/br<model>/` with its own filter, PPD and queue.
+
 ### Upgrading
 
 Pull, then re-run `./scripts/extract_blobs.sh` and `sudo cups/install.sh`.
