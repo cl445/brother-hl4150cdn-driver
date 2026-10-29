@@ -1,7 +1,8 @@
 #!/bin/bash
 #
 # Install the open-source CUPS driver for one Brother printer model
-# (default: the HL-4150CDN). Requires: sudo, Python 3.13+, Ghostscript
+# (default: the HL-4150CDN). Requires: sudo, Python 3.13+ with venv
+# (Debian: python3-venv), Ghostscript
 #
 set -euo pipefail
 
@@ -67,6 +68,7 @@ case "$MODEL" in
     hl4150cdn)
         MODEL_NAME="HL-4150CDN"
         DETECT_PATTERN="hl-4150"
+        GENERATED_GRIDS=true  # the model's `generated_grids`
         ;;
     *)
         echo "Error: unknown model $MODEL (known: hl4150cdn)"
@@ -77,6 +79,12 @@ DRIVER="br$MODEL"
 FILTER="$DRIVER-filter"
 PPD="$DRIVER.ppd"
 QUEUE="Brother_$MODEL_NAME"
+
+# Python packages for the venv. numpy keeps pyproject.toml's lower bound;
+# Cython and setuptools only build the native modules and are pinned to
+# the versions CI builds them with.
+NUMPY_REQ="numpy>=2.5.3,<3"
+BUILD_REQS=("cython==3.3.0" "setuptools==84.2.1")
 
 # Installation paths
 LIB_DIR="/usr/local/lib/$DRIVER"
@@ -126,16 +134,30 @@ cp -R "$PKG_SRC" "$PKG_DIR"
 find "$PKG_DIR" \( -name __pycache__ -o -name '*.so' -o -name '*.c' -o -name 'inverse_lut_*.npy' \) -prune -exec rm -rf {} +
 mkdir -p "$PKG_DIR/color_data/$MODEL"
 
+MISSING_BLOBS=false
 if ! compgen -G "$PKG_DIR/lut/$MODEL/*.bin" >/dev/null; then
-    echo "Warning: BRCD LUT files not found in $PKG_SRC/lut/$MODEL"
-    echo "  Run scripts/extract_blobs.sh $MODEL to fetch them from Brother's LPR package."
-    echo "  The driver will fall back to built-in Bayer dithering otherwise."
+    echo "Warning: BRCD dither tables not found in $PKG_SRC/lut/$MODEL"
+    echo "  The driver falls back to a generated Bayer matrix."
+    MISSING_BLOBS=true
+fi
+if ! compgen -G "$PKG_DIR/color_data/$MODEL/*_lut.bin" >/dev/null; then
+    echo "Warning: colour grids not found in $PKG_SRC/color_data/$MODEL"
+    if $GENERATED_GRIDS; then
+        echo "  The driver falls back to generated colour grids."
+    else
+        echo "  Jobs that need them fail until they are extracted."
+    fi
+    MISSING_BLOBS=true
+fi
+if $MISSING_BLOBS; then
+    echo "  Printed output will then differ from Brother's driver. Run"
+    echo "  scripts/extract_blobs.sh $MODEL to fetch the tables from Brother's LPR package."
 fi
 
 # Create virtual environment with dependencies
 echo "Creating virtual environment at $VENV_DIR..."
 python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install --quiet "numpy>=2.5.3"  # keep in sync with pyproject.toml
+"$VENV_DIR/bin/pip" install --quiet "$NUMPY_REQ"
 
 # Precompute the RGB→KCMY inverse LUTs (64 MiB each: Normal and Vivid colour
 # matching, each with and without improve gray). Replaces per-pixel tetrahedral
@@ -154,12 +176,13 @@ fi
 # fallback otherwise.
 echo "Building Cython acceleration..."
 BUILD_DIR="$(mktemp -d)"
+trap 'rm -rf "$BUILD_DIR"' EXIT
 NATIVE_BUILD="$BUILD_DIR/src/brother_xl2hb/_native"
 mkdir -p "$NATIVE_BUILD"
 cp "$REPO_ROOT/setup_cython.py" "$BUILD_DIR/"
 cp "$PKG_SRC/__init__.py" "$BUILD_DIR/src/brother_xl2hb/"
 cp "$PKG_SRC/_native/"*.py "$PKG_SRC/_native/"*.pyx "$PKG_SRC/_native/"*.pxd "$NATIVE_BUILD/"
-if "$VENV_DIR/bin/pip" install --quiet cython setuptools \
+if "$VENV_DIR/bin/pip" install --quiet "${BUILD_REQS[@]}" \
     && (cd "$BUILD_DIR" && "$VENV_DIR/bin/python3" setup_cython.py build_ext --inplace >/dev/null) \
     && compgen -G "$NATIVE_BUILD/_*_fast*.so" >/dev/null; then
     cp "$NATIVE_BUILD/"_*_fast*.so "$PKG_DIR/_native/"
