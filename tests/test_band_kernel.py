@@ -40,19 +40,10 @@ def no_inverse_lut(monkeypatch) -> None:
     monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: None)
 
 
-@pytest.fixture(scope="module")
-def installed_luts(color_data_root):
-    """All inverse LUTs (Normal and Vivid, with and without improve gray), as install.sh writes them."""
-    directory = color_data_root / HL4150CDN.key
-    if not list(directory.glob("inverse_lut_*.npy")):
-        color_lut.write_inverse_luts(HL4150CDN.inverse_lut_tables, directory)
-    return color_data_root
-
-
 @pytest.fixture
-def real_lut(use_color_data_root, installed_luts):
+def real_lut(use_color_data_root, installed_inverse_luts):
     """The real inverse LUTs, as installed by install.sh."""
-    use_color_data_root(installed_luts)
+    use_color_data_root(installed_inverse_luts)
 
 
 def _page(width: int, height: int, seed: int) -> bytes:

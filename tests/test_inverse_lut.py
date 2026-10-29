@@ -47,12 +47,10 @@ def _fresh_inverse_lut():
     source_digest.cache_clear()
 
 
-@pytest.fixture(scope="module")
-def installed(tmp_path_factory):
+@pytest.fixture
+def installed(installed_inverse_luts) -> Path:
     """A colour data directory with all inverse LUTs, as install.sh writes them."""
-    directory = _grid_dir(tmp_path_factory.mktemp("color_data"))
-    write_inverse_luts([_at(t, directory) for t in INVERSE_LUT_TABLES])
-    return directory
+    return installed_inverse_luts / HL4150CDN.key
 
 
 def _sample_rgb(seed: int, width: int) -> bytes:
