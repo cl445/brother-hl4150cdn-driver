@@ -165,7 +165,7 @@ _K_PRESET = np.array([0, 0, 0, 255], dtype=np.int32)
 # pixel-brightness convention (0 = full ink, 255 = no ink).
 _INVERSE_LUT_SHAPE = (256, 256, 256, 4)
 # Part of the source digest: bump when the interpolation itself changes, so
-# inverse LUTs computed by the old code are no longer used.
+# inverse LUTs computed with another interpolation do not match.
 _INVERSE_LUT_FORMAT = 1
 
 
@@ -212,9 +212,9 @@ def source_digest(table: ColorTable) -> str:
 
     Covers the grid and the interpolation weights as loaded (the extracted
     blobs, or the generated fallbacks when they are missing), the black ink
-    and `_INVERSE_LUT_FORMAT`. An inverse LUT computed before
-    `scripts/extract_blobs.sh` thus no longer matches once the real grids
-    are in place. Costs one read of the 39 KB grid, once per process.
+    and `_INVERSE_LUT_FORMAT`. An inverse LUT computed from the generated
+    fallback grids thus does not match the extracted ones. Costs one read of
+    the 39 KB grid, once per process.
 
     Returns:
         The first 16 hex digits of the SHA-256.
@@ -231,7 +231,7 @@ def inverse_lut_path(table: ColorTable, directory: Path | None = None) -> Path |
     """Where the inverse LUT of `table` is installed: ``inverse_lut_<name>-<digest>.npy``.
 
     The name carries `source_digest`, so a file computed from other grid
-    data is simply not found.
+    data is not found.
 
     Args:
         table: the colour table.
@@ -257,8 +257,8 @@ def _digest_path(table: ColorTable, directory: Path) -> Path:
 def _stale_inverse_luts(table: ColorTable, directory: Path) -> list[Path]:
     """Inverse LUT files for `table` in `directory` whose name has another source digest.
 
-    Includes the files without a digest from before it was recorded
-    (``inverse_lut.npy``, ``inverse_lut_srgb.npy``).
+    Includes the legacy files without a digest (``inverse_lut.npy``,
+    ``inverse_lut_srgb.npy``).
 
     Returns:
         Sorted paths.
@@ -367,7 +367,7 @@ def write_inverse_luts(tables: Iterable[ColorTable], directory: Path | None = No
 
     What `cups/install.sh` runs, with the model's `inverse_lut_tables`.
     Stale files are those of these tables with another source digest, plus
-    the digest-less ones from older versions.
+    the legacy ones without a digest.
 
     Args:
         tables: the tables to precompute.

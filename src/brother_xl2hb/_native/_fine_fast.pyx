@@ -278,7 +278,7 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
     """Stage 2 into `dst`, which must hold 2 * n + 16 bytes.
 
     The Python reference appends the input to a ring buffer and never drops
-    bytes from it, so `ring` here is simply the input itself.
+    bytes from it, so `ring` here is the input itself.
 
     Returns:
         Number of bytes written.
