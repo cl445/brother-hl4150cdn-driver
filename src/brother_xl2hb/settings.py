@@ -127,7 +127,7 @@ Spellings match without regard to case, e.g. {"media_type": {"Env": "Envelope"}}
 """
 
 
-def _alias_lookup(aliases: Aliases | None) -> Callable[[str, str], str]:
+def alias_lookup(aliases: Aliases | None) -> Callable[[str, str], str]:
     """Return `spelled(field, raw)`: `raw` translated through `aliases[field]`, else unchanged.
 
     Returns:
@@ -179,7 +179,7 @@ class PrintSettings:
         Returns:
             Populated settings instance (defaults if the file has no sections).
         """
-        spelled = _alias_lookup(aliases)
+        spelled = alias_lookup(aliases)
         settings = cls()
         config = configparser.ConfigParser()
         config.read(path)
@@ -231,7 +231,7 @@ class PrintSettings:
         Returns:
             Populated settings instance with the parsed values.
         """
-        spelled = _alias_lookup(aliases)
+        spelled = alias_lookup(aliases)
         settings = cls()
         settings.copies = copies
 

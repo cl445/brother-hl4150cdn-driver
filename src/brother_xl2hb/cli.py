@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> None:
         "--fine",
         "-f",
         action="store_true",
-        help="Fine mode (600x2400 dpi): byte-identical to the original filter, not verified on the printer yet",
+        help="Fine mode (600x2400 dpi), byte-identical to the original filter",
     )
     parser.add_argument("--duplex", choices=["none", "long", "short"], default="none")
     parser.add_argument("--debug", "-d", action="store_true", help="Debug output to stderr")
@@ -82,7 +82,10 @@ def main(argv: list[str] | None = None) -> None:
     settings = model.settings_from_rc_file(args.rc) if args.rc is not None else PrintSettings()
 
     if args.paper:
-        settings.page_size = PageSize(args.paper)
+        try:
+            settings.page_size = PageSize(model.spelled("page_size", args.paper))
+        except ValueError:
+            parser.error(f"unknown paper size {args.paper!r}")
     if args.mono:
         settings.mono_color = MonoColor.MONO
     if args.fine:

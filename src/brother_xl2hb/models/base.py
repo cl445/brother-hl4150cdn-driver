@@ -14,7 +14,7 @@ from pathlib import Path
 
 from brother_xl2hb.blobs import COLOR_DATA_ROOT, LUT_ROOT
 from brother_xl2hb.color.color_lut import ColorTable, Profile
-from brother_xl2hb.settings import Aliases, DuplexMode, InputSlot, PrintSettings
+from brother_xl2hb.settings import Aliases, DuplexMode, InputSlot, PrintSettings, alias_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +190,14 @@ class PrinterModel:
             logger.warning("%s does not support %s=%s, using %s", self.name, attr, getattr(settings, attr), default)
             setattr(restricted, attr, default)
         return restricted
+
+    def spelled(self, attr: str, raw: str) -> str:
+        """`raw` as this driver spells it, if it is one of the model's `aliases` for settings field `attr`.
+
+        Returns:
+            The canonical value, or `raw` unchanged.
+        """
+        return alias_lookup(self.aliases)(attr, raw)
 
     def settings_from_rc_file(self, path: str) -> PrintSettings:
         """Read Brother's rc file with the model's spellings, restricted to what it supports.

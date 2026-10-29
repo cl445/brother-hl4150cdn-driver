@@ -7,7 +7,7 @@ import pytest
 
 from brother_xl2hb import cli
 from brother_xl2hb.job import filter_pages
-from brother_xl2hb.settings import PrintSettings
+from brother_xl2hb.settings import PageSize, PrintSettings
 from fixture_utils import assert_matches_fixture
 
 
@@ -79,12 +79,14 @@ def test_cli_reads_existing_rc_file(monkeypatch, tmp_path):
     assert out != default.getvalue()
 
 
-def test_cli_fine_help_says_mode_is_not_verified_on_the_printer(monkeypatch, capsys):
+def test_cli_fine_help_describes_the_mode(monkeypatch, capsys):
+    """Fine mode was checked on the printer on 2026-10-28; the help no longer warns about it."""
     monkeypatch.setenv("COLUMNS", "500")  # no line wrapping inside words
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     help_text = " ".join(capsys.readouterr().out.split())
-    assert "not verified on the printer" in help_text
+    assert "Fine mode (600x2400 dpi), byte-identical to the original filter" in help_text
+    assert "not verified" not in help_text
 
 
 def test_cli_skips_blank_pages_in_duplex(monkeypatch, tmp_path):
@@ -104,3 +106,15 @@ def test_cli_prints_nothing_when_every_page_is_blank(monkeypatch, tmp_path):
     rc = tmp_path / "brhl4150cdnrc"
     rc.write_text("[hl4150cdn]\nBRSkipBlank=ON\nDuplex=DuplexNoTumble\n")
     assert _run_cli(monkeypatch, ["--rc", str(rc)], _ppm(8, 4, (255, 255, 255)) * 3) == b""
+
+
+def test_cli_paper_takes_the_models_spellings(monkeypatch, capsys):
+    """--paper B5 is Brother's name for ISO B5; an unknown size is an argument error."""
+    out = _run_cli(monkeypatch, ["--paper", "B5"], _ppm(8, 4, (0, 0, 0)))
+    expected = io.BytesIO()
+    filter_pages([(8, 4, bytes(3) * 32)], PrintSettings(page_size=PageSize.ISOB5), expected)
+    assert out == expected.getvalue()
+
+    with pytest.raises(SystemExit):
+        _run_cli(monkeypatch, ["--paper", "Tabloid"], _ppm(8, 4, (0, 0, 0)))
+    assert "unknown paper size 'Tabloid'" in capsys.readouterr().err
