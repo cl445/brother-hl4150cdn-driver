@@ -31,14 +31,14 @@ class TestBufferLifecycle:
 
     def test_append_increments_line_count(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
-        pb.append_scanline(b"\x01\x02\x03")
+        pb.append_scanline(b"\x01\x02\x03", 0)
         assert pb.line_count == 1
-        pb.append_scanline(b"\x04\x05")
+        pb.append_scanline(b"\x04\x05", 1)
         assert pb.line_count == 2
 
     def test_empty_scanline_skipped(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
-        pb.append_scanline(b"")
+        pb.append_scanline(b"", 0)
         assert pb.line_count == 0
 
     def test_start_line_from_first_entry(self):
@@ -74,21 +74,21 @@ class TestFreeSpace:
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
         initial = pb.free_space
         # 3 bytes data → padded to 4 → entry = 2+4+2 = 8 bytes
-        pb.append_scanline(b"\x01\x02\x03")
+        pb.append_scanline(b"\x01\x02\x03", 0)
         assert pb.free_space == initial - 8
 
     def test_4byte_aligned_entries(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
         initial = pb.free_space
         # 4 bytes data → already aligned → entry = 2+4+2 = 8 bytes
-        pb.append_scanline(b"\x01\x02\x03\x04")
+        pb.append_scanline(b"\x01\x02\x03\x04", 0)
         assert pb.free_space == initial - 8
 
     def test_5byte_entry_padded(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
         initial = pb.free_space
         # 5 bytes data → padded to 8 → entry = 2+8+2 = 12 bytes
-        pb.append_scanline(b"\x01\x02\x03\x04\x05")
+        pb.append_scanline(b"\x01\x02\x03\x04\x05", 0)
         assert pb.free_space == initial - 12
 
 
@@ -107,7 +107,7 @@ class TestNearlyFull:
         # Fill with large entries to cross threshold
         big_entry = bytes(100)
         while not pb.is_nearly_full():
-            pb.append_scanline(big_entry)
+            pb.append_scanline(big_entry, 0)
         assert pb.is_nearly_full()
 
     def test_threshold_value(self):
@@ -134,7 +134,7 @@ class TestFlushOutput:
 
     def test_blob_has_valid_header(self):
         pb = PlaneBuffer(plane_id=1, bpl=BPL)  # C plane
-        pb.append_scanline(b"\x01\x02\x03")
+        pb.append_scanline(b"\x01\x02\x03", 0)
         result = pb.flush()
         assert result is not None
         _, _, blob = result
@@ -147,7 +147,7 @@ class TestFlushOutput:
     def test_blob_checksum_valid(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
         for i in range(10):
-            pb.append_scanline(bytes([i] * 20))
+            pb.append_scanline(bytes([i] * 20), i)
         result = pb.flush()
         assert result is not None
         _, _, blob = result
@@ -156,7 +156,7 @@ class TestFlushOutput:
     def test_blob_data_size_matches(self):
         """data_size field in header == total blob length."""
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
-        pb.append_scanline(b"\x01\x02\x03\x04")
+        pb.append_scanline(b"\x01\x02\x03\x04", 0)
         result = pb.flush()
         assert result is not None
         _, _, blob = result
@@ -166,7 +166,7 @@ class TestFlushOutput:
     def test_blob_terminates_with_zero_size(self):
         """Entry list ends with 0x0000 terminator."""
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
-        pb.append_scanline(b"\x01\x02")
+        pb.append_scanline(b"\x01\x02", 0)
         result = pb.flush()
         assert result is not None
         _, _, blob = result
@@ -182,8 +182,8 @@ class TestFlushOutput:
 class TestReset:
     def test_reset_clears_all(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
-        pb.append_scanline(b"\x01")
-        pb.append_scanline(b"\x02")
+        pb.append_scanline(b"\x01", 0)
+        pb.append_scanline(b"\x02", 1)
         pb.reset(start_line=500)
         assert pb.line_count == 0
         assert pb.start_line == 500
@@ -216,7 +216,7 @@ class TestMultiPlaneFlush:
     def test_independent_plane_buffers(self):
         """Each plane maintains independent state."""
         buffers = {i: PlaneBuffer(plane_id=i, bpl=BPL) for i in range(4)}
-        buffers[0].append_scanline(b"\x01")  # K only
+        buffers[0].append_scanline(b"\x01", 0)  # K only
         assert buffers[0].line_count == 1
         assert buffers[1].line_count == 0
         assert buffers[2].line_count == 0
@@ -230,7 +230,7 @@ class TestMultiPlaneFlush:
         big_entry = bytes(100)
         while not buffers[0].is_nearly_full():
             for pid in range(4):
-                buffers[pid].append_scanline(big_entry)
+                buffers[pid].append_scanline(big_entry, 0)
 
         # All planes should have data to flush
         for pid in range(4):
