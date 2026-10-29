@@ -21,6 +21,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   table set, the colour grid choice, PJL and which pages are sent
   bottom-up. `job.filter_pages`, the CUPS filter and the CLI take a model
   and default to the HL-4150CDN; the CLI has `--model`.
+- Settings are read through the model (`settings_from_rc_file`,
+  `settings_from_cups_options`): Brother's spellings (Env, A5Rotated,
+  B5, B6) are the model's `aliases`, and a choice the model does not
+  support falls back to the default with a warning.
 - `scripts/extract_blobs.sh` puts Brother's tables into
   `src/brother_xl2hb/lut/<model>/` and `src/brother_xl2hb/color_data/<model>/`
   (the unpacked package to `.brother-blobs/<model>/`); re-run it

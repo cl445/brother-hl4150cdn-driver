@@ -155,8 +155,10 @@ A printer model is one `PrinterModel` (`models/base.py`): the data its
 filter writes plus a few hooks where Brother's filters differ. The
 HL-4150CDN's is `models/hl4150cdn.py`. Adding a model means a module
 like it, an entry in `models.MODELS`, its PPD, and the captures that
-show its output is byte-identical; `tests/test_models.py` checks that
-its tables cover every setting.
+show its output is byte-identical. What the model supports is what its
+tables cover (paper sizes, media, trays, duplex modes) plus `skip_blank`;
+other choices fall back to the default with a warning. Its rc file's and
+PPD's own spellings of option values go into `aliases`.
 
 The Cython modules are optional in development too; build them in place
 with:

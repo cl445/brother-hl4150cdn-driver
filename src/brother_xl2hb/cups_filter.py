@@ -244,7 +244,7 @@ def main(model: PrinterModel = DEFAULT_MODEL) -> None:
     # PostScript and Ghostscript renders every page that many times. A
     # PageCopies of `copies` on top would print copies² sheets of each page,
     # so the job carries 1, as Brother's cupswrapper hands its filter.
-    settings = PrintSettings.from_cups_options(options_str, 1, ppd_defaults)
+    settings = model.settings_from_cups_options(options_str, 1, ppd_defaults)
     logger.info(
         "settings: page_size=%s duplex=%s resolution=%s mono=%s color_matching=%s gray=%s toner_save=%s",
         settings.page_size,

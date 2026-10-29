@@ -6,6 +6,7 @@ its dither table set and the decisions that differ between Brother's
 filters (colour grid, PJL, which pages go bottom-up).
 """
 
+import copy
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from brother_xl2hb.blobs import COLOR_DATA_ROOT, LUT_ROOT
 from brother_xl2hb.color.color_lut import ColorTable, Profile
-from brother_xl2hb.settings import DuplexMode, InputSlot, PrintSettings
+from brother_xl2hb.settings import Aliases, DuplexMode, InputSlot, PrintSettings
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,14 @@ class PrinterModel:
         page_is_flipped: whether a page is sent bottom-up with the
             back-side marker; `back_side` is the second page of a duplex
             sheet.
+        skip_blank: the filter can drop blank pages (BRSkipBlank).
+        aliases: the spellings of option values in the model's rc file and
+            Brother's PPD that differ from this driver's (see
+            `settings.Aliases`).
+
+    What a model supports is what its tables cover: the page sizes of
+    `paper_sizes`, the media of `media_types`, the trays of `media_source`
+    and the duplex modes of `duplex_page_mode`; `restrict` enforces it.
     """
 
     key: str
@@ -69,6 +78,8 @@ class PrinterModel:
     pjl_header: Callable[[PrintSettings], bytes]
     pjl_footer: Callable[[], bytes]
     page_is_flipped: Callable[[PrintSettings, bool], bool]
+    skip_blank: bool
+    aliases: Aliases
 
     @property
     def lut_dir(self) -> Path:
@@ -136,6 +147,53 @@ class PrinterModel:
         pw, _ = self.paper_sizes[page_size]
         align = 7 if fine else 31
         return (pw + align) & ~align, self.image_height(page_size)
+
+    def restrict(self, settings: PrintSettings) -> PrintSettings:
+        """`settings` with every choice the model does not support set to its default.
+
+        Each replaced choice is logged as a warning.
+
+        Returns:
+            A copy of `settings`, or `settings` itself if the model supports all of it.
+        """
+        defaults = PrintSettings()
+        supported = {
+            "page_size": self.paper_sizes,
+            "media_type": self.media_types,
+            "input_slot": self.media_source,
+            "duplex": self.duplex_page_mode,
+        }
+        changes: dict[str, object] = {}
+        for attr, table in supported.items():
+            if getattr(settings, attr) not in table:
+                changes[attr] = getattr(defaults, attr)
+        if settings.skip_blank and not self.skip_blank:
+            changes["skip_blank"] = False
+        if not changes:
+            return settings
+        restricted = copy.copy(settings)
+        for attr, default in changes.items():
+            logger.warning("%s does not support %s=%s, using %s", self.name, attr, getattr(settings, attr), default)
+            setattr(restricted, attr, default)
+        return restricted
+
+    def settings_from_rc_file(self, path: str) -> PrintSettings:
+        """Read Brother's rc file with the model's spellings, restricted to what it supports.
+
+        Returns:
+            The job's settings.
+        """
+        return self.restrict(PrintSettings.from_rc_file(path, self.aliases))
+
+    def settings_from_cups_options(
+        self, options: str, copies: int = 1, ppd_defaults: Mapping[str, str] | None = None
+    ) -> PrintSettings:
+        """Parse CUPS options (over the PPD defaults) with the model's spellings, restricted to what it supports.
+
+        Returns:
+            The job's settings.
+        """
+        return self.restrict(PrintSettings.from_cups_options(options, copies, ppd_defaults, self.aliases))
 
     def media_size_code(self, page_size: str) -> int | bytes:
         """BeginPage MediaSize for `page_size`: enum value or name string.

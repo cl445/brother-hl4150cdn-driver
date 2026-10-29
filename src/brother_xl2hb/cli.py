@@ -78,7 +78,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.rc is not None and not Path(args.rc).is_file():
         parser.error(f"RC file not found: {args.rc}")
-    settings = PrintSettings.from_rc_file(args.rc) if args.rc is not None else PrintSettings()
+    model = MODELS[args.model]
+    settings = model.settings_from_rc_file(args.rc) if args.rc is not None else PrintSettings()
 
     if args.paper:
         settings.page_size = PageSize(args.paper)
@@ -99,6 +100,7 @@ def main(argv: list[str] | None = None) -> None:
         stream=sys.stderr,
     )
 
+    settings = model.restrict(settings)
     logger.debug("Settings: %s", settings)
 
     pages = iter_ppm_stream(sys.stdin.buffer)
@@ -119,7 +121,7 @@ def main(argv: list[str] | None = None) -> None:
     pages = chain_peeked(first, pages)
     del first
     output = sys.stdout.buffer
-    filter_pages(pages, settings, output, MODELS[args.model])
+    filter_pages(pages, settings, output, model)
     output.flush()
 
 

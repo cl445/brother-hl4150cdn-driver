@@ -148,6 +148,7 @@ def filter_pages(
         output: writable binary stream
         model: the printer to drive
     """
+    settings = model.restrict(settings)
     if settings.skip_blank:
         # Idempotent: callers that drop blanks first to detect an empty job
         # hand over whole-page buffers, which are only viewed again here.

@@ -183,6 +183,14 @@ DITHER_CACHE = "cache09"
 INVERSE_LUT_GRIDS: tuple[tuple[Profile, bool], ...] = (("rgb", False), ("rgb", True), ("srgb", False), ("srgb", True))
 
 
+# Spellings of brhl4150cdnrc and Brother's cupswrapper PPD (its B5/B6 are
+# ISO sizes); BOND and PostCard already match without regard to case.
+ALIASES = {
+    "media_type": {"Env": "Envelope"},
+    "page_size": {"A5Rotated": "PRA5Rotated", "B5": "ISOB5", "B6": "ISOB6"},
+}
+
+
 def color_table(settings: PrintSettings) -> ColorTable:
     """The colour grid `lookup_color_transform_table` selects for `settings`.
 
@@ -262,4 +270,6 @@ HL4150CDN = PrinterModel(
     pjl_header=pjl_header,
     pjl_footer=generate_pjl_footer,
     page_is_flipped=page_is_flipped,
+    skip_blank=True,
+    aliases=ALIASES,
 )
