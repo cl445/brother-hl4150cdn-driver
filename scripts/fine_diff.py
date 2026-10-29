@@ -248,7 +248,7 @@ def run_python(
     dither = dither_fns[True]
     encoders = dict(plane_encoders)
 
-    def recording_dither(row_arr, y, width, channel=None):
+    def recording_dither(row_arr, y, width, channel):
         if y != current["line"]:
             current.update(line=y, plane=0)
         return dither(row_arr, y, width, channel)

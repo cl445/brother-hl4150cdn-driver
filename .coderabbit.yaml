@@ -1,0 +1,110 @@
+# CodeRabbit configuration.
+# Schema + docs: https://docs.coderabbit.ai/getting-started/configure-coderabbit
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+
+reviews:
+  # "assertive" surfaces nitpicks and refactor hints in addition to the
+  # high-confidence findings. Switch to "chill" if it gets noisy.
+  profile: assertive
+
+  # Post findings as review comments instead of GitHub "Request changes", so a
+  # review never blocks merging on its own.
+  request_changes_workflow: false
+
+  high_level_summary: true
+  poem: false
+  review_status: true
+
+  auto_review:
+    enabled: true
+    # Follow-up PRs are often stacked on another PR's branch; review those
+    # too, not only PRs against main.
+    base_branches:
+      - ".*"
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+
+  # Captures of Brother's filter (zstd), generated Cython C and the lock file
+  # are not reviewable.
+  path_filters:
+    - "!tests/fixtures/**"
+    - "!src/brother_xl2hb/_native/*.c"
+    - "!uv.lock"
+
+  path_instructions:
+    - path: "src/**"
+      instructions: >-
+        This driver reproduces the XL2HB output of Brother's proprietary
+        `brhl4150cdnfilter` (i386) byte for byte. Code that looks odd is often
+        a deliberate copy of the binary: truncation instead of rounding
+        (the binary sets the x87 control word to truncate before `fistp`),
+        80-bit x87 arithmetic in the saturation step, white pixels that
+        brightness/contrast leave alone, runs of identical pixels, quirks
+        such as zeroed bytes at a line's end. Comments that cite a binary
+        address (e.g. `@ 0x0804f846`) or the Ghidra output mark such places.
+        Do NOT suggest "simplifications", rounding fixes, clamping or
+        refactors that would change a single output byte unless you can
+        show the binary does it differently; ask for a capture test instead.
+        Branches that mirror unreachable code in the binary are kept on
+        purpose when commented so.
+    - path: "src/brother_xl2hb/_native/**"
+      instructions: >-
+        Cython kernels are optional speed-ups. Each has a pure-Python
+        reference (the plain name dispatches, `name_py` or the numpy code is
+        the reference) and both must produce identical bytes; flag any
+        change to one side without the other or without a parity test.
+        `boundscheck=False`, `wraparound=False` and `cdivision=True` are
+        intentional, so check index arithmetic and divisors by hand. Code
+        under `nogil` must not touch Python objects. The target includes a
+        Raspberry Pi 3B+ (aarch64, 905 MB RAM): watch allocations per band.
+    - path: "src/brother_xl2hb/models/**"
+      instructions: >-
+        Everything printer-specific belongs in a `PrinterModel`
+        (`models/base.py`), with `models/hl4150cdn.py` as the only model so
+        far. Flag HL-4150CDN constants (paper codes, media names, tray
+        values) that leak into shared modules.
+    - path: "tests/**"
+      instructions: >-
+        Run with `uv run pytest tests/`. Fixtures in `tests/fixtures/*.zst`
+        are captures of Brother's original filter (run under Docker, i386);
+        never suggest regenerating them from this driver's output, which
+        would make the byte-identity tests compare the driver with itself.
+        Tests that need the extracted Brother tables are skipped without
+        them; CI extracts them first. Tests comparing a Cython kernel with
+        Python must call the real pure-Python path, not a copy of it.
+    - path: "cups/**"
+      instructions: >-
+        Installed and run by CUPS on Linux, typically a Raspberry Pi.
+        `install.sh`/`uninstall.sh` run as root: quote everything, keep
+        `set -euo pipefail`, keep them idempotent. The PPD follows Brother's
+        own PPD; its shared OrderDependency values and padded labels are
+        copied from there on purpose. The filter must follow the CUPS filter
+        contract (argv `job user title copies options [file]`, log prefixes
+        on stderr, exit codes) and never send a partial page.
+    - path: "scripts/**"
+      instructions: >-
+        Developer tools (Docker runs of the original, gdb traces, Unicorn
+        emulation, capture diffs). They are not installed; robustness
+        matters less than correct comparisons with the original.
+    - path: "**/*.py"
+      instructions: >-
+        Python >= 3.13 (CI runs 3.13 and 3.14). ruff and pyrefly are the
+        linter and type checker of record (`uv run nox -s lint format_check
+        typecheck deps`). Comments describe the current state only, no
+        change history.
+
+  tools:
+    ruff:
+      enabled: true
+    shellcheck:
+      enabled: true
+    # pylint would only repeat what ruff already checks.
+    pylint:
+      enabled: false
+
+chat:
+  auto_reply: true

@@ -12,11 +12,14 @@ generator of its shipped coefficients: those use 7x7x7 (rgb) and 9x9x9
 (srgb) residual grids plus sparse corrections. The script is kept as a record of the method.
 
 Usage:
-    uv run python scripts/fit_lut_coefficients.py
+    uv run python scripts/fit_lut_coefficients.py [-o fitted_coefficients.py]
+
+Without `--output` the fit is only reported, nothing is written.
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +32,6 @@ PAIR_DIM = 9  # 2D interaction grid resolution
 TRI_DIM = 5  # 3D residual grid resolution
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "src" / "brother_xl2hb" / "color_data" / "hl4150cdn"
-OUTPUT_FILE = Path(__file__).resolve().parent / "fitted_coefficients.py"
 
 
 # ---------------------------------------------------------------------------
@@ -453,8 +455,17 @@ def validate(results: dict, lut: np.ndarray):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main():
-    """Fit polynomial coefficients to the original LUT and export them."""
+def main(argv: list[str] | None = None) -> None:
+    """Fit polynomial coefficients to the original LUT and optionally export them."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="write the coefficients as a Python module to this path (default: report only)",
+    )
+    args = parser.parse_args(argv)
+
     print("Loading original LUT...")
     lut = load_original_lut()
     print(f"LUT shape: {lut.shape}, range: [{lut.min()}, {lut.max()}]")
@@ -462,7 +473,8 @@ def main():
     results = fit_all_channels(lut)
     validate(results, lut)
 
-    export_coefficients(results, OUTPUT_FILE)
+    if args.output is not None:
+        export_coefficients(results, args.output)
     print("\nDone!")
 
 

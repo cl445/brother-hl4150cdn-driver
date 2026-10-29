@@ -35,6 +35,7 @@ import json
 import os
 import pathlib
 import struct
+from typing import Any
 
 import gdb  # type: ignore[import-not-found]
 
@@ -52,7 +53,7 @@ MAX_CALLS = int(os.environ.get("TRACE_MAX", "64"))
 
 inferior = gdb.selected_inferior()
 blob = bytearray()
-state = {"calls": [], "all_y": {"4ch": [], "1ch": []}, "ctx": None, "traced": 0}
+state: dict[str, Any] = {"calls": [], "all_y": {"4ch": [], "1ch": []}, "ctx": None, "traced": 0}
 
 
 def read(addr: int, size: int) -> bytes:
@@ -134,10 +135,8 @@ class Entry(gdb.Breakpoint):
         """Record the call; never stop."""
         sp = esp()
         args = list(struct.unpack("<14I", read(sp + 4, 56)))
-        y = struct.unpack("<i", struct.pack("<I", args[8]))[0] if self.kind == "4ch" else None
-        if self.kind == "1ch":
-            # Signature not recovered; record the stack words, guess y from the same slot.
-            y = struct.unpack("<i", struct.pack("<I", args[8]))[0]
+        # For 1ch the signature is not recovered; record the stack words, guess y from the same slot.
+        y = struct.unpack("<i", struct.pack("<I", args[8]))[0]
         state["all_y"][self.kind].append(y)
         if state["ctx"] is None:
             try:
