@@ -118,7 +118,7 @@ BRReverse=ON
         )
         if not rc_path.exists():
             pytest.skip("Brother driver not extracted; run scripts/extract_blobs.sh")
-        s = PrintSettings.from_rc_file(str(rc_path))
+        s = HL4150CDN.settings_from_rc_file(str(rc_path))
         assert s.page_size == "Letter"  # US default
         assert s.media_type == "Plain"
         assert s.copies == 1

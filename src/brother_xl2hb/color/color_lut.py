@@ -69,6 +69,8 @@ class ColorTable:
             tables, inverse LUTs).
         precomputed: an inverse LUT is installed for this table (see
             `inverse_lut_path`); every other table is interpolated per pixel.
+        generated_fallback: without the extracted grid, `color_lut_gen`'s
+            parametric grid stands in (with a warning); otherwise loading fails.
     """
 
     profile: Profile = "rgb"
@@ -77,6 +79,7 @@ class ColorTable:
     rich_black: bool = False
     data_dir: Path = field(kw_only=True)
     precomputed: bool = field(default=False, kw_only=True)
+    generated_fallback: bool = field(default=False, kw_only=True)
 
     @property
     def name(self) -> str:
@@ -91,18 +94,24 @@ def _load_lut(table: ColorTable) -> npt.NDArray[np.int32]:
     We unpack at load time into (4913, 4) int32 array [C, M, Y, K]
     to avoid packed arithmetic and int64 at runtime.
 
-    Falls back to parametric generation if the binary file is missing: the
-    generated rgb/srgb default grids stand in for every variant (with a
-    warning, since the output then differs from the original's).
+    If the binary file is missing and the table allows it
+    (`generated_fallback`), the generated rgb/srgb default grids stand in
+    for every variant (with a warning, since the output then differs from
+    the original's).
 
     Returns:
         Unpacked LUT of shape (_LUT_ENTRIES, 4), columns [C, M, Y, K].
 
     Raises:
+        FileNotFoundError: If the binary file is missing and the table has
+            no generated fallback.
         ValueError: If the binary LUT file has an unexpected size.
     """
     path = table.data_dir / f"{table.name}_lut.bin"
     if not path.exists():
+        if not table.generated_fallback:
+            msg = f"colour grid {path} missing; run scripts/extract_blobs.sh {table.data_dir.name}"
+            raise FileNotFoundError(msg)
         from brother_xl2hb.color.color_lut_gen import generate_rgb_default_lut, generate_srgb_default_lut
 
         if table.name not in ("rgb_default", "srgb_default"):

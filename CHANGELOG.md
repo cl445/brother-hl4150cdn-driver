@@ -31,6 +31,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hl4150cdn); paths, filter, PPD and queue names follow from it. The
   CUPS log prefix comes from the model, and the render threads are set
   with `BRXL2HB_RENDER_THREADS` (`BRHL4150CDN_RENDER_THREADS` still works).
+- Only models that declare `generated_grids` fall back to the generated
+  colour grids when their blobs are missing; for any other model a
+  missing grid is an error that names `extract_blobs.sh <model>`.
 - The model decides how each page is sent (`page_sends`: bottom-up or
   not, PageCopies, and how often); the job no longer knows about duplex
   sides.

@@ -265,6 +265,8 @@ HL4150CDN = PrinterModel(
     duplex_page_mode=_DUPLEX_MAP,
     dither_cache=_DITHER_CACHE,
     inverse_lut_grids=_INVERSE_LUT_GRIDS,
+    # color_lut_gen's grids were fitted to the HL-4150CDN's.
+    generated_grids=True,
     color_table=color_table,
     pjl_header=pjl_header,
     pjl_footer=generate_pjl_footer,

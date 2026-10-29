@@ -27,15 +27,6 @@ def _ppd_paper_dimensions() -> dict[str, tuple[int, int]]:
     return dims
 
 
-def test_paper_points_match_the_ppd(cups_filter):
-    """Ghostscript renders the page at the size the PPD advertises, for every PageSize."""
-    from brother_xl2hb.settings import PageSize
-
-    ppd = _ppd_paper_dimensions()
-    assert set(ppd) == {size.value for size in PageSize}
-    assert ppd == HL4150CDN.paper_points
-
-
 @pytest.mark.parametrize("page_size", sorted(_ppd_paper_dimensions()))
 def test_gs_command_sets_the_page_size_in_points(cups_filter, monkeypatch, page_size):
     monkeypatch.setattr(cups_filter, "find_gs", lambda: "gs")

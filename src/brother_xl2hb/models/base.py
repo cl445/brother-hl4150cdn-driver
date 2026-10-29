@@ -59,6 +59,9 @@ class PrinterModel:
             `0600-k_cache09.bin`.
         inverse_lut_grids: (profile, improve_gray) of the default-variant
             grids that get a precomputed inverse LUT (cups/install.sh).
+        generated_grids: `color_lut_gen`'s parametric grids approximate this
+            model's, so they may stand in when its grids are not extracted.
+            Without that, a missing grid is an error rather than wrong colours.
         color_table: the colour grid the filter selects for the settings;
             built with `grid`.
         pjl_header: PJL before the XL2HB stream.
@@ -88,6 +91,7 @@ class PrinterModel:
     duplex_page_mode: Mapping[DuplexMode, int | None]
     dither_cache: str
     inverse_lut_grids: tuple[tuple[Profile, bool], ...]
+    generated_grids: bool
     color_table: Callable[[PrintSettings], ColorTable]
     pjl_header: Callable[[PrintSettings], bytes]
     pjl_footer: Callable[[], bytes]
@@ -126,6 +130,7 @@ class PrinterModel:
             rich_black,
             data_dir=self.color_data_dir,
             precomputed=precomputed,
+            generated_fallback=self.generated_grids,
         )
 
     @property
