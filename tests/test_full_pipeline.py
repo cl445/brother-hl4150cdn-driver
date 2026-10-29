@@ -71,7 +71,7 @@ def _pipeline_from_ppm(ppm_data: bytes, settings=None) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Structural validation (should all pass)
+# Structural validation
 # ---------------------------------------------------------------------------
 
 

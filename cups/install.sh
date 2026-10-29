@@ -160,10 +160,10 @@ python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --quiet "$NUMPY_REQ"
 
 # Precompute the RGB→KCMY inverse LUTs (64 MiB each: Normal and Vivid colour
-# matching, each with and without improve gray). Replaces per-pixel tetrahedral
-# interpolation. The file names carry a hash of the colour grids they were
-# computed from; LUTs from older grids (e.g. before extract_blobs.sh) are
-# removed here and ignored by the filter.
+# matching, each with and without improve gray), which the filter reads instead
+# of interpolating each pixel. The file names carry a hash of the colour grids
+# they were computed from; LUTs from older grids (e.g. before extract_blobs.sh)
+# are removed here and ignored by the filter.
 echo "Precomputing inverse color LUTs (takes about four minutes on a Pi 3)..."
 if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" -m brother_xl2hb.cli --model "$MODEL" --precompute-lut); then
     echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
