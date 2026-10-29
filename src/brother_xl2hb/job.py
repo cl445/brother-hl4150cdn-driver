@@ -69,9 +69,6 @@ def filter_page(
     model: PrinterModel = DEFAULT_MODEL,
 ) -> None:
     """Convert PPM pixel data to XL2HB and write to output."""
-    if settings.skip_blank and is_blank_page(pixel_data):
-        return
-
     filter_pages([(width, height, pixel_data)], settings, output, model)
 
     _, paper_h = model.paper_sizes[settings.page_size]
@@ -118,7 +115,8 @@ def filter_pages(
     Pages are consumed lazily in input order. How each is sent (duplex
     sides, bottom-up for long-edge back sides and `settings.reverse`,
     copies) is the model's `page_sends`. `settings.skip_blank` drops
-    pure-white pages before that.
+    pure-white pages before that; if that leaves no page, nothing is
+    written at all.
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
@@ -132,9 +130,13 @@ def filter_pages(
     """
     settings = model.restrict(settings)
     if settings.skip_blank:
-        # Idempotent: callers that drop blanks first to detect an empty job
-        # hand over whole-page buffers, which are only viewed again here.
         pages = drop_blank_pages(pages)
+        first = next(pages, None)
+        if first is None:
+            logger.info("all pages blank, nothing to print")
+            return
+        pages = chain_peeked(first, pages)
+        del first
     output.write(model.pjl_header(settings))
 
     # XL2HB stream — one session wrapping all pages.

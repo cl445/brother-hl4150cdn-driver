@@ -46,7 +46,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 from brother_decode import decode_fine_plane  # noqa: E402
 from brother_xl2hb.codec.fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
-from brother_xl2hb.job import drop_blank_pages, filter_pages  # noqa: E402
+from brother_xl2hb.job import filter_pages  # noqa: E402
 from brother_xl2hb.models import HL4150CDN  # noqa: E402
 from brother_xl2hb.render import bands  # noqa: E402
 from brother_xl2hb.render.lines import DITHER_FNS, PLANE_ENCODERS  # noqa: E402
@@ -273,9 +273,7 @@ def run_python(
     try:
         out = io.BytesIO()
         job: list[tuple[int, int, PageData]] = [(page.shape[1], page.shape[0], page) for page in pages]
-        if settings.skip_blank:
-            job = list(drop_blank_pages(job))
-        # Production prints nothing at all when every page is blank.
+        # filter_pages also writes nothing when skip blank drops every page.
         if job:
             filter_pages(job, settings, out)
     finally:
