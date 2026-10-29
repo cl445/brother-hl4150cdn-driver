@@ -24,7 +24,7 @@ from brother_xl2hb.settings import (
 # ---------------------------------------------------------------------------
 # BeginPage MediaSize as brhl4150cdnfilter writes it: a PCL XL media-size
 # enum, or for sizes without one a name string.
-MEDIA_SIZE: dict[str, int | bytes] = {
+_MEDIA_SIZE: dict[str, int | bytes] = {
     "Letter": 0,
     "Legal": 1,
     "A4": 2,
@@ -52,7 +52,7 @@ MEDIA_SIZE: dict[str, int | bytes] = {
 # Paper sizes: pixels at 600 DPI from paperinfij2, and the printable height
 # in points (ury - lly) from Brother's ImagingArea file.
 # ---------------------------------------------------------------------------
-PAPER_SIZES = {
+_PAPER_SIZES = {
     "A4": (4760, 6812),
     "Letter": (4900, 6400),
     "Legal": (4900, 8200),
@@ -76,7 +76,7 @@ PAPER_SIZES = {
     "EnvChou3": (2632, 5348),
 }
 
-IMAGING_HEIGHT_PT = {
+_IMAGING_HEIGHT_PT = {
     "A4": 818,
     "Letter": 768,
     "Legal": 984,
@@ -103,7 +103,7 @@ IMAGING_HEIGHT_PT = {
 # MediaType strings (each name is prefixed with 'd' on the wire), as
 # brhl4150cdnfilter writes them for the rc values Brother's CUPS wrapper
 # passes (MediaType=BOND, Env, ...). It sends Bond paper as Transparency.
-MEDIA_TYPE_STRINGS = {
+_MEDIA_TYPE_STRINGS = {
     "Plain": b"dRegular",
     "Thin": b"dThin",
     "Thick": b"dThick",
@@ -121,13 +121,9 @@ MEDIA_TYPE_STRINGS = {
 # Fine mode uses the same paper sizes as Normal — only the dithering
 # depth, band config, and PJL APTMODE differ.
 
-# Bytes per line of an A4 Normal-mode plane (4768 pixels / 8): the
-# reference width of the tests. The renderer passes the width of the
-# actual paper size to PlaneBuffer.
-BPL = 596
 
 # XL2HB DuplexPageMode values as written by Brother's filter; None = simplex.
-DUPLEX_MAP: dict[DuplexMode, int | None] = {
+_DUPLEX_MAP: dict[DuplexMode, int | None] = {
     DuplexMode.NONE: None,
     DuplexMode.NO_TUMBLE: 0x00,
     DuplexMode.TUMBLE: 0x81,
@@ -136,7 +132,7 @@ DUPLEX_MAP: dict[DuplexMode, int | None] = {
 # XL2HB MediaSource values as brhl4150cdnfilter writes them. The tray goes
 # only into BeginPage; the original never emits @PJL SET SOURCETRAY for
 # this model.
-MEDIA_SOURCE: dict[InputSlot, int] = {
+_MEDIA_SOURCE: dict[InputSlot, int] = {
     InputSlot.AUTO: 1,
     InputSlot.TRAY1: 1001,
     InputSlot.TRAY2: 1005,
@@ -147,10 +143,10 @@ MEDIA_SOURCE: dict[InputSlot, int] = {
 
 # The printable area starts 100 px (at 600 dpi) from the physical page edge;
 # SetPageOrigin(100, 100).
-PAGE_ORIGIN = (100, 100)
+_PAGE_ORIGIN = (100, 100)
 
 # Paper dimensions in PostScript points (the PPD's PaperDimension).
-PAPER_POINTS = {
+_PAPER_POINTS = {
     "A4": (595, 842),
     "Letter": (612, 792),
     "Legal": (612, 1008),
@@ -175,17 +171,17 @@ PAPER_POINTS = {
 }
 
 # BRCD dither files: 0600-k_cache09.bin, capt-k-TS_cache09.bin, ...
-DITHER_CACHE = "cache09"
+_DITHER_CACHE = "cache09"
 
 
 # Normal and Vivid colour matching, each with and without improve gray (the
 # PPD default is BRGray=ON); every other grid is interpolated per pixel.
-INVERSE_LUT_GRIDS: tuple[tuple[Profile, bool], ...] = (("rgb", False), ("rgb", True), ("srgb", False), ("srgb", True))
+_INVERSE_LUT_GRIDS: tuple[tuple[Profile, bool], ...] = (("rgb", False), ("rgb", True), ("srgb", False), ("srgb", True))
 
 
 # Spellings of brhl4150cdnrc and Brother's cupswrapper PPD (its B5/B6 are
 # ISO sizes); BOND and PostCard already match without regard to case.
-ALIASES = {
+_ALIASES = {
     "media_type": {"Env": "Envelope"},
     "page_size": {"A5Rotated": "PRA5Rotated", "B5": "ISOB5", "B6": "ISOB6"},
 }
@@ -259,20 +255,20 @@ def page_sends(settings: PrintSettings, index: int) -> tuple[PageSend, ...]:
 HL4150CDN = PrinterModel(
     key="hl4150cdn",
     name="HL-4150CDN",
-    paper_sizes=PAPER_SIZES,
-    imaging_height_pt=IMAGING_HEIGHT_PT,
-    paper_points=PAPER_POINTS,
-    page_origin=PAGE_ORIGIN,
-    media_size=MEDIA_SIZE,
-    media_types=MEDIA_TYPE_STRINGS,
-    media_source=MEDIA_SOURCE,
-    duplex_page_mode=DUPLEX_MAP,
-    dither_cache=DITHER_CACHE,
-    inverse_lut_grids=INVERSE_LUT_GRIDS,
+    paper_sizes=_PAPER_SIZES,
+    imaging_height_pt=_IMAGING_HEIGHT_PT,
+    paper_points=_PAPER_POINTS,
+    page_origin=_PAGE_ORIGIN,
+    media_size=_MEDIA_SIZE,
+    media_types=_MEDIA_TYPE_STRINGS,
+    media_source=_MEDIA_SOURCE,
+    duplex_page_mode=_DUPLEX_MAP,
+    dither_cache=_DITHER_CACHE,
+    inverse_lut_grids=_INVERSE_LUT_GRIDS,
     color_table=color_table,
     pjl_header=pjl_header,
     pjl_footer=generate_pjl_footer,
     page_sends=page_sends,
     skip_blank=True,
-    aliases=ALIASES,
+    aliases=_ALIASES,
 )

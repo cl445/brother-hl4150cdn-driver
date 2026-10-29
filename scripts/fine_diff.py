@@ -47,7 +47,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 from brother_decode import decode_fine_plane  # noqa: E402
 from brother_xl2hb.codec.fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
 from brother_xl2hb.job import drop_blank_pages, filter_pages  # noqa: E402
-from brother_xl2hb.models.hl4150cdn import PAPER_SIZES  # noqa: E402
+from brother_xl2hb.models import HL4150CDN  # noqa: E402
 from brother_xl2hb.render import bands  # noqa: E402
 from brother_xl2hb.render.lines import DITHER_FNS, PLANE_ENCODERS  # noqa: E402
 from brother_xl2hb.settings import PrintSettings, Resolution  # noqa: E402
@@ -64,7 +64,7 @@ FILTER = "/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
 PAPERINF = "/usr/local/Brother/Printer/hl4150cdn/inf/paperinfij2"
 
 # A4 at 600 dpi as the original reads it; rows missing at EOF print black there.
-A4_W, A4_H = PAPER_SIZES["A4"]
+A4_W, A4_H = HL4150CDN.paper_sizes["A4"]
 FINE_ROW_BYTES = A4_W // 2  # 4bpp, A4
 
 
@@ -476,11 +476,11 @@ def main() -> int:
     parser.add_argument("--show", type=int, default=3, help="mismatching entries to show per plane (default 3)")
     parser.add_argument("--dump", type=Path, help="directory to save the per-line comparison of differing planes to")
     parser.add_argument("--save", type=Path, help="directory to save both XL2HB streams to")
-    parser.add_argument("--paper", default="A4", choices=sorted(PAPER_SIZES), help="paper size (default A4)")
+    parser.add_argument("--paper", default="A4", choices=sorted(HL4150CDN.paper_sizes), help="paper size (default A4)")
     parser.add_argument("--pages", type=int, default=1, help="pages in the job; each shifts the pattern down")
     args = parser.parse_args()
 
-    size = PAPER_SIZES[args.paper]
+    size = HL4150CDN.paper_sizes[args.paper]
     pages = [make_page(args.pattern, args.top + 37 * i, args.lines, args.seed + i, size) for i in range(args.pages)]
     overrides = [f"PageSize={args.paper}", *args.rc]
     # The same settings, each driver with its own spelling of the values.

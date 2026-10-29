@@ -12,12 +12,6 @@ import pytest
 
 from brother_xl2hb.job import filter_page, filter_pages
 from brother_xl2hb.models import HL4150CDN
-from brother_xl2hb.models.hl4150cdn import (
-    DITHER_CACHE,
-    MEDIA_SIZE,
-    MEDIA_TYPE_STRINGS,
-    PAPER_SIZES,
-)
 from brother_xl2hb.protocol.pjl import generate_pjl_header
 from brother_xl2hb.settings import DuplexMode, PrintSettings
 
@@ -153,9 +147,9 @@ class TestPaperSizes:
         ],
     )
     def test_paper_dimensions(self, name, expected_wh):
-        assert PAPER_SIZES[name] == expected_wh
+        assert HL4150CDN.paper_sizes[name] == expected_wh
 
-    @pytest.mark.parametrize("name", list(PAPER_SIZES.keys()))
+    @pytest.mark.parametrize("name", list(HL4150CDN.paper_sizes.keys()))
     def test_image_dimensions_32bit_aligned(self, name):
         """Image width must be rounded up to 32-pixel boundary."""
         sw, _sh = HL4150CDN.image_dimensions(name)
@@ -190,7 +184,7 @@ class TestPaperSizes:
     def test_height_and_media_size_match_original(self, name, height, media_size):
         """Source height and MediaSize as brhl4150cdnfilter writes them."""
         assert HL4150CDN.image_dimensions(name)[1] == height
-        assert MEDIA_SIZE[name] == media_size
+        assert HL4150CDN.media_size[name] == media_size
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +213,7 @@ class TestMediaTypes:
         ],
     )
     def test_media_type_strings(self, name, expected_prefix):
-        assert MEDIA_TYPE_STRINGS[name] == expected_prefix
+        assert HL4150CDN.media_types[name] == expected_prefix
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +323,8 @@ class TestTonerSave:
         # Mid-gray row: ink level ~127 (pixel brightness 128 -> ink 127)
         row = np.full(width, 128, dtype=np.uint8)
 
-        normal_ch = load_dither_tables(lut_dir, cache=DITHER_CACHE)
-        ts_ch = load_dither_tables(lut_dir, toner_save=True, cache=DITHER_CACHE)
+        normal_ch = load_dither_tables(lut_dir, cache=HL4150CDN.dither_cache)
+        ts_ch = load_dither_tables(lut_dir, toner_save=True, cache=HL4150CDN.dither_cache)
 
         normal_dots = 0
         ts_dots = 0

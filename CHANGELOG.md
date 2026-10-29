@@ -25,6 +25,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `settings_from_cups_options`): Brother's spellings (Env, A5Rotated,
   B5, B6) are the model's `aliases`, and a choice the model does not
   support falls back to the default with a warning.
+- The HL-4150CDN's tables are reached through `models.HL4150CDN` only;
+  the module constants of `models/hl4150cdn.py` are private.
 - The model decides how each page is sent (`page_sends`: bottom-up or
   not, PageCopies, and how often); the job no longer knows about duplex
   sides.

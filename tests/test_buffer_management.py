@@ -9,7 +9,6 @@ import struct
 
 import pytest
 
-from brother_xl2hb.models.hl4150cdn import BPL
 from brother_xl2hb.protocol.xl2hb import (
     FLUSH_ORDER,
     PLANE_BUF_FLUSH_THRESH,
@@ -17,6 +16,7 @@ from brother_xl2hb.protocol.xl2hb import (
     PLANE_PARAMS,
     PlaneBuffer,
 )
+from fixture_utils import BPL
 
 # ---------------------------------------------------------------------------
 # Buffer lifecycle

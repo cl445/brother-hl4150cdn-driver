@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from brother_xl2hb.job import filter_page, filter_pages
-from brother_xl2hb.models.hl4150cdn import PAPER_SIZES
+from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 from fixture_utils import assert_matches_fixture
 
@@ -25,7 +25,7 @@ def fine_test_page(kind: str, lines: int, page_size: str = "A4") -> np.ndarray:
     Returns:
         (height, width, 3) uint8 RGB page.
     """
-    width, height = PAPER_SIZES[page_size]
+    width, height = HL4150CDN.paper_sizes[page_size]
     page = np.full((height, width, 3), 255, np.uint8)
     band = page[TOP : TOP + lines]
     if kind == "hramp":

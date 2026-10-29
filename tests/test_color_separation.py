@@ -11,7 +11,6 @@ import pytest
 from brother_xl2hb.color.color_lut import rgb_to_cmyk_lut
 from brother_xl2hb.color.dither import dither_channel_1bpp
 from brother_xl2hb.models import HL4150CDN
-from brother_xl2hb.models.hl4150cdn import DITHER_CACHE
 from brother_xl2hb.settings import ColorMatching, MediaType, PrintSettings
 
 # ---------------------------------------------------------------------------
@@ -74,7 +73,7 @@ class TestOrderedDithering:
         lut_dir = str(HL4150CDN.lut_dir)
         if not (Path(lut_dir) / "0600-k_cache09.bin").exists():
             pytest.skip("Original BRCD files not available")
-        channels = load_brcd_tables(lut_dir, cache=DITHER_CACHE)
+        channels = load_brcd_tables(lut_dir, cache=HL4150CDN.dither_cache)
         assert channels is not None
         # K and Y use 32x32, C and M use 40x40
         assert channels["K"].width == 32
