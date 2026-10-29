@@ -163,7 +163,11 @@ like it, an entry in `models.MODELS`, its PPD, and the captures that
 show its output is byte-identical. What the model supports is what its
 tables cover (paper sizes, media, trays, duplex modes) plus `skip_blank`;
 other choices fall back to the default with a warning. Its rc file's and
-PPD's own spellings of option values go into `aliases`.
+PPD's own spellings of option values go into `aliases`. Set
+`generated_grids=False` unless the generated colour grids fit the model:
+then a missing grid is an error instead of wrong colours.
+`tests/test_model_packaging.py` checks that the PPD, the CUPS filter shim
+and the scripts know the model and agree with its tables.
 
 The Cython modules are optional in development too; build them in place
 with:

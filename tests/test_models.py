@@ -163,3 +163,15 @@ def test_cli_rejects_an_unknown_model(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--model", "hl9999"])
     assert "invalid choice" in capsys.readouterr().err
+
+
+def test_missing_grids_are_an_error_without_generated_fallback(tmp_path, use_color_data_root):
+    """Only a model the generated grids approximate prints without its extracted grids."""
+    from brother_xl2hb.color import color_lut
+
+    use_color_data_root(tmp_path)  # no grids for any model
+    other = dataclasses.replace(HL4150CDN, generated_grids=False)
+    with pytest.raises(FileNotFoundError, match=r"run scripts/extract_blobs\.sh hl4150cdn"):
+        color_lut.interp_arrays(other.grid())
+    lut, _, _ = color_lut.interp_arrays(HL4150CDN.grid())
+    assert lut.size == 4913 * 4
