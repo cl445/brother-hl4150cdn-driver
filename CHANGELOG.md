@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Literal stretches longer than one block are encoded as in the original:
+  the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
+  repeats the last word after the flush. A scanline has at most about 425
+  words, so printed output does not change (#3).
+
 ## [1.2.0] — 2026-10-28
 
 Fine mode (600x2400 dpi) matches the manufacturer's filter byte for byte

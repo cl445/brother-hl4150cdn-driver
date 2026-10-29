@@ -254,7 +254,7 @@ CONFIG_12BIT = SwRleConfig(
     emit_run=_make_emit_run_nbit(12),
     emit_literal=_make_emit_literal_nbit(12),
     eof=0xFFFFFFFF,
-    literal_overflow=0x7FF,
+    literal_overflow=0xFFF,
     skip_counts_current=False,
 )
 
@@ -418,7 +418,6 @@ def sw_rle_encode(words: list[int], cfg: SwRleConfig) -> bytes:
                     emit_run_fn(output, word_buf[0], 1)
                 else:
                     emit_literal_fn(output, word_buf[:lit_n])
-                emit_run_fn(output, word_buf[-1], 1)
                 cur = w
                 word_buf = [word_buf[-1], w]
                 run_len = 2

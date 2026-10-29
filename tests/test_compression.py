@@ -5,6 +5,8 @@ Migrates all inline test vectors from brother_encode.py into proper pytest
 parametrized tests, plus decoding verification and capture-derived round-trip.
 """
 
+import hashlib
+
 import pytest
 
 from brother_decode import (
@@ -13,6 +15,8 @@ from brother_decode import (
     decode_fine_stage2,
     decode_m_plane,
     decode_plane,
+    decode_rle,
+    decode_rle_10bit,
 )
 from brother_encode import (
     compress_pattern_encode,
@@ -24,6 +28,7 @@ from brother_encode import (
     group_bits,
     pack_groups,
 )
+from rle import CONFIG_10BIT, CONFIG_12BIT, CONFIG_20BIT, finalize_compressed, group_bits_py, sw_rle_encode
 from xl2hb import BPL
 
 # ---------------------------------------------------------------------------
@@ -458,6 +463,53 @@ class TestFineCodecAgainstBinary:
     def test_decode_stage2_inverts_vector(self):
         data = bytes.fromhex("4051474052474053474054474055474056")
         assert decode_fine_stage2(compress_pattern_encode(data)) == data
+
+
+# ---------------------------------------------------------------------------
+# Literal overflow: stretches longer than one literal block
+# ---------------------------------------------------------------------------
+
+_SW_RLE_CONFIGS = {12: CONFIG_12BIT, 20: CONFIG_20BIT, 10: CONFIG_10BIT}
+
+
+def _literal_stretch(bits: int, n_literals: int) -> bytes:
+    """`n_literals` distinct consecutive words (no runs, no context hits), then 6000 zero words."""
+    words = [(i % ((1 << bits) - 2)) + 1 for i in range(n_literals)] + [0] * 6000
+    n_bits = len(words) * bits
+    value = 0
+    for w in words:
+        value = (value << bits) | w
+    return (value << (-n_bits % 8)).to_bytes((n_bits + 7) // 8, "big")
+
+
+class TestLiteralOverflowAgainstBinary:
+    """A literal stretch is flushed at 0xFFF words (K/Y 12-bit, M 10-bit) or 0x7FF (C 20-bit).
+
+    The last two words carry over into the next block. Hashes come from
+    compress_encode_plane_narrow/_wide/_m run in scripts/native_codec.py's emulator.
+    """
+
+    @pytest.mark.parametrize(
+        ("bits", "n_literals", "sha256_prefix"),
+        [
+            (12, 2048, "e89eaddb9a6dd0d4"),
+            (12, 4096, "c1c8dbb804791c71"),
+            (12, 9000, "240be3cdadc7ca44"),
+            (20, 2048, "ea31788569294c78"),
+            (20, 4096, "7e4766c9220779d5"),
+            (20, 9000, "baee1d007fa55bf4"),
+            (10, 2048, "94ad4ea8952336c9"),
+            (10, 4096, "5f9c38b3628a35cf"),
+            (10, 9000, "8ae460bbb7489807"),
+        ],
+    )
+    def test_matches_binary(self, bits, n_literals, sha256_prefix):
+        data = _literal_stretch(bits, n_literals)
+        words = group_bits_py(data, bits)
+        encoded = finalize_compressed(sw_rle_encode(words, _SW_RLE_CONFIGS[bits]), data, bits)
+        assert hashlib.sha256(encoded).hexdigest()[:16] == sha256_prefix
+        decoded = decode_rle_10bit(encoded) if bits == 10 else decode_rle(encoded, bits)
+        assert decoded[: len(words)] == words
 
 
 class TestEncodeFine:
