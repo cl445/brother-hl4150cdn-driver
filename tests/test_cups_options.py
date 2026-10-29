@@ -107,7 +107,6 @@ class TestCupsOptionsEnums:
             ("BRMediaType=EnvThin", MediaType.ENV_THIN),
             # Brother's own PPD/RC spellings
             ("BRMediaType=BOND", MediaType.BOND),
-            ("BRMediaType=Env", MediaType.ENVELOPE),
             ("BRMediaType=PostCard", MediaType.POSTCARD),
         ],
     )

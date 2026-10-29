@@ -5,11 +5,11 @@ import io
 import numpy as np
 import pytest
 
-from brother_xl2hb.models.hl4150cdn import PAPER_SIZES
+from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render.page_stream import iter_ppm_pages
 from brother_xl2hb.render.rows import collect_rows
 
-_TARGET_W, _TARGET_H = PAPER_SIZES["A4"]
+_TARGET_W, _TARGET_H = HL4150CDN.paper_sizes["A4"]
 _WINDOW = (100, 100, _TARGET_W, _TARGET_H)
 
 

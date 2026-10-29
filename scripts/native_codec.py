@@ -27,7 +27,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode  # noqa: E402
 
-BINARY = ROOT / ".brother-blobs/extracted/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
+BINARY = ROOT / ".brother-blobs/hl4150cdn/extracted/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
 
 RLE_PREENCODE = 0x08050F6C  # (src, dst, len) -> len in eax
 PATTERN_ENCODE = 0x0805139C  # (src, dst, len, char *checksum) -> len in eax

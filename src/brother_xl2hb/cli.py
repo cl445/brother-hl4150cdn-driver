@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
 
-from brother_xl2hb.color.color_lut import INVERSE_LUT_DIR, write_inverse_luts
+from brother_xl2hb.color.color_lut import write_inverse_luts
 from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.models import MODELS
 from brother_xl2hb.render.ppm import read_ppm
@@ -38,11 +38,11 @@ def main(argv: list[str] | None = None) -> None:
     All pages of a concatenated PPM stream (as Ghostscript writes it) are
     rendered into one XL2HB session, like the CUPS filter does.
     """
-    parser = argparse.ArgumentParser(description="Brother HL-4150CDN filter (PPM -> XL2HB)")
+    parser = argparse.ArgumentParser(description="Brother XL2HB printer filter (PPM -> PJL + XL2HB)")
     parser.add_argument(
         "--model", choices=sorted(MODELS), default="hl4150cdn", help="Printer model (default: hl4150cdn)"
     )
-    parser.add_argument("--rc", "-r", help="Path to RC file (brhl4150cdnrc)", default=None)
+    parser.add_argument("--rc", "-r", help="Path to the model's Brother RC file (e.g. brhl4150cdnrc)", default=None)
     parser.add_argument("--paper", "-p", help="Paper size (e.g. A4, Letter)", default=None)
     parser.add_argument("--mono", "-m", action="store_true", help="Print monochrome")
     parser.add_argument("--toner-save", "-t", action="store_true", help="Toner save mode")
@@ -50,17 +50,18 @@ def main(argv: list[str] | None = None) -> None:
         "--fine",
         "-f",
         action="store_true",
-        help="Fine mode (600x2400 dpi): byte-identical to the original filter, not verified on the printer yet",
+        help="Fine mode (600x2400 dpi), byte-identical to the original filter",
     )
     parser.add_argument("--duplex", choices=["none", "long", "short"], default="none")
     parser.add_argument("--debug", "-d", action="store_true", help="Debug output to stderr")
     parser.add_argument(
         "--precompute-lut",
         nargs="?",
-        const=str(INVERSE_LUT_DIR),
+        const="",
         default=None,
         metavar="DIR",
-        help=f"Precompute the RGB→KCMY inverse LUTs into DIR and exit. Default DIR: {INVERSE_LUT_DIR}.",
+        help="Precompute the model's RGB→KCMY inverse LUTs into DIR and exit. "
+        "Default DIR: the model's colour data directory.",
     )
 
     args = parser.parse_args(argv)
@@ -71,15 +72,20 @@ def main(argv: list[str] | None = None) -> None:
             format="%(levelname)s: %(name)s: %(message)s",
             stream=sys.stderr,
         )
-        write_inverse_luts(Path(args.precompute_lut))
+        model = MODELS[args.model]
+        write_inverse_luts(model.inverse_lut_tables, Path(args.precompute_lut) if args.precompute_lut else None)
         return
 
     if args.rc is not None and not Path(args.rc).is_file():
         parser.error(f"RC file not found: {args.rc}")
-    settings = PrintSettings.from_rc_file(args.rc) if args.rc is not None else PrintSettings()
+    model = MODELS[args.model]
+    settings = model.settings_from_rc_file(args.rc) if args.rc is not None else PrintSettings()
 
     if args.paper:
-        settings.page_size = PageSize(args.paper)
+        try:
+            settings.page_size = PageSize(model.spelled("page_size", args.paper))
+        except ValueError:
+            parser.error(f"unknown paper size {args.paper!r}")
     if args.mono:
         settings.mono_color = MonoColor.MONO
     if args.fine:
@@ -97,6 +103,7 @@ def main(argv: list[str] | None = None) -> None:
         stream=sys.stderr,
     )
 
+    settings = model.restrict(settings)
     logger.debug("Settings: %s", settings)
 
     pages = iter_ppm_stream(sys.stdin.buffer)
@@ -117,7 +124,7 @@ def main(argv: list[str] | None = None) -> None:
     pages = chain_peeked(first, pages)
     del first
     output = sys.stdout.buffer
-    filter_pages(pages, settings, output, MODELS[args.model])
+    filter_pages(pages, settings, output, model)
     output.flush()
 
 

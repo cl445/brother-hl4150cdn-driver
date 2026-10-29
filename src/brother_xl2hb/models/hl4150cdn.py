@@ -5,13 +5,15 @@ and ImagingArea files and verified against its output. The protocol
 itself is in `brother_xl2hb.protocol`.
 """
 
-from brother_xl2hb.color.transforms import color_table
-from brother_xl2hb.models.base import PrinterModel
+from brother_xl2hb.color.color_lut import ColorTable, Profile
+from brother_xl2hb.color.transforms import color_profile
+from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.pjl import generate_pjl_footer, generate_pjl_header
 from brother_xl2hb.settings import (
     DuplexMode,
     ImproveOutput,
     InputSlot,
+    MediaType,
     MonoColor,
     PrintSettings,
     Resolution,
@@ -22,7 +24,7 @@ from brother_xl2hb.settings import (
 # ---------------------------------------------------------------------------
 # BeginPage MediaSize as brhl4150cdnfilter writes it: a PCL XL media-size
 # enum, or for sizes without one a name string.
-MEDIA_SIZE: dict[str, int | bytes] = {
+_MEDIA_SIZE: dict[str, int | bytes] = {
     "Letter": 0,
     "Legal": 1,
     "A4": 2,
@@ -50,7 +52,7 @@ MEDIA_SIZE: dict[str, int | bytes] = {
 # Paper sizes: pixels at 600 DPI from paperinfij2, and the printable height
 # in points (ury - lly) from Brother's ImagingArea file.
 # ---------------------------------------------------------------------------
-PAPER_SIZES = {
+_PAPER_SIZES = {
     "A4": (4760, 6812),
     "Letter": (4900, 6400),
     "Legal": (4900, 8200),
@@ -74,7 +76,7 @@ PAPER_SIZES = {
     "EnvChou3": (2632, 5348),
 }
 
-IMAGING_HEIGHT_PT = {
+_IMAGING_HEIGHT_PT = {
     "A4": 818,
     "Letter": 768,
     "Legal": 984,
@@ -101,7 +103,7 @@ IMAGING_HEIGHT_PT = {
 # MediaType strings (each name is prefixed with 'd' on the wire), as
 # brhl4150cdnfilter writes them for the rc values Brother's CUPS wrapper
 # passes (MediaType=BOND, Env, ...). It sends Bond paper as Transparency.
-MEDIA_TYPE_STRINGS = {
+_MEDIA_TYPE_STRINGS = {
     "Plain": b"dRegular",
     "Thin": b"dThin",
     "Thick": b"dThick",
@@ -119,13 +121,9 @@ MEDIA_TYPE_STRINGS = {
 # Fine mode uses the same paper sizes as Normal — only the dithering
 # depth, band config, and PJL APTMODE differ.
 
-# Bytes per line of an A4 Normal-mode plane (4768 pixels / 8): the
-# reference width of the tests. The renderer passes the width of the
-# actual paper size to PlaneBuffer.
-BPL = 596
 
 # XL2HB DuplexPageMode values as written by Brother's filter; None = simplex.
-DUPLEX_MAP: dict[DuplexMode, int | None] = {
+_DUPLEX_MAP: dict[DuplexMode, int | None] = {
     DuplexMode.NONE: None,
     DuplexMode.NO_TUMBLE: 0x00,
     DuplexMode.TUMBLE: 0x81,
@@ -134,7 +132,7 @@ DUPLEX_MAP: dict[DuplexMode, int | None] = {
 # XL2HB MediaSource values as brhl4150cdnfilter writes them. The tray goes
 # only into BeginPage; the original never emits @PJL SET SOURCETRAY for
 # this model.
-MEDIA_SOURCE: dict[InputSlot, int] = {
+_MEDIA_SOURCE: dict[InputSlot, int] = {
     InputSlot.AUTO: 1,
     InputSlot.TRAY1: 1001,
     InputSlot.TRAY2: 1005,
@@ -145,10 +143,10 @@ MEDIA_SOURCE: dict[InputSlot, int] = {
 
 # The printable area starts 100 px (at 600 dpi) from the physical page edge;
 # SetPageOrigin(100, 100).
-PAGE_ORIGIN = (100, 100)
+_PAGE_ORIGIN = (100, 100)
 
 # Paper dimensions in PostScript points (the PPD's PaperDimension).
-PAPER_POINTS = {
+_PAPER_POINTS = {
     "A4": (595, 842),
     "Letter": (612, 792),
     "Legal": (612, 1008),
@@ -173,7 +171,45 @@ PAPER_POINTS = {
 }
 
 # BRCD dither files: 0600-k_cache09.bin, capt-k-TS_cache09.bin, ...
-DITHER_CACHE = "cache09"
+_DITHER_CACHE = "cache09"
+
+
+# Normal and Vivid colour matching, each with and without improve gray (the
+# PPD default is BRGray=ON); every other grid is interpolated per pixel.
+_INVERSE_LUT_GRIDS: tuple[tuple[Profile, bool], ...] = (("rgb", False), ("rgb", True), ("srgb", False), ("srgb", True))
+
+
+# Spellings of brhl4150cdnrc and Brother's cupswrapper PPD (its B5/B6 are
+# ISO sizes); BOND and PostCard already match without regard to case.
+_ALIASES = {
+    "media_type": {"Env": "Envelope"},
+    "page_size": {"A5Rotated": "PRA5Rotated", "B5": "ISOB5", "B6": "ISOB6"},
+}
+
+
+def color_table(settings: PrintSettings) -> ColorTable:
+    """The colour grid `lookup_color_transform_table` selects for `settings`.
+
+    Profile from the colour matching, `density2` with toner save, `glossy`
+    for glossy media; toner save wins over glossy media, as in the
+    original. Rich black (BREnhanceBlkPrt) only exists for the rgb and srgb
+    profiles.
+
+    Returns:
+        The table for the colour separation.
+    """
+    profile = color_profile(settings)
+    variant = "default"
+    if settings.toner_save:
+        variant = "density2"
+    elif settings.media_type == MediaType.GLOSSY:
+        variant = "glossy"
+    return HL4150CDN.grid(
+        profile,
+        improve_gray=settings.improve_gray,
+        variant=variant,
+        rich_black=settings.enhance_black and profile != "cmyk",
+    )
 
 
 def pjl_header(settings: PrintSettings) -> bytes:
@@ -200,32 +236,39 @@ def pjl_header(settings: PrintSettings) -> bytes:
     )
 
 
-def page_is_flipped(settings: PrintSettings, back_side: bool) -> bool:  # noqa: FBT001 - PrinterModel hook signature
-    """Whether a page is sent bottom-up with the back-side marker.
+def page_sends(settings: PrintSettings, index: int) -> tuple[PageSend, ...]:
+    """How brhl4150cdnfilter sends the page at `index`: once, with PageCopies = copies.
 
-    Long-edge back pages are sent that way (rows mirrored, columns not).
+    With duplex every second page is a back side. Long-edge back pages go
+    bottom-up with the back-side marker (rows mirrored, columns not).
     BRReverse makes Brother's filter send every page that way, so on a
     long-edge back page the two cancel out (verified against captures).
 
     Returns:
-        True if the page is mirrored top to bottom.
+        A single `PageSend`.
     """
-    return (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+    back_side = settings.duplex != DuplexMode.NONE and index % 2 == 1
+    flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+    return (PageSend(flip=flip, copies=settings.copies),)
 
 
 HL4150CDN = PrinterModel(
+    key="hl4150cdn",
     name="HL-4150CDN",
-    paper_sizes=PAPER_SIZES,
-    imaging_height_pt=IMAGING_HEIGHT_PT,
-    paper_points=PAPER_POINTS,
-    page_origin=PAGE_ORIGIN,
-    media_size=MEDIA_SIZE,
-    media_types=MEDIA_TYPE_STRINGS,
-    media_source=MEDIA_SOURCE,
-    duplex_page_mode=DUPLEX_MAP,
-    dither_cache=DITHER_CACHE,
+    paper_sizes=_PAPER_SIZES,
+    imaging_height_pt=_IMAGING_HEIGHT_PT,
+    paper_points=_PAPER_POINTS,
+    page_origin=_PAGE_ORIGIN,
+    media_size=_MEDIA_SIZE,
+    media_types=_MEDIA_TYPE_STRINGS,
+    media_source=_MEDIA_SOURCE,
+    duplex_page_mode=_DUPLEX_MAP,
+    dither_cache=_DITHER_CACHE,
+    inverse_lut_grids=_INVERSE_LUT_GRIDS,
     color_table=color_table,
     pjl_header=pjl_header,
     pjl_footer=generate_pjl_footer,
-    page_is_flipped=page_is_flipped,
+    page_sends=page_sends,
+    skip_blank=True,
+    aliases=_ALIASES,
 )

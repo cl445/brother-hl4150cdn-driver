@@ -1,41 +1,59 @@
 """One page of the XL2HB stream, from BeginPage to EndPage."""
 
-from brother_xl2hb.blobs import LUT_DIR
+from dataclasses import dataclass
+from typing import Self
+
 from brother_xl2hb.color.dither import (
     DitherChannel,
     load_dither_tables,
 )
 from brother_xl2hb.color.transforms import build_input_remap_lut
-from brother_xl2hb.models.base import PrinterModel
+from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
 from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
 from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, encode_lines, encode_lines_mono
-from brother_xl2hb.render.rows import BUFFER_TYPES, PageData, RowBlocks, collect_rows, flip_vertical, page_rows
+from brother_xl2hb.render.rows import BUFFER_TYPES, Page, RowBlocks, collect_rows, flip_vertical, page_rows
 from brother_xl2hb.settings import MonoColor, PrintSettings, Resolution
 
 
-def render_page(
-    w: XL2HBWriter,
-    width: int,
-    height: int,
-    pixel_data: PageData,
-    settings: PrintSettings,
-    channels: dict[str, DitherChannel],
-    model: PrinterModel,
-    *,
-    flip: bool = False,
-) -> None:
+@dataclass(frozen=True, slots=True)
+class JobContext:
+    """What stays the same for every page of a job.
+
+    Attributes:
+        settings: the job's settings, restricted to what `model` supports.
+        model: the printer.
+        channels: the dither channels for `settings` (see `init_channels`).
+    """
+
+    settings: PrintSettings
+    model: PrinterModel
+    channels: dict[str, DitherChannel]
+
+    @classmethod
+    def create(cls, settings: PrintSettings, model: PrinterModel) -> Self:
+        """The context for `settings` on `model`, with its dither channels loaded.
+
+        Returns:
+            The job context.
+        """
+        return cls(settings, model, init_channels(settings, model))
+
+
+def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> None:
     """Render one page within an already-open session.
 
-    Handles: BeginPage -> scanline loop -> flush -> EndPage. `flip` sends
-    the page bottom-up with the back-side marker (which pages:
-    `PrinterModel.page_is_flipped`). Scanlines are read as views into `pixel_data`,
-    which may also be a stream of row blocks; only flipped pages are
-    collected into one buffer to be mirrored.
+    Handles: BeginPage -> scanline loop -> flush -> EndPage, as `send`
+    says (bottom-up with the back-side marker, PageCopies; see
+    `PrinterModel.page_sends`). Scanlines are read as views into the
+    page's pixel data, which may also be a stream of row blocks; only
+    flipped pages are collected into one buffer to be mirrored.
 
     Raises:
-        ValueError: If `pixel_data` has fewer than `height` rows.
+        ValueError: If the page has fewer than its `height` rows.
     """
+    width, height, pixel_data = page
+    settings, model, channels = job.settings, job.model, job.channels
     is_fine = settings.resolution == Resolution.FINE
     page_size = settings.page_size
     _, paper_h = model.paper_sizes[page_size]
@@ -44,7 +62,7 @@ def render_page(
     bpl = (sw + 1) // 2 if is_fine else (sw + 7) // 8  # 4bpp: 2 pixels per byte, 1bpp: 8
 
     # A flipped page is mirrored top to bottom, columns stay.
-    if flip:
+    if send.flip:
         blocks: RowBlocks = (flip_vertical(collect_rows(pixel_data, width, height), paper_h),)
         height = paper_h
     elif isinstance(pixel_data, BUFFER_TYPES):
@@ -57,11 +75,11 @@ def render_page(
         media_source=model.media_source[settings.input_slot],
         media_type=model.media_type_code(settings.media_type),
         duplex_mode=model.duplex_page_mode.get(settings.duplex),
-        back_side_marker=flip,
+        back_side_marker=send.flip,
     )
     w.write_set_page_origin(*model.page_origin)
     mono = settings.mono_color == MonoColor.MONO
-    w.write_begin_image(sw, sh, copies=settings.copies, fine=is_fine, color=not mono)
+    w.write_begin_image(sw, sh, copies=send.copies, fine=is_fine, color=not mono)
 
     plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
 
@@ -130,14 +148,14 @@ def render_page(
         write_plane(pid)
 
     w.write_end_image()
-    w.write_end_page(copies=settings.copies)
+    w.write_end_page(copies=send.copies)
 
 
 def init_channels(settings: PrintSettings, model: PrinterModel) -> dict[str, DitherChannel]:
     """Initialize dither channels for the current print settings.
 
-    The BRCD tables are `model.dither_cache`'s set in `blobs.LUT_DIR`
-    (`lut/` inside the package, in the repository and when installed).
+    The BRCD tables are `model.dither_cache`'s set in `model.lut_dir`
+    (`lut/<key>/` inside the package, in the repository and when installed).
     `load_dither_tables` handles the fine→normal fallback and the Bayer
     fallback when no BRCD set matches.
 
@@ -145,7 +163,7 @@ def init_channels(settings: PrintSettings, model: PrinterModel) -> dict[str, Dit
         Channel dict keyed by 'K', 'C', 'M', 'Y'.
     """
     return load_dither_tables(
-        str(LUT_DIR),
+        str(model.lut_dir),
         cache=model.dither_cache,
         fine=settings.resolution == Resolution.FINE,
         toner_save=settings.toner_save,

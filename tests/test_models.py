@@ -1,27 +1,90 @@
 """PrinterModel: the generic geometry and lookups, and the registered models' tables."""
 
 import dataclasses
+import io
 import logging
 
+import numpy as np
 import pytest
 
 from brother_xl2hb import cli
+from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL, HL4150CDN, MODELS
+from brother_xl2hb.models.base import PageSend
+from brother_xl2hb.protocol.xl2hb import XL2HBWriter
+from brother_xl2hb.render.page import JobContext, render_page
 from brother_xl2hb.settings import DuplexMode, InputSlot, MediaType, PageSize, PrintSettings
 
 
 @pytest.mark.parametrize("model", MODELS.values(), ids=MODELS.keys())
-def test_tables_cover_every_setting(model):
-    """Every choice the settings accept has an entry, so no page falls back to a default."""
-    sizes = {size.value for size in PageSize}
-    assert set(model.paper_sizes) == sizes
+def test_tables_are_consistent(model):
+    """Every supported page size has its geometry and code; every table key is a valid setting."""
+    sizes = set(model.paper_sizes)
+    assert sizes <= {size.value for size in PageSize}
     assert set(model.paper_points) == sizes
     assert set(model.media_size) == sizes
     if model.imaging_height_pt is not None:
         assert set(model.imaging_height_pt) == sizes
-    assert set(model.media_types) == {media.value for media in MediaType}
-    assert set(model.media_source) == set(InputSlot)
-    assert set(model.duplex_page_mode) == set(DuplexMode)
+    assert set(model.media_types) <= {media.value for media in MediaType}
+    assert set(model.media_source) <= set(InputSlot)
+    assert DuplexMode.NONE in model.duplex_page_mode
+    for table in model.aliases.values():
+        assert all(isinstance(value, str) for value in table.values())
+
+
+def test_hl4150cdn_supports_every_setting():
+    assert set(HL4150CDN.paper_sizes) == {size.value for size in PageSize}
+    assert set(HL4150CDN.media_types) == {media.value for media in MediaType}
+    assert set(HL4150CDN.media_source) == set(InputSlot)
+    assert set(HL4150CDN.duplex_page_mode) == set(DuplexMode)
+    assert HL4150CDN.skip_blank
+    settings = PrintSettings(page_size=PageSize.ENV_YOU4, duplex=DuplexMode.TUMBLE, skip_blank=True)
+    assert HL4150CDN.restrict(settings) is settings
+
+
+def test_restrict_replaces_unsupported_choices(caplog):
+    simplex = dataclasses.replace(
+        HL4150CDN,
+        name="Simplex",
+        duplex_page_mode={DuplexMode.NONE: None},
+        media_source={InputSlot.AUTO: 1, InputSlot.TRAY1: 1001},
+        skip_blank=False,
+    )
+    settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE, input_slot=InputSlot.TRAY2, skip_blank=True, copies=3)
+    with caplog.at_level(logging.WARNING, logger="brother_xl2hb.models.base"):
+        restricted = simplex.restrict(settings)
+    assert restricted.duplex == DuplexMode.NONE
+    assert restricted.input_slot == InputSlot.AUTO
+    assert restricted.skip_blank is False
+    assert restricted.copies == 3
+    assert settings.duplex == DuplexMode.NO_TUMBLE  # the caller's settings stay as they were
+    assert "Simplex does not support duplex=DuplexNoTumble" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("option", "attr", "expected"),
+    [
+        ("BRMediaType=Env", "media_type", MediaType.ENVELOPE),
+        ("BRMediaType=env", "media_type", MediaType.ENVELOPE),
+        ("PageSize=A5Rotated", "page_size", PageSize.A5_ROTATED),
+        ("PageSize=B5", "page_size", PageSize.ISOB5),
+        ("PageSize=B6", "page_size", PageSize.ISOB6),
+    ],
+)
+def test_hl4150cdn_spellings(option, attr, expected):
+    assert getattr(HL4150CDN.settings_from_cups_options(option), attr) == expected
+
+
+def test_hl4150cdn_spellings_in_the_rc_file(tmp_path):
+    rc = tmp_path / "brhl4150cdnrc"
+    rc.write_text("[hl4150cdn]\nMediaType=Env\nPageSize=B5\n")
+    settings = HL4150CDN.settings_from_rc_file(str(rc))
+    assert settings.media_type == MediaType.ENVELOPE
+    assert settings.page_size == PageSize.ISOB5
+
+
+def test_without_the_model_brothers_spellings_are_unknown():
+    assert PrintSettings.from_cups_options("PageSize=B5").page_size == PageSize.A4
 
 
 def test_default_model_is_the_hl4150cdn():
@@ -49,19 +112,43 @@ def test_image_height_without_imaging_area_is_the_paper_height_in_whole_points()
 
 
 @pytest.mark.parametrize(
-    ("duplex", "reverse", "back_side", "flipped"),
+    ("duplex", "reverse", "index", "flipped"),
     [
-        (DuplexMode.NONE, False, False, False),
-        (DuplexMode.NONE, True, False, True),
-        (DuplexMode.NO_TUMBLE, False, True, True),
-        (DuplexMode.NO_TUMBLE, True, True, False),  # long-edge back side and reverse cancel out
-        (DuplexMode.NO_TUMBLE, True, False, True),
-        (DuplexMode.TUMBLE, False, True, False),
+        (DuplexMode.NONE, False, 1, False),
+        (DuplexMode.NONE, True, 0, True),
+        (DuplexMode.NO_TUMBLE, False, 0, False),
+        (DuplexMode.NO_TUMBLE, False, 1, True),  # long-edge back side
+        (DuplexMode.NO_TUMBLE, True, 1, False),  # back side and reverse cancel out
+        (DuplexMode.NO_TUMBLE, True, 2, True),
+        (DuplexMode.TUMBLE, False, 1, False),
     ],
 )
-def test_hl4150cdn_page_is_flipped(duplex, reverse, back_side, flipped):
-    settings = PrintSettings(duplex=duplex, reverse=reverse)
-    assert HL4150CDN.page_is_flipped(settings, back_side) is flipped
+def test_hl4150cdn_sends_each_page_once(duplex, reverse, index, flipped):
+    settings = PrintSettings(duplex=duplex, reverse=reverse, copies=2)
+    assert HL4150CDN.page_sends(settings, index) == (PageSend(flip=flipped, copies=2),)
+
+
+def test_a_page_sent_twice_is_rendered_twice_from_streamed_rows():
+    """A model may send a page more than once; streamed row blocks are collected first."""
+    sends = (PageSend(flip=False, copies=1), PageSend(flip=True, copies=2))
+    twice = dataclasses.replace(HL4150CDN, page_sends=lambda settings, index: sends)
+    width, height = 64, HL4150CDN.paper_sizes["Postcard"][1]
+    rows = np.random.default_rng(0).integers(0, 256, (height, width * 3), dtype=np.uint8)
+    blocks = (rows[i : i + 100] for i in range(0, height, 100))
+    settings = PrintSettings(page_size=PageSize.POSTCARD)
+
+    out = io.BytesIO()
+    filter_pages([(width, height, blocks)], settings, out, twice)
+
+    job = JobContext.create(settings, HL4150CDN)
+    expected = []
+    for send in sends:
+        page = io.BytesIO()
+        render_page(XL2HBWriter(page), (width, height, rows), job, send)
+        expected.append(page.getvalue())
+    assert expected[0] != expected[1]
+    stream = out.getvalue()
+    assert expected[0] + expected[1] in stream
 
 
 def test_unknown_names_fall_back_with_a_warning(caplog):

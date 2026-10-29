@@ -3,7 +3,7 @@
 import configparser
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 class MediaType(StrEnum):
     """Paper/media type selection (maps to XL2HB MediaType attribute).
 
-    Values are this driver's PPD choices; Brother's own spellings from
-    brhl4150cdnrc and its PPD (BOND, Env, PostCard) are accepted as aliases.
+    Values are this driver's PPD choices, matched without regard to case
+    (Brother's BOND, PostCard); a model's other spellings are its
+    `PrinterModel.aliases`.
     """
 
     PLAIN = "Plain"
@@ -37,17 +38,15 @@ class MediaType(StrEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> "MediaType | None":
-        alias = {"env": cls.ENVELOPE}
         if isinstance(value, str):
             for member in cls:
                 if member.value.lower() == value.lower():
                     return member
-            return alias.get(value.lower())
         return None
 
 
 class PageSize(StrEnum):
-    """Page size selection (maps to XL2HB MediaSize enum and PAPER_SIZES dimensions)."""
+    """Page size selection, by PPD PageSize; a model's other spellings are its `PrinterModel.aliases`."""
 
     A4 = "A4"
     LETTER = "Letter"
@@ -70,12 +69,6 @@ class PageSize(StrEnum):
     ENV_DL_LONG_EDGE = "EnvPRC5Rotated"
     ENV_YOU4 = "EnvYou4"
     ENV_CHOU3 = "EnvChou3"
-
-    @classmethod
-    def _missing_(cls, value: object) -> "PageSize | None":
-        # PPD keys of Brother's own cupswrapper PPD (its B5/B6 are ISO sizes).
-        alias = {"A5Rotated": cls.A5_ROTATED, "B5": cls.ISOB5, "B6": cls.ISOB6}
-        return alias.get(value) if isinstance(value, str) else None
 
 
 class Resolution(StrEnum):
@@ -127,6 +120,27 @@ class InputSlot(StrEnum):
     MANUAL = "Manual"
 
 
+Aliases = Mapping[str, Mapping[str, str]]
+"""A model's spellings of option values: settings field -> {spelling: value}.
+
+Spellings match without regard to case, e.g. {"media_type": {"Env": "Envelope"}}.
+"""
+
+
+def alias_lookup(aliases: Aliases | None) -> Callable[[str, str], str]:
+    """Return `spelled(field, raw)`: `raw` translated through `aliases[field]`, else unchanged.
+
+    Returns:
+        The lookup function.
+    """
+    folded = {attr: {k.casefold(): v for k, v in table.items()} for attr, table in (aliases or {}).items()}
+
+    def spelled(attr: str, raw: str) -> str:
+        return folded.get(attr, {}).get(str(raw).casefold(), raw)
+
+    return spelled
+
+
 # --- Print settings ---
 
 
@@ -156,25 +170,29 @@ class PrintSettings:
     reverse: bool = False
 
     @classmethod
-    def from_rc_file(cls, path: str) -> Self:
-        """Read settings from brhl4150cdnrc.
+    def from_rc_file(cls, path: str, aliases: Aliases | None = None) -> Self:
+        """Read settings from Brother's rc file (brhl4150cdnrc).
+
+        `aliases` are the model's spellings of option values (see
+        `PrinterModel.aliases`).
 
         Returns:
             Populated settings instance (defaults if the file has no sections).
         """
+        spelled = alias_lookup(aliases)
         settings = cls()
         config = configparser.ConfigParser()
         config.read(path)
         if not config.sections():
             return settings
         s = config[config.sections()[0]]
-        settings.media_type = MediaType(s.get("MediaType", settings.media_type))
-        settings.page_size = PageSize(s.get("PageSize", settings.page_size))
-        settings.input_slot = InputSlot(s.get("InputSlot", settings.input_slot))
+        settings.media_type = MediaType(spelled("media_type", s.get("MediaType", settings.media_type)))
+        settings.page_size = PageSize(spelled("page_size", s.get("PageSize", settings.page_size)))
+        settings.input_slot = InputSlot(spelled("input_slot", s.get("InputSlot", settings.input_slot)))
         settings.resolution = Resolution(s.get("BRResolution", settings.resolution))
         settings.copies = int(s.get("Copies", str(settings.copies)))
-        settings.duplex = DuplexMode(s.get("Duplex", settings.duplex))
-        settings.mono_color = MonoColor(s.get("BRMonoColor", settings.mono_color))
+        settings.duplex = DuplexMode(spelled("duplex", s.get("Duplex", settings.duplex)))
+        settings.mono_color = MonoColor(spelled("mono_color", s.get("BRMonoColor", settings.mono_color)))
         settings.color_matching = ColorMatching(s.get("BRColorMatching", settings.color_matching))
         settings.improve_gray = s.get("BRGray", "OFF") == "ON"
         settings.enhance_black = s.get("BREnhanceBlkPrt", "OFF") == "ON"
@@ -192,7 +210,11 @@ class PrintSettings:
 
     @classmethod
     def from_cups_options(
-        cls, options_str: str, copies: int = 1, ppd_defaults: Mapping[str, str] | None = None
+        cls,
+        options_str: str,
+        copies: int = 1,
+        ppd_defaults: Mapping[str, str] | None = None,
+        aliases: Aliases | None = None,
     ) -> Self:
         """Parse a CUPS option string into PrintSettings.
 
@@ -203,9 +225,13 @@ class PrintSettings:
         options override them, as Brother's cupswrapper does. An IPP
         `sides` in the job still beats a PPD default duplex.
 
+        `aliases` are the model's spellings of option values (see
+        `PrinterModel.aliases`).
+
         Returns:
             Populated settings instance with the parsed values.
         """
+        spelled = alias_lookup(aliases)
         settings = cls()
         settings.copies = copies
 
@@ -230,7 +256,7 @@ class PrintSettings:
         for cups_key, (attr, enum_cls) in enum_map.items():
             if cups_key in opts:
                 try:
-                    setattr(settings, attr, enum_cls(opts[cups_key]))
+                    setattr(settings, attr, enum_cls(spelled(attr, opts[cups_key])))
                 except ValueError:
                     logger.warning("Unknown %s value %r, keeping default", cups_key, opts[cups_key])
 

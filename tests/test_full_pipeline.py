@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from brother_xl2hb.job import drop_blank_pages, filter_page, filter_pages
-from brother_xl2hb.models.hl4150cdn import PAPER_SIZES
+from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render.ppm import read_ppm
 from brother_xl2hb.settings import (
     ColorMatching,
@@ -259,7 +259,7 @@ class TestSettingVariants:
 
 def _make_ppm_edges(page_size: str) -> bytes:
     """Full-size page with hash noise at the top, a ramp at the bottom and a bar on the right edge."""
-    w, h = PAPER_SIZES[page_size]
+    w, h = HL4150CDN.paper_sizes[page_size]
     page = np.full((h, w, 3), 255, np.uint8)
     y, x = np.mgrid[0:60, 0:w].astype(np.uint32)
     for ch in range(3):

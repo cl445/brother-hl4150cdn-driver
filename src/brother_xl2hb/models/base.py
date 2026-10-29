@@ -6,14 +6,31 @@ its dither table set and the decisions that differ between Brother's
 filters (colour grid, PJL, which pages go bottom-up).
 """
 
+import copy
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
-from brother_xl2hb.color.color_lut import ColorTable
-from brother_xl2hb.settings import DuplexMode, InputSlot, PrintSettings
+from brother_xl2hb.blobs import COLOR_DATA_ROOT, LUT_ROOT
+from brother_xl2hb.color.color_lut import ColorTable, Profile
+from brother_xl2hb.settings import Aliases, DuplexMode, InputSlot, PrintSettings, alias_lookup
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class PageSend:
+    """One transmission of a page in the XL2HB stream.
+
+    Attributes:
+        flip: the page goes bottom-up with the back-side marker (rows
+            mirrored, columns not).
+        copies: PageCopies in BeginImage and EndPage.
+    """
+
+    flip: bool
+    copies: int
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -21,6 +38,8 @@ class PrinterModel:
     """One printer model, as its manufacturer's filter drives it.
 
     Attributes:
+        key: short name for the CLI, file names and blob directories, e.g.
+            `hl4150cdn`.
         name: model name, e.g. `HL-4150CDN`.
         paper_sizes: paper size in pixels at 600 dpi (paperinfij2), keyed
             by PPD PageSize.
@@ -38,14 +57,26 @@ class PrinterModel:
             SimplexPageMode.
         dither_cache: suffix of the BRCD dither files, e.g. `cache09` for
             `0600-k_cache09.bin`.
-        color_table: the colour grid the filter selects for the settings.
+        inverse_lut_grids: (profile, improve_gray) of the default-variant
+            grids that get a precomputed inverse LUT (cups/install.sh).
+        color_table: the colour grid the filter selects for the settings;
+            built with `grid`.
         pjl_header: PJL before the XL2HB stream.
         pjl_footer: PJL after it.
-        page_is_flipped: whether a page is sent bottom-up with the
-            back-side marker; `back_side` is the second page of a duplex
-            sheet.
+        page_sends: how the page at `index` (counted after skip blank) is
+            sent: one `PageSend` per transmission, in order. Covers duplex
+            sides, reverse print and how copies are made.
+        skip_blank: the filter can drop blank pages (BRSkipBlank).
+        aliases: the spellings of option values in the model's rc file and
+            Brother's PPD that differ from this driver's (see
+            `settings.Aliases`).
+
+    What a model supports is what its tables cover: the page sizes of
+    `paper_sizes`, the media of `media_types`, the trays of `media_source`
+    and the duplex modes of `duplex_page_mode`; `restrict` enforces it.
     """
 
+    key: str
     name: str
     paper_sizes: Mapping[str, tuple[int, int]]
     imaging_height_pt: Mapping[str, int] | None
@@ -56,10 +87,51 @@ class PrinterModel:
     media_source: Mapping[InputSlot, int]
     duplex_page_mode: Mapping[DuplexMode, int | None]
     dither_cache: str
+    inverse_lut_grids: tuple[tuple[Profile, bool], ...]
     color_table: Callable[[PrintSettings], ColorTable]
     pjl_header: Callable[[PrintSettings], bytes]
     pjl_footer: Callable[[], bytes]
-    page_is_flipped: Callable[[PrintSettings, bool], bool]
+    page_sends: Callable[[PrintSettings, int], tuple[PageSend, ...]]
+    skip_blank: bool
+    aliases: Aliases
+
+    @property
+    def lut_dir(self) -> Path:
+        """The model's BRCD dither tables: `lut/<key>/` in the package."""
+        return LUT_ROOT / self.key
+
+    @property
+    def color_data_dir(self) -> Path:
+        """The model's colour grids and inverse LUTs: `color_data/<key>/` in the package."""
+        return COLOR_DATA_ROOT / self.key
+
+    def grid(
+        self,
+        profile: Profile = "rgb",
+        *,
+        improve_gray: bool = False,
+        variant: str = "default",
+        rich_black: bool = False,
+    ) -> ColorTable:
+        """The model's colour grid with these properties.
+
+        Returns:
+            The table, marked `precomputed` if it is one of `inverse_lut_grids`.
+        """
+        precomputed = variant == "default" and not rich_black and (profile, improve_gray) in self.inverse_lut_grids
+        return ColorTable(
+            profile,
+            improve_gray,
+            variant,
+            rich_black,
+            data_dir=self.color_data_dir,
+            precomputed=precomputed,
+        )
+
+    @property
+    def inverse_lut_tables(self) -> tuple[ColorTable, ...]:
+        """The tables `cups/install.sh` precomputes an inverse LUT for."""
+        return tuple(self.grid(profile, improve_gray=gray) for profile, gray in self.inverse_lut_grids)
 
     def image_height(self, page_size: str) -> int:
         """Rows of the page image, as the original computes its band height.
@@ -89,6 +161,61 @@ class PrinterModel:
         pw, _ = self.paper_sizes[page_size]
         align = 7 if fine else 31
         return (pw + align) & ~align, self.image_height(page_size)
+
+    def restrict(self, settings: PrintSettings) -> PrintSettings:
+        """`settings` with every choice the model does not support set to its default.
+
+        Each replaced choice is logged as a warning.
+
+        Returns:
+            A copy of `settings`, or `settings` itself if the model supports all of it.
+        """
+        defaults = PrintSettings()
+        supported = {
+            "page_size": self.paper_sizes,
+            "media_type": self.media_types,
+            "input_slot": self.media_source,
+            "duplex": self.duplex_page_mode,
+        }
+        changes: dict[str, object] = {}
+        for attr, table in supported.items():
+            if getattr(settings, attr) not in table:
+                changes[attr] = getattr(defaults, attr)
+        if settings.skip_blank and not self.skip_blank:
+            changes["skip_blank"] = False
+        if not changes:
+            return settings
+        restricted = copy.copy(settings)
+        for attr, default in changes.items():
+            logger.warning("%s does not support %s=%s, using %s", self.name, attr, getattr(settings, attr), default)
+            setattr(restricted, attr, default)
+        return restricted
+
+    def spelled(self, attr: str, raw: str) -> str:
+        """`raw` as this driver spells it, if it is one of the model's `aliases` for settings field `attr`.
+
+        Returns:
+            The canonical value, or `raw` unchanged.
+        """
+        return alias_lookup(self.aliases)(attr, raw)
+
+    def settings_from_rc_file(self, path: str) -> PrintSettings:
+        """Read Brother's rc file with the model's spellings, restricted to what it supports.
+
+        Returns:
+            The job's settings.
+        """
+        return self.restrict(PrintSettings.from_rc_file(path, self.aliases))
+
+    def settings_from_cups_options(
+        self, options: str, copies: int = 1, ppd_defaults: Mapping[str, str] | None = None
+    ) -> PrintSettings:
+        """Parse CUPS options (over the PPD defaults) with the model's spellings, restricted to what it supports.
+
+        Returns:
+            The job's settings.
+        """
+        return self.restrict(PrintSettings.from_cups_options(options, copies, ppd_defaults, self.aliases))
 
     def media_size_code(self, page_size: str) -> int | bytes:
         """BeginPage MediaSize for `page_size`: enum value or name string.

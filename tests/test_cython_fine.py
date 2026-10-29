@@ -175,7 +175,7 @@ def _fine_page(width: int, height: int, seed: int) -> bytes:
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
     monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", kernel)
-    monkeypatch.setenv("BRHL4150CDN_RENDER_THREADS", str(threads))
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
     return out.getvalue()
@@ -221,7 +221,7 @@ def test_fine_kernel_matches_per_line_path_for_widths(width, page_size, fine_cha
 
 
 def test_fine_kernel_selection(fine_channels, monkeypatch):
-    table = color_lut.DEFAULT_TABLE
+    table = HL4150CDN.grid()
     assert band_kernel_colour(table, fine_channels, is_fine=True) is not None
     monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", False)
     assert band_kernel_colour(table, fine_channels, is_fine=True) is None
@@ -232,7 +232,7 @@ def test_fine_kernel_selection(fine_channels, monkeypatch):
 
 def test_fine_kernel_rejects_bad_shapes(fine_channels):
     levels = [np.ascontiguousarray(fine_channels[c].nibble_levels) for c in "KCMY"]
-    grid, weights, black = color_lut.interp_arrays(color_lut.DEFAULT_TABLE)
+    grid, weights, black = color_lut.interp_arrays(HL4150CDN.grid())
     rows = np.full((2, 30), 255, np.uint8)
     flags = np.zeros(2, np.uint8)
     lengths = np.empty((2, 4), np.int32)

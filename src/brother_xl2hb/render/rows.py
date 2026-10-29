@@ -22,6 +22,9 @@ Consumed once, top to bottom (see `page_stream.iter_ppm_pages`).
 
 PageData = PageBuffer | RowBlocks
 
+Page = tuple[int, int, PageData]
+"""(width, height, pixel data) of one page of a job."""
+
 
 def page_rows(pixel_data: Buffer, width: int, height: int) -> npt.NDArray[np.uint8]:
     """View an RGB page as (height, width * 3) rows without copying.

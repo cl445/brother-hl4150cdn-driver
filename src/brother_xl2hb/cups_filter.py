@@ -1,10 +1,11 @@
-"""CUPS filter for the Brother HL-4150CDN.
+"""CUPS filter for a Brother XL2HB printer.
 
 Receives PostScript from CUPS, rasterizes it with Ghostscript and streams
-the pages through the XL2HB pipeline (job.filter_pages).
+the pages through the XL2HB pipeline (job.filter_pages). Each model has a
+shim, cups/br<model>-filter, that calls `main` with its `PrinterModel`.
 
-Usage (called by CUPS through cups/brhl4150cdn-filter):
-    brhl4150cdn-filter job-id user title copies options [filename]
+Usage (called by CUPS through the shim):
+    br<model>-filter job-id user title copies options [filename]
 """
 
 import contextlib
@@ -22,7 +23,7 @@ from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.render.page_stream import iter_ppm_pages
-from brother_xl2hb.render.rows import PageData
+from brother_xl2hb.render.rows import Page
 from brother_xl2hb.settings import PrintSettings, read_ppd_defaults
 
 # Seconds to wait for Ghostscript to exit on its own after the job failed
@@ -30,9 +31,7 @@ from brother_xl2hb.settings import PrintSettings, read_ppd_defaults
 GS_EXIT_GRACE = 2.0
 
 
-logger = logging.getLogger("brhl4150cdn-filter")
-
-Page = tuple[int, int, PageData]
+logger = logging.getLogger(__name__)
 
 
 def find_gs() -> str:
@@ -220,7 +219,7 @@ def main(model: PrinterModel = DEFAULT_MODEL) -> None:
     # CUPS puts every stderr line into its error_log, keyed by the prefix.
     logging.basicConfig(
         level=logging.INFO,
-        format="%(levelname)s: brhl4150cdn-filter: %(message)s",
+        format=f"%(levelname)s: br{model.key}-filter: %(message)s",
         stream=sys.stderr,
     )
     if len(sys.argv) < 6:
@@ -244,7 +243,7 @@ def main(model: PrinterModel = DEFAULT_MODEL) -> None:
     # PostScript and Ghostscript renders every page that many times. A
     # PageCopies of `copies` on top would print copies² sheets of each page,
     # so the job carries 1, as Brother's cupswrapper hands its filter.
-    settings = PrintSettings.from_cups_options(options_str, 1, ppd_defaults)
+    settings = model.settings_from_cups_options(options_str, 1, ppd_defaults)
     logger.info(
         "settings: page_size=%s duplex=%s resolution=%s mono=%s color_matching=%s gray=%s toner_save=%s",
         settings.page_size,

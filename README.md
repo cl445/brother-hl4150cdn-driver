@@ -67,6 +67,11 @@ sudo lpadmin -p Brother_HL-4150CDN -E \
 
 `sudo cups/uninstall.sh --remove-printer` cleans up.
 
+All three scripts take the printer model: `extract_blobs.sh <model>`,
+`install.sh --model <model>`, `uninstall.sh --model <model>`. It defaults
+to `hl4150cdn`, the only model so far; each model installs to its own
+`/usr/local/lib/br<model>/` with its own filter, PPD and queue.
+
 ### Upgrading
 
 Pull, then re-run `./scripts/extract_blobs.sh` and `sudo cups/install.sh`.
@@ -141,22 +146,24 @@ The code is one package, `src/brother_xl2hb/`:
 | `codec` | plane RLE encoders (Normal) and the APT codec (Fine) |
 | `color` | colour grids, input remap, saturation, ordered dither |
 | `protocol` | XL2HB stream writer and PJL, without model data |
-| `models` | `PrinterModel` per printer: paper geometry, media and tray codes, dither set, colour grid choice, PJL, page flips |
+| `models` | `PrinterModel` per printer: paper geometry, media and tray codes, dither set, colour grid choice, PJL, how pages are sent |
 | `render` | one page: PPM input, the per-line and the band path |
 | `_native` | optional Cython kernels, each with a pure-Python fallback |
 
 `job` (PJL, the session, page order, duplex, reverse, skip blank),
 `settings`, `cli` and `cups_filter` sit at the top; `cups/brhl4150cdn-filter`
 only puts the package on the path and calls `cups_filter.main`.
-`scripts/extract_blobs.sh` writes Brother's tables to
-`src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`.
+`scripts/extract_blobs.sh [model]` writes Brother's tables to
+`src/brother_xl2hb/lut/<model>/` and `src/brother_xl2hb/color_data/<model>/`.
 
 A printer model is one `PrinterModel` (`models/base.py`): the data its
 filter writes plus a few hooks where Brother's filters differ. The
 HL-4150CDN's is `models/hl4150cdn.py`. Adding a model means a module
 like it, an entry in `models.MODELS`, its PPD, and the captures that
-show its output is byte-identical; `tests/test_models.py` checks that
-its tables cover every setting.
+show its output is byte-identical. What the model supports is what its
+tables cover (paper sizes, media, trays, duplex modes) plus `skip_blank`;
+other choices fall back to the default with a warning. Its rc file's and
+PPD's own spellings of option values go into `aliases`.
 
 The Cython modules are optional in development too; build them in place
 with:

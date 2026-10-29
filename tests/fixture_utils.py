@@ -10,9 +10,14 @@ from pathlib import Path
 import pytest
 import zstandard
 
+from brother_xl2hb.models import HL4150CDN
 from extract_fixtures import PLANE_NAMES, CaptureFixture, parse_xl2hb_capture
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+# Bytes per line of an A4 Normal-mode plane on the HL-4150CDN (4768 pixels / 8):
+# the reference width of the plane encoder tests.
+BPL = HL4150CDN.image_dimensions("A4")[0] // 8
 
 # Captures whose framing (PJL, blocks, plane buffers) the framing tests check.
 CAPTURE_NAMES = [

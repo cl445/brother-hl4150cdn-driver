@@ -12,22 +12,17 @@ import logging
 from collections.abc import Iterable, Iterator
 from typing import BinaryIO
 
-from brother_xl2hb.color.dither import (
-    DitherChannel,
-)
 from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.models.base import PrinterModel
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
-from brother_xl2hb.render.page import init_channels, render_page
-from brother_xl2hb.render.rows import PageBuffer, PageData, collect_rows, is_blank_page
-from brother_xl2hb.settings import DuplexMode, PrintSettings
+from brother_xl2hb.render.page import JobContext, render_page
+from brother_xl2hb.render.rows import Page, PageBuffer, PageData, collect_rows, is_blank_page
+from brother_xl2hb.settings import PrintSettings
 
 logger = logging.getLogger(__name__)
 
 
-def chain_peeked(
-    first: tuple[int, int, PageData], rest: Iterator[tuple[int, int, PageData]]
-) -> Iterator[tuple[int, int, PageData]]:
+def chain_peeked(first: Page, rest: Iterator[Page]) -> Iterator[Page]:
     """Yield a page taken off a job with `next()`, then the rest of the job.
 
     Unlike `itertools.chain([first], rest)`, which keeps its arguments and
@@ -43,7 +38,7 @@ def chain_peeked(
     yield from rest
 
 
-def drop_blank_pages(pages: Iterable[tuple[int, int, PageData]]) -> Iterator[tuple[int, int, PageBuffer]]:
+def drop_blank_pages(pages: Iterable[Page]) -> Iterator[tuple[int, int, PageBuffer]]:
     """Skip the pure-white pages of a job (BRSkipBlank).
 
     Brother's filter drops them before sides are assigned, in simplex and
@@ -83,60 +78,47 @@ def filter_page(
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
 
 
-def _render_pages(
-    pages: Iterable[tuple[int, int, PageData]],
-    settings: PrintSettings,
-    channels: dict[str, DitherChannel],
-    output: BinaryIO,
-    model: PrinterModel,
-) -> None:
-    """Render pages in input order; with duplex every second page is a back side.
+def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> None:
+    """Render pages in input order, each as the model's `page_sends` say.
 
-    Each page is rendered into memory (its compressed XL2HB, typically
+    A page sent more than once is collected into one buffer first, since
+    streamed row blocks can be read only once. Each send is rendered into memory (its compressed XL2HB, typically
     well under 10 MB) and written to `output` only once it is complete, so
     a failure while reading or rendering a page never leaves a half page
     in the printer data stream.
     """
-    duplex = settings.duplex != DuplexMode.NONE
     page_buf = io.BytesIO()
     # A counter instead of enumerate(): enumerate keeps the last (index,
     # page) pair until the next page has been read, which would hold two
     # whole-page buffers at once.
     index = 0
     for width, height, pixel_data in pages:
-        page_buf.seek(0)
-        page_buf.truncate()
-        render_page(
-            XL2HBWriter(page_buf),
-            width,
-            height,
-            pixel_data,
-            settings,
-            channels,
-            model,
-            flip=model.page_is_flipped(settings, duplex and index % 2 == 1),
-        )
+        sends = job.model.page_sends(job.settings, index)
+        data: PageData = collect_rows(pixel_data, width, height) if len(sends) > 1 else pixel_data
+        for send in sends:
+            page_buf.seek(0)
+            page_buf.truncate()
+            render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
+            with page_buf.getbuffer() as page:
+                output.write(page)
         # Release the page's raster before the next page is read; with
         # whole-page buffers (skip blank, flipped pages) two would add up.
-        del pixel_data
-        with page_buf.getbuffer() as page:
-            output.write(page)
+        del pixel_data, data
         index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
 
 
 def filter_pages(
-    pages: Iterable[tuple[int, int, PageData]],
+    pages: Iterable[Page],
     settings: PrintSettings,
     output: BinaryIO,
     model: PrinterModel = DEFAULT_MODEL,
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
-    Pages are consumed lazily in input order; with duplex, every second
-    page is a back side. Which pages go bottom-up with the back-side
-    marker (long-edge back sides, `settings.reverse`) is the model's
-    `page_is_flipped`.
-    `settings.skip_blank` drops pure-white pages before sides are assigned.
+    Pages are consumed lazily in input order. How each is sent (duplex
+    sides, bottom-up for long-edge back sides and `settings.reverse`,
+    copies) is the model's `page_sends`. `settings.skip_blank` drops
+    pure-white pages before that.
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
@@ -148,6 +130,7 @@ def filter_pages(
         output: writable binary stream
         model: the printer to drive
     """
+    settings = model.restrict(settings)
     if settings.skip_blank:
         # Idempotent: callers that drop blanks first to detect an empty job
         # hand over whole-page buffers, which are only viewed again here.
@@ -161,8 +144,7 @@ def filter_pages(
     w.write_open_data_source()
 
     try:
-        channels = init_channels(settings, model)
-        _render_pages(pages, settings, channels, output, model)
+        _render_pages(pages, JobContext.create(settings, model), output)
     except Exception:
         # Only whole pages have reached `output` (see _render_pages), so
         # the session can still be closed: the printer prints the pages it

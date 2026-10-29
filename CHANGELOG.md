@@ -21,8 +21,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   table set, the colour grid choice, PJL and which pages are sent
   bottom-up. `job.filter_pages`, the CUPS filter and the CLI take a model
   and default to the HL-4150CDN; the CLI has `--model`.
+- Settings are read through the model (`settings_from_rc_file`,
+  `settings_from_cups_options`): Brother's spellings (Env, A5Rotated,
+  B5, B6) are the model's `aliases`, and a choice the model does not
+  support falls back to the default with a warning.
+- The HL-4150CDN's tables are reached through `models.HL4150CDN` only;
+  the module constants of `models/hl4150cdn.py` are private.
+- `cups/install.sh` and `cups/uninstall.sh` take `--model` (default
+  hl4150cdn); paths, filter, PPD and queue names follow from it. The
+  CUPS log prefix comes from the model, and the render threads are set
+  with `BRXL2HB_RENDER_THREADS` (`BRHL4150CDN_RENDER_THREADS` still works).
+- The model decides how each page is sent (`page_sends`: bottom-up or
+  not, PageCopies, and how often); the job no longer knows about duplex
+  sides.
 - `scripts/extract_blobs.sh` puts Brother's tables into
-  `src/brother_xl2hb/lut/` and `src/brother_xl2hb/color_data/`; re-run it
+  `src/brother_xl2hb/lut/<model>/` and `src/brother_xl2hb/color_data/<model>/`
+  (the unpacked package to `.brother-blobs/<model>/`); re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of
   1.2.0 in `/usr/local/lib/brhl4150cdn/`.
 
