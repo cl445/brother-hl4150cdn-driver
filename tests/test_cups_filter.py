@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from brother_xl2hb import cups_filter as cups_filter_module
@@ -89,7 +90,7 @@ def test_gs_command_refuses_collated_copies_from_stdin(cups_filter, monkeypatch)
 
 # Duplex copies through a real Ghostscript. Page n of a test job is filled
 # with gray n/10, so the order of the rendered pages can be read off their
-# centres ("B" for a blank page).
+# centres ("B" for a blank page, "M" for a copy mark).
 
 
 def _test_job(pages: int, setup: str = "") -> bytes:
@@ -115,7 +116,10 @@ def _page_order(ppm: bytes) -> str:
         pos += 1
         width, height = int(fields[1]), int(fields[2])
         level = round(ppm[pos + 3 * (width * (height // 2) + width // 2)] * 10 / 255)
-        order.append("B" if level == 10 else str(level))
+        if width * height == 1:  # BRCopyEnd's page at 10 dpi
+            order.append("M")
+        else:
+            order.append("B" if level == 10 else str(level))
         pos += 3 * width * height
     return " ".join(order)
 
@@ -139,10 +143,10 @@ _NUM_COPIES = (
     ("pages", "copies", "expected"),
     [
         (3, 1, "1 2 3"),
-        (3, 2, "1 2 3 B 1 2 3"),
-        (3, 3, "1 2 3 B 1 2 3 B 1 2 3"),
-        (4, 2, "1 2 3 4 1 2 3 4"),
-        (1, 3, "1 B 1 B 1"),
+        (3, 2, "1 2 3 M 1 2 3"),
+        (3, 3, "1 2 3 M 1 2 3 M 1 2 3"),
+        (4, 2, "1 2 3 4 M 1 2 3 4"),
+        (1, 3, "1 M 1 M 1"),
     ],
 )
 def test_ghostscript_collates_duplex_copies(cups_filter, tmp_path, pages, copies, expected):
@@ -194,6 +198,8 @@ def test_pstops_copies_through_ghostscript(cups_filter, tmp_path, sides, collate
         )
     duplex = sides != "one-sided"
     order = _render(cups_filter, job, collate_copies=duplex).split()
+    if duplex:
+        order = _sheets(cups_filter, order)
     document = [str(n) for n in range(1, pages + 1)]
     if not duplex:
         # Unchanged: Ghostscript repeats each page for uncollated copies.
@@ -202,3 +208,52 @@ def test_pstops_copies_through_ghostscript(cups_filter, tmp_path, sides, collate
     # Each copy starts on a new sheet; pstops' collated copies also pad the last one.
     sheets = document + ["B"] * (pages % 2)
     assert order in (sheets * copies, (sheets * copies)[: len(sheets) * copies - pages % 2])
+
+
+# sheets_per_copy on tiny pages: page n is filled with n, a blank page with
+# 255; the order reads them back ("B" for a blank back the filter adds).
+
+
+def _page(token: str):
+    return (1, 1, np.full((1, 3), 255 if token == "B" else int(token), np.uint8))
+
+
+def _sheets(cups_filter, order: list[str], *, skip_blank: bool = False) -> list[str]:
+    pages = [None if token == "M" else _page(token) for token in order]
+    out = []
+    for _, _, data in cups_filter.sheets_per_copy(pages, skip_blank=skip_blank):
+        if isinstance(data, list):
+            out.append("B")
+        else:
+            value = int(np.asarray(data).reshape(-1)[0])
+            out.append("B" if value == 255 else str(value))
+    return out
+
+
+@pytest.mark.parametrize(
+    ("order", "skip_blank", "expected"),
+    [
+        ("1 2 3 M 1 2 3", False, "1 2 3 B 1 2 3"),
+        ("1 2 M 1 2", False, "1 2 1 2"),
+        ("1 M 1 M 1", False, "1 B 1 B 1"),
+        # BRSkipBlank: the blank back survives, the document's blank pages do not.
+        ("1 2 3 M 1 2 3", True, "1 2 3 B 1 2 3"),
+        # A blank page makes the printed copy odd or even.
+        ("1 B 3 4 M 1 B 3 4", True, "1 3 4 B 1 3 4"),
+        ("1 B 3 M 1 B 3", True, "1 3 1 3"),
+        ("1 B 3 M 1 B 3", False, "1 B 3 B 1 B 3"),
+        # A copy of blank pages only prints nothing and needs no back.
+        ("B M 1", True, "1"),
+    ],
+)
+def test_sheets_per_copy_starts_copies_on_new_sheets(cups_filter, order, skip_blank, expected):
+    assert _sheets(cups_filter, order.split(), skip_blank=skip_blank) == expected.split()
+
+
+def test_blank_back_has_the_page_size(cups_filter):
+    page = (130, 300, np.zeros((300, 390), np.uint8))
+    width, height, blocks = list(cups_filter.sheets_per_copy([page, None, page], skip_blank=False))[1]
+    rows = np.concatenate(list(blocks))
+    assert (width, height) == (130, 300)
+    assert rows.shape == (300, 390)
+    assert int(rows.min()) == 255

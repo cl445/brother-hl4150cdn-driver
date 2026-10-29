@@ -9,6 +9,7 @@ Usage (called by CUPS through the shim):
 """
 
 import contextlib
+import dataclasses
 import logging
 import os
 import shutil
@@ -18,6 +19,8 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import BinaryIO, cast
+
+import numpy as np
 
 from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL
@@ -34,20 +37,25 @@ GS_EXIT_GRACE = 2.0
 # it into the PostScript), and Ghostscript emits each page that many times
 # in a row. In duplex that prints a page on both sides of a sheet. For
 # duplex copies Ghostscript is therefore kept at one copy per page and runs
-# the job again for each further copy instead, collated like the copies
-# pstops makes itself: a copy that ends on a front side gets a blank back,
-# so the next one starts on a new sheet.
+# the job again for each further copy instead. Between two runs it emits a
+# 8x8 pt copy mark page (BRCopyEnd), and `sheets_per_copy` gives a copy
+# that ends on a front side a blank back, so the next one starts on a new
+# sheet, as in the copies pstops collates itself. The filter decides that
+# after BRSkipBlank has dropped blank pages, so the blank back survives it
+# and the copy's page count is the one that is printed.
 DUPLEX_COPIES_PROLOGUE = (
     "/BRNumCopies 1 def "
     "/setpagedevice { dup /NumCopies known { "
     "dup /NumCopies get dup type /integertype eq { userdict /BRNumCopies 3 -1 roll put } { pop } ifelse "
     "dup length dict copy dup /NumCopies 1 put "
-    "} if //setpagedevice } bind def"
+    "} if //setpagedevice } bind def "
+    "/BRCopyEnd { currentpagedevice /PageSize get << /PageSize [8 8] >> setpagedevice showpage "
+    "<< /PageSize 3 -1 roll >> setpagedevice } bind def"
 )
-DUPLEX_COPIES_RUN = (
-    "<{job}> run "
-    "BRNumCopies 1 sub {{ currentpagedevice /PageCount get 2 mod 1 eq {{ showpage }} if <{job}> run }} repeat"
-)
+DUPLEX_COPIES_RUN = "<{job}> run BRNumCopies 1 sub {{ BRCopyEnd <{job}> run }} repeat"
+# A Ghostscript page at most this many pixels wide and high is a copy mark
+# (BRCopyEnd's 8x8 pt page is 67x67 at 600 dpi); no printable page is that small.
+COPY_MARK_MAX_PIXELS = 100
 
 
 logger = logging.getLogger(__name__)
@@ -114,43 +122,94 @@ def build_gs_command(
     return cmd
 
 
-def iter_printable_pages(stream: BinaryIO, page_size: str, model: PrinterModel) -> Iterator[Page]:
+def iter_printable_pages(
+    stream: BinaryIO, page_size: str, model: PrinterModel, *, copy_marks: bool = False
+) -> Iterator[Page | None]:
     """Yield (width, height, row_blocks) per GS page, cut to the printable area.
 
     Pages are read on a background thread in blocks of scanlines (see
     page_stream), so Ghostscript keeps rasterising while a page renders
-    and no page-sized buffer is allocated.
+    and no page-sized buffer is allocated. With `copy_marks`, Ghostscript's
+    copy mark pages (see DUPLEX_COPIES_PROLOGUE) come out as None.
 
     Yields:
-        Printable width and height, and the page's row blocks.
+        Printable width and height, and the page's row blocks; None for a copy mark.
     """
     target_w, target_h = model.paper_sizes[page_size]
     window = (*model.page_origin, target_w, target_h)
-    for page_num, (src_w, src_h, blocks) in enumerate(iter_ppm_pages(stream, window), start=1):
+    page_num = 0
+    for src_w, src_h, blocks in iter_ppm_pages(stream, window):
+        if copy_marks and src_w <= COPY_MARK_MAX_PIXELS and src_h <= COPY_MARK_MAX_PIXELS:
+            logger.info("end of copy")
+            yield None
+            continue
+        page_num += 1
         logger.info("page %d: %dx%d pixels from GS, printable %dx%d", page_num, src_w, src_h, target_w, target_h)
         yield target_w, target_h, blocks
 
 
-class PageCounter:
-    """Counts the pages taken from an iterable, even if iteration fails."""
+def sheets_per_copy(pages: Iterable[Page | None], *, skip_blank: bool) -> Iterator[Page]:
+    """Start each duplex copy on a new sheet; None in `pages` ends a copy.
 
-    def __init__(self, pages: Iterable[Page]) -> None:
+    A copy that ends on a front side gets a blank back. With `skip_blank`,
+    blank pages are dropped first, so a copy's sides are counted as they
+    are printed and the blank back is kept.
+
+    Yields:
+        The pages to print, the blank backs included.
+    """
+    sides = 0
+    size = (0, 0)
+    for item in pages:
+        if item is None:
+            if sides % 2:
+                yield _blank_page(*size)
+            sides = 0
+            continue
+        page = next(drop_blank_pages((item,)), None) if skip_blank else item
+        if page is None:
+            continue
+        size = page[:2]
+        sides += 1
+        yield page
+
+
+def _blank_page(width: int, height: int) -> Page:
+    """A white page of `width` x `height` pixels, as row blocks of one shared band.
+
+    Returns:
+        The page.
+    """
+    band = np.full((min(height, 128), width * 3), 255, np.uint8)
+    blocks = [band] * (height // band.shape[0])
+    if rest := height % band.shape[0]:
+        blocks.append(band[:rest])
+    return width, height, blocks
+
+
+class PageCounter:
+    """Counts the pages taken from an iterable, even if iteration fails; copy marks (None) do not count."""
+
+    def __init__(self, pages: Iterable[Page | None]) -> None:
         """Wrap `pages`; `count` starts at zero."""
         self._pages = pages
         self.count = 0
 
-    def __iter__(self) -> Iterator[Page]:
+    def __iter__(self) -> Iterator[Page | None]:
         """Yield the wrapped pages, counting each one.
 
         Yields:
-            The wrapped pages.
+            The wrapped pages and copy marks.
         """
         for page in self._pages:
-            self.count += 1
+            if page is not None:
+                self.count += 1
             yield page
 
 
-def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO, model: PrinterModel) -> int:
+def send_pages(
+    gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO, model: PrinterModel, *, copy_marks: bool = False
+) -> int:
     """Render Ghostscript's PPM stream into one XL2HB job on `output`.
 
     Each page is rendered and sent as soon as it is read, like Brother's
@@ -162,10 +221,16 @@ def send_pages(gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO, m
     Returns:
         Number of pages read from Ghostscript.
     """
-    counter = PageCounter(iter_printable_pages(gs_stdout, settings.page_size, model))
-    pages: Iterable[Page] = counter
-    if settings.skip_blank:
-        pages = drop_blank_pages(pages)
+    counter = PageCounter(iter_printable_pages(gs_stdout, settings.page_size, model, copy_marks=copy_marks))
+    pages: Iterable[Page]
+    if copy_marks:
+        pages = sheets_per_copy(counter, skip_blank=settings.skip_blank)
+        # Blank pages are dropped already; the blank backs must stay.
+        settings = dataclasses.replace(settings, skip_blank=False)
+    else:
+        pages = (page for page in counter if page is not None)
+        if settings.skip_blank:
+            pages = drop_blank_pages(pages)
     pages = iter(pages)
     try:
         first = next(pages, None)
@@ -234,7 +299,7 @@ def print_job(
         gs_stdout = cast("BinaryIO", gs_proc.stdout)  # a pipe: stdout=PIPE
         try:
             try:
-                page_count = send_pages(gs_stdout, settings, output, model)
+                page_count = send_pages(gs_stdout, settings, output, model, copy_marks=collate_copies)
             except Exception as exc:
                 status = stop_gs(gs_proc, GS_EXIT_GRACE)
                 if status:

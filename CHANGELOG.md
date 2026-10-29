@@ -61,9 +61,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   words, so printed output does not change (#3).
 - Uncollated copies in duplex no longer print a page on both sides of a
   sheet. Ghostscript repeated each page for NumCopies; in duplex it now
-  renders the whole job once per copy, and a copy with an odd page count
-  gets a blank back, so the next copy starts on a new sheet. Simplex
-  copies are unchanged.
+  renders the whole job once per copy, and a copy that prints an odd
+  number of pages gets a blank back, so the next copy starts on a new
+  sheet. The count is taken after BRSkipBlank, which keeps that blank
+  back. Simplex copies are unchanged.
 - Grayscale (BRMonoColor=Mono) ignores the Red, Green and Blue keys and
   keeps Brightness and Contrast with BRColorMatching=None, as the
   original does.

@@ -53,10 +53,15 @@ _FAKE_GS = textwrap.dedent(
     header = b"P6\\n%d %d\\n255\\n" % (width, height)
     row = bytes([200, 120, 40]) * width
     out = sys.stdout.buffer
-    for _ in range(int(os.environ.get("FAKE_GS_PAGES", "1"))):
+    # FAKE_GS_SEQUENCE: "C" a coloured page, "B" a blank one, "M" a copy mark.
+    sequence = os.environ.get("FAKE_GS_SEQUENCE", "C " * int(os.environ.get("FAKE_GS_PAGES", "1"))).split()
+    for token in sequence:
+        if token == "M":
+            out.write(b"P6\\n67 67\\n255\\n" + bytes([255]) * 3 * 67 * 67)
+            continue
         out.write(header)
         for _ in range(height):
-            out.write(row)
+            out.write(row if token == "C" else bytes([255]) * 3 * width)
     if mode == "truncate":
         # A second page that breaks off halfway, as when gs dies mid-job.
         out.write(header)
@@ -133,6 +138,26 @@ def test_duplex_copies_hand_ghostscript_the_job_as_a_file(fake_gs):
     assert call["args"][-2] == cups_filter.DUPLEX_COPIES_PROLOGUE
     assert call["job"].encode("latin-1") == _JOB
     assert result.stdout == _run(fake_gs, options=f"{_OPTIONS} Duplex=DuplexNoTumble").stdout
+
+
+@pytest.mark.parametrize(
+    ("skip_blank", "rendered", "printed"),
+    [
+        # The copy prints two pages after BRSkipBlank: no blank back.
+        ("ON", "C C B M C C B", "C C C C"),
+        # The copy prints three pages: a blank back, then the next copy.
+        ("OFF", "C C B M C C B", "C C B B C C B"),
+        # Three pages after BRSkipBlank: the blank back is kept.
+        ("ON", "C B C C M C B C C", "C C C B C C C"),
+    ],
+)
+def test_duplex_copies_start_on_a_new_sheet(fake_gs, skip_blank, rendered, printed):
+    options = f"{_OPTIONS} Duplex=DuplexNoTumble BRSkipBlank={skip_blank}"
+    copies = _run(fake_gs, options=options, copies="2", sequence=rendered)
+    assert copies.returncode == 0, copies.stderr.decode()
+    assert f"total pages: {len(rendered.split()) - 1}".encode() in copies.stderr
+    single = _run(fake_gs, options=f"{_OPTIONS} Duplex=DuplexNoTumble", sequence=printed)
+    assert copies.stdout == single.stdout
 
 
 @pytest.mark.parametrize(("options", "copies"), [(_OPTIONS, "2"), (f"{_OPTIONS} Duplex=DuplexNoTumble", "1")])
