@@ -42,6 +42,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (the unpacked package to `.brother-blobs/<model>/`); re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of
   1.2.0 in `/usr/local/lib/brhl4150cdn/`.
+- The CUPS filter and the CLI log once per job which Cython kernels are
+  in use: a warning that names the missing ones and how to rebuild them
+  (e.g. after a Python upgrade), INFO otherwise. `BRXL2HB_PURE_PYTHON=1`
+  forces the pure-Python fallbacks.
+- Fallbacks that change the output warn and name the missing files and
+  `scripts/extract_blobs.sh <model>`: the generated rgb/srgb default
+  grids (was INFO) and Normal-mode dither tables for Fine mode (was
+  INFO). The Bayer warning names the Fine tables when those are missing.
+- pytest stops when a built native extension is older than its
+  `.pyx`/`.pxd`.
 
 ### Fixed
 - Literal stretches longer than one block are encoded as in the original:

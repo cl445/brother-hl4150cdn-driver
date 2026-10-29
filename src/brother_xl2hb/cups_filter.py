@@ -19,6 +19,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import BinaryIO, cast
 
+from brother_xl2hb import _native
 from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.models.base import PrinterModel
@@ -234,6 +235,7 @@ def main(model: PrinterModel = DEFAULT_MODEL) -> None:
     input_file = sys.argv[6] if len(sys.argv) > 6 else None
 
     logger.info("job=%s user=%s title=%r copies=%d", job_id, user, title, copies)
+    _native.log_status()
 
     # The queue's PPD defaults first (CUPS passes only the job's own
     # options), then the job options on top.

@@ -17,12 +17,9 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
-try:
-    from brother_xl2hb._native._color_fast import gather_kcmy, interp_kcmy  # type: ignore[import-not-found]
+from brother_xl2hb import _native
 
-    HAS_CYTHON_COLOR = True
-except ImportError:
-    HAS_CYTHON_COLOR = False
+_color_fast = _native.load("_color_fast")
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +111,15 @@ def _load_lut(table: ColorTable) -> npt.NDArray[np.int32]:
             raise FileNotFoundError(msg)
         from brother_xl2hb.color.color_lut_gen import generate_rgb_default_lut, generate_srgb_default_lut
 
-        if table.name not in ("rgb_default", "srgb_default"):
-            logger.warning("LUT binary %s missing (run scripts/extract_blobs.sh); using a generated grid", path.name)
-        else:
-            logger.info("LUT binary %s not found, generating from parametric model", path.name)
+        generated = f"{'srgb' if table.profile == 'srgb' else 'rgb'}_default"
+        logger.warning(
+            "Colour grid %s missing in %s (run scripts/extract_blobs.sh %s); using a generated %s grid, "
+            "output will differ from the original driver",
+            path.name,
+            table.data_dir,
+            table.data_dir.name,
+            generated,
+        )
         return generate_srgb_default_lut() if table.profile == "srgb" else generate_rgb_default_lut()
     data = path.read_bytes()
     if len(data) != _LUT_BYTES:
@@ -135,7 +137,8 @@ def _load_lut(table: ColorTable) -> npt.NDArray[np.int32]:
 def _load_interp_tables(data_dir: Path) -> npt.NDArray[np.uint8]:
     """Load the interpolation weight tables from `data_dir` (17 tables, each 17*17*9 bytes).
 
-    Falls back to analytical generation if the binary file is missing.
+    Falls back to analytical generation, which gives the same tables, if
+    the binary file is missing.
 
     Returns:
         Array of shape (_NUM_INTERP_TABLES, _LUT_DIM*_LUT_DIM, 9), uint8.
@@ -145,7 +148,9 @@ def _load_interp_tables(data_dir: Path) -> npt.NDArray[np.uint8]:
     """
     path = data_dir / "interp_tables.bin"
     if not path.exists():
-        logger.info("Interpolation tables binary not found, generating analytically")
+        # The generated tables equal Brother's byte for byte
+        # (test_color_lut_gen.py), so the output does not change.
+        logger.info("Interpolation tables %s not found, generating them", path)
         from brother_xl2hb.color.color_lut_gen import generate_interp_tables
 
         return generate_interp_tables()
@@ -406,18 +411,18 @@ def rgb_to_cmyk_lut_arr(
         (k, c, m, y) uint8 arrays of length `width`.
     """
     inv = inverse_lut(table)
-    if inv is not None and HAS_CYTHON_COLOR:
+    if inv is not None and _color_fast is not None:
         planes = np.empty((4, width), dtype=np.uint8)
-        gather_kcmy(rgb_row, width, inv.reshape(-1), planes[0], planes[1], planes[2], planes[3])
+        _color_fast.gather_kcmy(rgb_row, width, inv.reshape(-1), planes[0], planes[1], planes[2], planes[3])
         return planes[0], planes[1], planes[2], planes[3]
     if inv is not None:
         rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3)
         idx = (rgb[:, 0].astype(np.uint32) << 16) | (rgb[:, 1].astype(np.uint32) << 8) | rgb[:, 2].astype(np.uint32)
         kcmy = np.ascontiguousarray(inv.reshape(-1, 4)[idx])
         return kcmy[:, 0], kcmy[:, 1], kcmy[:, 2], kcmy[:, 3]
-    if HAS_CYTHON_COLOR:
+    if _color_fast is not None:
         planes = np.empty((4, width), dtype=np.uint8)
-        interp_kcmy(rgb_row, width, *interp_arrays(table), planes[0], planes[1], planes[2], planes[3])
+        _color_fast.interp_kcmy(rgb_row, width, *interp_arrays(table), planes[0], planes[1], planes[2], planes[3])
         return planes[0], planes[1], planes[2], planes[3]
     _warn_interp_fallback(table)
     return _rgb_to_cmyk_interp_arr(rgb_row, width, table)

@@ -176,6 +176,10 @@ with:
 uv run --with cython,setuptools python setup_cython.py build_ext --inplace
 ```
 
+pytest refuses to start while a built extension is older than its
+`.pyx`. `BRXL2HB_PURE_PYTHON=1` makes the driver ignore the built
+extensions and use the pure-Python fallbacks.
+
 The test fixtures in `tests/fixtures/` are zstd-compressed XL2HB
 captures from the manufacturer's filter — pytest decompresses them on
 demand. Adding a new capture-based test is two steps: drop a fresh

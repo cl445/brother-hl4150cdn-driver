@@ -24,19 +24,10 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-try:
-    from brother_xl2hb._native._dither_fast import dither_row_1bpp  # type: ignore[import-not-found]
+from brother_xl2hb import _native
 
-    HAS_CYTHON_DITHER = True
-except ImportError:
-    HAS_CYTHON_DITHER = False
-
-try:
-    from brother_xl2hb._native._fine_fast import dither_row_4bpp  # type: ignore[import-not-found]
-
-    HAS_CYTHON_DITHER_4BPP = True
-except ImportError:
-    HAS_CYTHON_DITHER_4BPP = False
+_dither_fast = _native.load("_dither_fast")
+_fine_fast = _native.load("_fine_fast")
 
 logger = logging.getLogger(__name__)
 
@@ -266,25 +257,34 @@ def _build_bayer_tables(*, toner_save: bool, width: int = 32, height: int = 32) 
     return {"K": channel, "C": channel, "M": channel, "Y": channel}
 
 
-_bayer_fallback_warned: set[tuple[str, str, bool]] = set()
+_fallback_warned: set[tuple[str, str, bool, bool]] = set()
 
 
-def _warn_bayer_fallback(lut_dir: str, *, cache: str, toner_save: bool) -> None:
-    """Warn, once per process and table set, that BRCD tables are missing.
+def _brcd_pattern(cache: str, *, fine: bool, toner_save: bool) -> str:
+    """File name pattern of a BRCD set, e.g. `capt-*-TS_cache09.bin`.
 
-    The Bayer matrix only stands in for the dither tables; the output then
-    differs from the original driver's on every page.
+    Returns:
+        The pattern, `*` standing for the channel letter.
     """
-    key = (lut_dir, cache, toner_save)
-    if key in _bayer_fallback_warned:
+    return f"{_BRCD_PREFIX[fine]}-*{_BRCD_SUFFIX[toner_save]}_{cache}.bin"
+
+
+def _warn_fallback(lut_dir: str, *, cache: str, fine: bool, toner_save: bool, stand_in: str) -> None:
+    """Warn, once per process and table set, that the BRCD set is missing and `stand_in` replaces it.
+
+    Every stand-in changes the output against the original driver's.
+    """
+    key = (lut_dir, cache, fine, toner_save)
+    if key in _fallback_warned:
         return
-    _bayer_fallback_warned.add(key)
-    variant = f"0600-*{_BRCD_SUFFIX[toner_save]}_{cache}.bin"
+    _fallback_warned.add(key)
     logger.warning(
-        "Dither tables %s missing in %s (run scripts/extract_blobs.sh); "
-        "using a generated Bayer matrix, output will differ from the original driver",
-        variant,
+        "Dither tables %s missing in %s (run scripts/extract_blobs.sh %s); "
+        "using %s, output will differ from the original driver",
+        _brcd_pattern(cache, fine=fine, toner_save=toner_save),
         lut_dir,
+        Path(lut_dir).name,
+        stand_in,
     )
 
 
@@ -300,7 +300,8 @@ def load_dither_tables(
     If `lut_dir` is given, the `cache` set's BRCD files matching `(fine, toner_save)` are
     tried first. Fine-mode lookup falls through to Normal-mode BRCD if
     the Fine tables are absent. When no BRCD set is found a Bayer matrix
-    is generated as fallback (with a one-time warning).
+    is generated as fallback. Either fallback changes the output and
+    warns once per table set.
 
     Returns:
         Channel dict keyed by 'K', 'C', 'M', 'Y'.
@@ -310,11 +311,15 @@ def load_dither_tables(
             tables = load_brcd_tables(lut_dir, cache=cache, fine=True, toner_save=toner_save)
             if tables is not None:
                 return tables
-            logger.info("Fine BRCD tables not available, falling through to Normal")
         tables = load_brcd_tables(lut_dir, cache=cache, fine=False, toner_save=toner_save)
         if tables is not None:
+            if fine:
+                normal = _brcd_pattern(cache, fine=False, toner_save=toner_save)
+                _warn_fallback(
+                    lut_dir, cache=cache, fine=True, toner_save=toner_save, stand_in=f"the Normal-mode tables {normal}"
+                )
             return tables
-        _warn_bayer_fallback(lut_dir, cache=cache, toner_save=toner_save)
+        _warn_fallback(lut_dir, cache=cache, fine=fine, toner_save=toner_save, stand_in="a generated Bayer matrix")
     return _build_bayer_tables(toner_save=toner_save)
 
 
@@ -347,8 +352,8 @@ def dither_channel_1bpp_arr(
         channel = _ensure_defaults()["K"]
 
     thresholds = channel.tiled_thresholds(width)[y % channel.height]
-    if HAS_CYTHON_DITHER:
-        return dither_row_1bpp(row_arr, thresholds, width)
+    if _dither_fast is not None:
+        return _dither_fast.dither_row_1bpp(row_arr, thresholds, width)
     dots = (255 - row_arr[:width]) > thresholds
     return bytes(np.packbits(dots)[: (width + 7) // 8])
 
@@ -397,8 +402,8 @@ def dither_channel_4bpp_arr(
 
     if channel.nibble_levels is not None:
         # Plain table lookup, as dither_ordered_4ch_4bpp: levels[ink][y % h][x % w].
-        if HAS_CYTHON_DITHER_4BPP:
-            return dither_row_4bpp(row_arr, channel.nibble_levels, y, width)
+        if _fine_fast is not None:
+            return _fine_fast.dither_row_4bpp(row_arr, channel.nibble_levels, y, width)
         levels = channel.nibble_levels[255 - row_arr[:width], y % channel.height, channel.matrix_columns(width)]
         return _nibble_pack(levels, width)
 
