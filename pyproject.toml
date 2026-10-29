@@ -39,6 +39,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+# An unclosed file or pipe fails its test.
+filterwarnings = ["error::ResourceWarning"]
 
 [tool.ruff]
 target-version = "py313"
