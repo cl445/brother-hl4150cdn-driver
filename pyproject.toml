@@ -152,7 +152,7 @@ exclude_lines = [
 [tool.deptry]
 # `pythonpath = ["src", "tests"]` makes these flat imports — they're first-party.
 known_first_party = [
-    "brfilter", "brother_encode", "cli", "color_lut", "color_lut_gen",
+    "cli", "color_lut", "color_lut_gen",
     "dither", "fine_encoder", "page_stream", "pipeline", "plane_encoders", "ppm",
     "rle", "saturation", "settings", "transforms", "xl2hb",
     # Optional Cython modules built by setup_cython.py (pure-Python fallback).

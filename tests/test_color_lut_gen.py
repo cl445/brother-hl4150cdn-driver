@@ -239,7 +239,8 @@ class TestFallbackIntegration:
             tempfile.TemporaryDirectory() as tmpdir,
             mock.patch.object(color_lut, "_DATA_DIR", Path(tmpdir)),
         ):
-            from brfilter import PrintSettings, filter_page
+            from pipeline import filter_page
+            from settings import PrintSettings
 
             w, h = 100, 10
             pixels = bytes([128, 0, 0]) * (w * h)  # Red pixels

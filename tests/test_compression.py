@@ -1,7 +1,7 @@
 """
 Compression / encoding / decoding tests.
 
-Migrates all inline test vectors from brother_encode.py into proper pytest
+Test vectors for the plane encoders (plane_encoders, fine_encoder) as pytest
 parametrized tests, plus decoding verification and capture-derived round-trip.
 """
 
@@ -18,17 +18,18 @@ from brother_decode import (
     decode_rle,
     decode_rle_10bit,
 )
-from brother_encode import (
-    compress_pattern_encode,
-    compress_rle_preencode,
-    encode_c_plane,
-    encode_fine_plane,
-    encode_m_plane_10,
-    encode_plane,
+from fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane
+from plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
+from rle import (
+    CONFIG_10BIT,
+    CONFIG_12BIT,
+    CONFIG_20BIT,
+    finalize_compressed,
     group_bits,
+    group_bits_py,
     pack_groups,
+    sw_rle_encode,
 )
-from rle import CONFIG_10BIT, CONFIG_12BIT, CONFIG_20BIT, finalize_compressed, group_bits_py, sw_rle_encode
 from xl2hb import BPL
 
 # ---------------------------------------------------------------------------

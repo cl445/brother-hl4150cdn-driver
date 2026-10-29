@@ -93,6 +93,8 @@ mkdir -p "$LIB_DIR"
 
 # Copy Python source files (all modules in src/)
 cp "$REPO_ROOT/src/"*.py "$LIB_DIR/"
+# Modules removed from src/ after 1.2.0
+rm -f "$LIB_DIR/brfilter.py" "$LIB_DIR/brother_encode.py"
 
 # Copy color data
 mkdir -p "$LIB_DIR/color_data"

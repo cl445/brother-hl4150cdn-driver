@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from brfilter import (
+from settings import (
     ColorMatching,
     DuplexMode,
     ImproveOutput,
@@ -19,8 +19,8 @@ from brfilter import (
     PageSize,
     PrintSettings,
     Resolution,
+    read_ppd_defaults,
 )
-from settings import read_ppd_defaults
 
 
 class TestCupsOptionsDefaults:

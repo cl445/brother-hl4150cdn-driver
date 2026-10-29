@@ -1,15 +1,16 @@
 """
 Brother HL-4150CDN XL2HB raster decoder.
 
-Inverse of brother_encode.py — decodes RLE-compressed plane data back to
-raw 1bpp scanline bytes.
+Inverse of plane_encoders.py and fine_encoder.py — decodes RLE-compressed
+plane data back to raw 1bpp scanline bytes.
 
-See brother_encode.py for the full encoding format documentation.
+See rle.py and plane_encoders.py for the encoding format documentation.
 """
 
 from math import ceil
 
-from brother_encode import BPL, group_bits, pack_groups
+from rle import group_bits, pack_groups
+from xl2hb import BPL
 
 
 def _read_count_ext(data: bytes, pos: int) -> tuple[int, int]:

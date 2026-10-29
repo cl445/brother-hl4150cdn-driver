@@ -10,12 +10,8 @@ import tempfile
 
 import pytest
 
-from brfilter import (
-    DuplexMode,
-    PrintSettings,
-    filter_page,
-    filter_pages,
-)
+from pipeline import filter_page, filter_pages
+from settings import DuplexMode, PrintSettings
 from xl2hb import (
     MEDIA_SIZE,
     MEDIA_TYPE_STRINGS,
