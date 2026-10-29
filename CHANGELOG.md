@@ -52,9 +52,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CI also runs the tests on Python 3.14.
 
 ### Fixed
-- The installed CUPS filter no longer imports the package from a `src/`
-  directory next to its lib directory (`/usr/local/lib/src`); it only
-  falls back to the repository's `src/` when the package is not beside it.
+- The CUPS filter imports the package installed beside it first; a
+  `src/` directory next to its own directory (the repository layout) is
+  only a fallback when that package is missing.
 - Literal stretches longer than one block are encoded as in the original:
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
   repeats the last word after the flush. A scanline has at most about 425
