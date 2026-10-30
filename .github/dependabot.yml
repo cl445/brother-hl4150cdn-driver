@@ -6,8 +6,8 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    # Bump uv.lock only. The lower bounds in pyproject.toml stay where they
-    # are, so installs on distributions with an older numpy keep working.
+    # Bump uv.lock only. The lower bounds in pyproject.toml (numpy>=2.5.3)
+    # stay where they are, so an install that meets them needs no upgrade.
     versioning-strategy: "lockfile-only"
     groups:
       python:
