@@ -5,9 +5,19 @@
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
 Open-source CUPS driver for the Brother HL-4150CDN colour laser printer.
-Brother's own Linux driver runs only on x86 PCs. This one is written in
-Python with optional Cython acceleration and runs anywhere CUPS does,
-including ARM boards such as the Raspberry Pi.
+Brother's own Linux driver is a 32-bit x86 program and needs i386
+libraries. This one is written in Python with optional Cython
+acceleration and runs wherever CUPS and Python do: x86-64 without the
+i386 libraries, ARM and other architectures.
+
+Eight more Brother models use exactly the same filter as the HL-4150CDN
+and should work as they are: HL-4140CN, HL-4570CDW, DCP-9055CDN,
+DCP-9270CDN, MFC-9460CDN, MFC-9465CDN, MFC-9560CDW and MFC-9970CDW.
+The HL-4140CN has no duplex unit, so leave Duplex off there.
+They are untested so far; if you have one,
+[a test report](https://github.com/cl445/brother-hl4150cdn-driver/issues/new?template=test-report.yml)
+helps. See [Other Brother printers](#other-brother-printers) for the rest
+of the family.
 
 ## Features
 
@@ -20,9 +30,14 @@ including ARM boards such as the Raspberry Pi.
   colour adjustment
 - Reverse print, skip blank pages and copies
 
-On a Raspberry Pi 3B+ a page takes about 1 s in Normal and about 6.5 s in
-Fine quality. The filter needs about 100 to 250 MB of memory, depending
-on the options.
+Time per A4 colour page with the native modules:
+
+| Machine | Normal | Fine |
+|---|---|---|
+| Desktop (Apple M4 Pro) | 0.35 s | 0.4 s |
+| Raspberry Pi 3B+ | 1 s | 6.5 s |
+
+The filter needs about 100 to 250 MB of memory, depending on the options.
 
 ## Requirements
 
@@ -35,7 +50,8 @@ on the options.
   builds the native modules; without them the driver is several times
   slower, and Fine mode about 30 times.
 - About 260 MB of disk space for precomputed colour tables. `install.sh`
-  computes them, which takes about four minutes on a Pi 3.
+  computes them, which takes about 20 seconds on a desktop and about
+  four minutes on a Raspberry Pi 3.
 - Brother's HL-4150CDN LPR driver package: `scripts/extract_blobs.sh`
   downloads it and extracts the printer's calibration tables, which this
   repository does not include.
@@ -133,6 +149,26 @@ cat page.ppm | uv run brother-xl2hb | nc <printer-ip> 9100
 cat page.ppm | uv run brother-xl2hb > /dev/usb/lp0
 ```
 
+## Other Brother printers
+
+Brother's Linux drivers for its colour lasers from about 2008 to 2018
+share this protocol, and often the code. Besides the eight models above
+that use the HL-4150CDN's filter unchanged:
+
+| Family | Status |
+|---|---|
+| HL-3040CN, HL-3045CN, HL-3070CW, HL-3075CW, DCP-9010CN, MFC-9010CN, MFC-9120CN, MFC-9125CN, MFC-9320CW, MFC-9325CW | Same code with other tables and page geometry; a second model, a few days of work. A separate port for the HL-3040CN exists: [pedroterzero/brother-hl3040cn-driver](https://github.com/pedroterzero/brother-hl3040cn-driver). |
+| HL-3140CW to HL-3180CDW, DCP-9015CDW to DCP-9020CDW, MFC-9130CW to MFC-9342CDW | Same encoders, a different colour stage to reverse-engineer. |
+| HL-L8250CDN/L8350CDW/L9200CDW, HL-L3210CW/L3230CDW, HL-L8260CDW/L8360CDW and their DCP/MFC siblings; HL-4040CN to HL-4070CDW and siblings | New encoders or an older filter; weeks of reverse engineering. |
+| HL-L3280CDW, HL-L8240CDW and newer | PWG Raster, an open format: use CUPS' driverless printing instead. |
+
+[docs/other-printers.md](docs/other-printers.md) has the full model lists
+and what differs; [docs/adding-a-model.md](docs/adding-a-model.md)
+describes how to add a model. The maintainer has none of these printers
+and will not add them alone, but welcomes pull requests and
+[printer support issues](https://github.com/cl445/brother-hl4150cdn-driver/issues?q=is%3Aissue+label%3Aprinter-support)
+from people who have one.
+
 ## Development
 
 Development needs [`uv`](https://docs.astral.sh/uv/). CI tests on
@@ -179,6 +215,8 @@ PPD's own spellings of option values go into `aliases`. Set
 then a missing grid is an error instead of wrong colours.
 `tests/test_model_packaging.py` checks that the PPD, the CUPS filter shim
 and the scripts know the model and agree with its tables.
+[docs/adding-a-model.md](docs/adding-a-model.md) walks through it step
+by step.
 
 The Cython modules are optional in development too; build them in place
 with:
@@ -246,6 +284,7 @@ repository.
 
 ## Trademarks
 
-Brother and HL-4150CDN are trademarks of Brother Industries, Ltd. This
-project is an independent, community-driven driver and is not affiliated
-with, endorsed by, or sponsored by Brother Industries, Ltd.
+Brother and the printer model names in this repository are trademarks of
+Brother Industries, Ltd. This project is an independent, community-driven
+driver and is not affiliated with, endorsed by, or sponsored by Brother
+Industries, Ltd.
