@@ -165,6 +165,8 @@ class TestRCFileFallbacks:
             ("Brightness=-50", "brightness", -50),
             ("Brightness=50%", "brightness", 50),
             ("Brightness=abc", "brightness", 0),
+            ("Brightness=\u0661\u0660", "brightness", 0),
+            ("Brightness=5\u0661", "brightness", 5),
             ("Contrast=100", "contrast", 100),
             ("RedKey=-100", "red", -100),
             ("Saturation=99999999999", "saturation", 1_000_000),

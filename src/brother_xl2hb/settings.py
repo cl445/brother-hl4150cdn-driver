@@ -461,7 +461,8 @@ def valid_copies(copies: int) -> int:
 _RC_INT_LIMIT = 1_000_000
 """Largest rc colour adjustment kept; far past where the colour transforms saturate."""
 
-_ATOI = re.compile(r"\s*([+-]?\d+)")
+# ASCII only: C atoi skips C-locale whitespace and reads 0-9, no other digits.
+_ATOI = re.compile(r"\s*([+-]?\d+)", re.ASCII)
 
 
 def _atoi(text: str) -> int:
