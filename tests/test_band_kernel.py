@@ -10,7 +10,8 @@ from brother_xl2hb.color import color_lut
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render import bands
-from brother_xl2hb.render.bands import band_kernel_colour, render_threads
+from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded, render_threads
+from brother_xl2hb.render.lines import ColourSetup, encode_lines
 from brother_xl2hb.render.page import init_channels
 from brother_xl2hb.settings import ColorMatching, DuplexMode, MediaType, PrintSettings
 from fixture_utils import read_fixture
@@ -41,19 +42,10 @@ def no_inverse_lut(monkeypatch) -> None:
     monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: None)
 
 
-@pytest.fixture(scope="module")
-def installed_luts(color_data_root):
-    """All inverse LUTs (Normal and Vivid, with and without improve gray), as install.sh writes them."""
-    directory = color_data_root / HL4150CDN.key
-    if not list(directory.glob("inverse_lut_*.npy")):
-        color_lut.write_inverse_luts(HL4150CDN.inverse_lut_tables, directory)
-    return color_data_root
-
-
 @pytest.fixture
-def real_lut(use_color_data_root, installed_luts):
+def real_lut(use_color_data_root, installed_inverse_luts):
     """The real inverse LUTs, as installed by install.sh."""
-    use_color_data_root(installed_luts)
+    use_color_data_root(installed_inverse_luts)
 
 
 def _page(width: int, height: int, seed: int) -> bytes:
@@ -148,6 +140,24 @@ def test_kernel_reports_short_pages(monkeypatch):
     rows = np.zeros((300, _A4_W * 3), np.uint8)
     with pytest.raises(ValueError, match="page ended after 300 rows"):
         filter_pages([(_A4_W, 500, iter([rows]))], PrintSettings(), io.BytesIO())
+
+
+@pytest.mark.parametrize("threads", [0, 1])
+def test_banded_lines_run_to_the_end_of_the_page(threads, monkeypatch):
+    """Drained to the last row: on the calling thread, and with bands queued ahead of one render thread."""
+    height = 5 * bands._BAND_ROWS + 3
+    rows = np.frombuffer(_page(_A4_W, height, seed=5), np.uint8).reshape(height, -1)
+    settings = PrintSettings()
+    channels = init_channels(settings, HL4150CDN)
+    colour = ColourSetup(settings, HL4150CDN.color_table(settings), None)
+    kernel_colour = band_kernel_colour(colour.table, channels, is_fine=False)
+    assert kernel_colour is not None
+    sw, _ = HL4150CDN.image_dimensions("A4")
+    expected = list(encode_lines((rows,), _A4_W, sw, colour, channels, is_fine=False))
+
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
+    banded = encode_lines_banded((rows,), _A4_W, sw, colour, channels, kernel_colour, is_fine=False)
+    assert [tuple(map(bytes, line)) for line in banded] == expected
 
 
 def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
