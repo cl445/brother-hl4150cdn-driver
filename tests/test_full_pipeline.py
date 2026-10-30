@@ -309,6 +309,17 @@ _MONO_RAMP_VARIANTS = [
     ("ramp_bright", {"brightness": 20}),
     ("ramp_contrast", {"contrast": -20}),
     ("ramp_ts", {"toner_save": True}),
+    ("ramp_adjusted", {"brightness": -20, "contrast": -15}),
+]
+
+# Grayscale ignores the RGB keys, saturation and colour matching, but keeps
+# brightness and contrast: the original's output for each of these equals
+# mono_ramp_adjusted.
+_MONO_ADJUSTED_EQUIVALENTS = [
+    ("cm_none", {"color_matching": ColorMatching.NONE}),
+    ("vivid", {"color_matching": ColorMatching.VIVID}),
+    ("keys_saturation", {"red": 10, "green": -10, "blue": 20, "saturation": 10}),
+    ("cm_none_keys", {"color_matching": ColorMatching.NONE, "red": 10, "green": -10, "blue": 20, "saturation": 10}),
 ]
 
 
@@ -388,13 +399,27 @@ class TestMonoMode:
 
     @pytest.mark.parametrize(
         "kwargs",
-        [{"saturation": 20}, {"color_matching": ColorMatching.VIVID}, {"improve_gray": True}],
-        ids=["saturation", "vivid", "improve_gray"],
+        [
+            {"saturation": 20},
+            {"color_matching": ColorMatching.VIVID},
+            {"improve_gray": True},
+            {"red": 10},
+            {"green": -10},
+            {"blue": 20},
+        ],
+        ids=["saturation", "vivid", "improve_gray", "red", "green", "blue"],
     )
     def test_colour_only_settings_are_ignored(self, kwargs):
         """The original driver's output for these equals plain mono."""
         out = _pipeline_from_ppm(_make_ppm_ramps(), PrintSettings(mono_color=MonoColor.MONO, **kwargs))
         assert_matches_fixture("mono_ramp", out)
+
+    @pytest.mark.parametrize(
+        "kwargs", [v[1] for v in _MONO_ADJUSTED_EQUIVALENTS], ids=[v[0] for v in _MONO_ADJUSTED_EQUIVALENTS]
+    )
+    def test_brightness_contrast_apply_whatever_the_colour_settings(self, kwargs):
+        settings = PrintSettings(mono_color=MonoColor.MONO, brightness=-20, contrast=-15, **kwargs)
+        assert_matches_fixture("mono_ramp_adjusted", _pipeline_from_ppm(_make_ppm_ramps(), settings))
 
     def test_only_k_plane(self):
         ppm = _make_ppm_bytes(4760, 10, 128, 0, 0)

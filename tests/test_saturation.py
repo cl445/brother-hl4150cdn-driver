@@ -1,6 +1,9 @@
 """Tests for saturation adjustment (compress_adjust_saturation reimplementation)."""
 
-from brother_xl2hb.color.saturation import adjust_saturation
+import numpy as np
+import pytest
+
+from brother_xl2hb.color.saturation import adjust_saturation, adjust_saturation_py
 
 
 def _pixel(r: int, g: int, b: int) -> bytes:
@@ -216,7 +219,65 @@ class TestAdjustSaturationEdgeCases:
 
     def test_rgb_row_too_short(self):
         """ValueError when rgb_row is shorter than width * 3."""
-        import pytest
-
         with pytest.raises(ValueError, match="rgb_row too short"):
             adjust_saturation(b"\x80\x40", 1, 10)
+
+
+# --- Native kernel vs. numpy reference ---
+
+
+def _two_equal_channel_pixels() -> np.ndarray:
+    """Every pixel with exactly two equal channels, in all three positions.
+
+    With the mid channel equal to max, (new_range / old_range) * (mid - min)
+    is an exact quotient, where the x87 rounding of the original can land
+    one below floor division.
+    """
+    a, b = np.meshgrid(np.arange(256, dtype=np.uint8), np.arange(256, dtype=np.uint8), indexing="ij")
+    a, b = a.ravel(), b.ravel()
+    return np.concatenate([np.stack(p, axis=1) for p in ((a, a, b), (a, b, a), (b, a, a))]).reshape(-1)
+
+
+@pytest.fixture(scope="module")
+def native():
+    return pytest.importorskip("brother_xl2hb._native._color_fast").adjust_saturation
+
+
+class TestNativeParity:
+    """`_color_fast.adjust_saturation` must match `adjust_saturation_py` byte for byte."""
+
+    @pytest.mark.parametrize("sat_mode", [s for s in range(-20, 21) if s != 0])
+    def test_random_pixels(self, native, sat_mode):
+        # More than one numpy chunk, and not a multiple of it.
+        width = 70_001
+        rgb = np.random.default_rng(sat_mode + 100).integers(0, 256, width * 3, dtype=np.uint8)
+        assert native(rgb, width, sat_mode) == adjust_saturation_py(rgb, width, sat_mode)
+
+    @pytest.mark.parametrize("sat_mode", [s for s in range(-20, 21) if s != 0])
+    def test_two_equal_channels(self, native, sat_mode):
+        rgb = _two_equal_channel_pixels()
+        width = rgb.size // 3
+        assert native(rgb, width, sat_mode) == adjust_saturation_py(rgb, width, sat_mode)
+
+    @pytest.mark.parametrize(
+        ("pixel", "expected"),
+        [
+            # (60 / 58) * 29 is 30 exactly, the x87 product truncates to 29.
+            ((59, 30, 1), (60, 29, 0)),
+            ((30, 1, 59), (29, 0, 60)),
+            # (168 / 160) * 120 = 126 → 125.
+            ((4, 164, 124), (0, 168, 125)),
+        ],
+    )
+    def test_x87_rounding(self, native, pixel, expected):
+        orig = _pixel(*pixel)
+        assert _get_pixel(native(orig, 1, 20)) == expected
+        assert _get_pixel(adjust_saturation_py(orig, 1, 20)) == expected
+
+    def test_zero_and_empty(self, native):
+        assert native(b"\x10\x20\x30", 1, 0) == b"\x10\x20\x30"
+        assert native(b"", 0, 10) == b""
+
+    def test_input_too_short(self, native):
+        with pytest.raises(ValueError, match="shorter"):
+            native(b"\x80\x40", 1, 10)
