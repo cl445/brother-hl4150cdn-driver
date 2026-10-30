@@ -22,7 +22,7 @@ _VARIANTS = {
 @pytest.fixture
 def python_encoder(monkeypatch):
     """The plane encoders as they run without _rle_fast: Python word split and sw_rle_encode."""
-    monkeypatch.setattr(plane_encoders, "_HAS_CYTHON_SW_RLE", False)
+    monkeypatch.setattr(plane_encoders, "_rle_fast", None)
     monkeypatch.setattr(plane_encoders, "group_bits", group_bits_py)
 
     def encode(variant: str, data: bytes) -> bytes:

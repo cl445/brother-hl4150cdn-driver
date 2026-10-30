@@ -220,14 +220,22 @@ class TestFallbackIntegration:
         yield
         color_lut._load_data.cache_clear()
 
-    def test_color_lut_fallback(self):
+    def test_color_lut_fallback(self, caplog):
         """color_lut module should fall back to generation when binaries missing."""
         from brother_xl2hb.color import color_lut
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            lut, interp = color_lut._load_data(dataclasses.replace(HL4150CDN.grid(), data_dir=Path(tmpdir)))
+        with tempfile.TemporaryDirectory() as tmpdir, caplog.at_level("INFO", logger=color_lut.__name__):
+            data_dir = Path(tmpdir) / HL4150CDN.key
+            data_dir.mkdir()
+            lut, interp = color_lut._load_data(dataclasses.replace(HL4150CDN.grid(), data_dir=data_dir))
             assert lut.shape == (4913, 4)
             assert interp.shape == (17, 289, 9)
+        # The generated grid differs from Brother's, the interpolation tables do not.
+        [warning] = [r for r in caplog.records if r.levelname == "WARNING"]
+        message = warning.getMessage()
+        assert "rgb_default_lut.bin missing" in message
+        assert f"scripts/extract_blobs.sh {HL4150CDN.key}" in message
+        assert any(r.levelname == "INFO" and "interp_tables.bin" in r.getMessage() for r in caplog.records)
 
     def test_pipeline_without_binaries(self, use_color_data_root):
         """Full pipeline should work without binary data files."""

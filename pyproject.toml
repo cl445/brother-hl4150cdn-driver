@@ -19,6 +19,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Printing",
     "Topic :: System :: Hardware :: Hardware Drivers",
 ]
@@ -35,6 +36,7 @@ dev = ["ruff>=0.16.8", "nox>=2026.8.17", "pyrefly>=1.3.1", "deptry>=0.21"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["brother_xl2hb", "brother_xl2hb.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -181,8 +183,8 @@ extend_exclude = ["noxfile\\.py", "setup_cython\\.py"]
 
 [tool.pyrefly]
 python-version = "3.13"
-search-path = ["src", "tests"]
-project-includes = ["src/**/*.py", "tests/**/*.py", "noxfile.py", "cups/brhl4150cdn-filter"]
+search-path = ["src", "tests", "scripts"]
+project-includes = ["src/**/*.py", "tests/**/*.py", "scripts/**/*.py", "noxfile.py", "cups/brhl4150cdn-filter"]
 project-excludes = [".venv/**", ".nox/**", "__pycache__/**"]
 untyped-def-behavior = "check-and-infer-return-type"
 strict-callable-subtyping = true

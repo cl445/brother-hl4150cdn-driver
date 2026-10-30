@@ -12,11 +12,20 @@ import pytest
 
 from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
+from brother_xl2hb.settings import InputSlot
 from fixture_utils import assert_bytes_equal
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+# BeginPage of the captures: A4, auto-select tray, plain paper.
+_A4_PLAIN = {
+    "media_size": HL4150CDN.media_size["A4"],
+    "media_source": HL4150CDN.media_source[InputSlot.AUTO],
+    "media_type": HL4150CDN.media_types["Plain"],
+}
 
 
 def _reconstruct_stream(cap) -> bytes:
@@ -28,7 +37,7 @@ def _reconstruct_stream(cap) -> bytes:
     w.write_stream_header()
     w.write_begin_session()
     w.write_open_data_source()
-    w.write_begin_page()
+    w.write_begin_page(**_A4_PLAIN)
     w.write_set_page_origin(100, 100)
 
     sw, sh = HL4150CDN.image_dimensions("A4")
@@ -164,7 +173,7 @@ class TestUnknownMediaDefaults:
         assert "Unknown media size" in caplog.text
         assert size == 2
         buf = BytesIO()
-        XL2HBWriter(buf).write_begin_page(media_size=size)
+        XL2HBWriter(buf).write_begin_page(**{**_A4_PLAIN, "media_size": size})
         assert b"\xc0\x02\xf8\x25" in buf.getvalue()  # TAG_UBYTE 0x02 TAG_ATTR ATTR_MEDIA_SIZE
 
     def test_unknown_media_type(self, caplog):
@@ -173,5 +182,5 @@ class TestUnknownMediaDefaults:
             media_type = HL4150CDN.media_type_code("Cardstock")
         assert "Unknown media type" in caplog.text
         buf = BytesIO()
-        XL2HBWriter(buf).write_begin_page(media_type=media_type)
+        XL2HBWriter(buf).write_begin_page(**{**_A4_PLAIN, "media_type": media_type})
         assert b"dRegular" in buf.getvalue()

@@ -28,9 +28,8 @@ class TestBlockBlobMatchesCapture:
         block = cap.blocks[block_idx]
 
         pb = PlaneBuffer(plane_id=block.plane_id, bpl=BPL)
-        pb.start_line = block.start_line
-        for entry in block.entries:
-            pb.append_scanline(entry)
+        for i, entry in enumerate(block.entries):
+            pb.append_scanline(entry, block.start_line + i)
 
         result = pb.flush()
         assert result is not None, "flush() returned None but block has entries"
@@ -53,7 +52,7 @@ class TestPlaneBufferEdgeCases:
 
     def test_empty_compressed_skipped(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
-        pb.append_scanline(b"")  # empty → skipped
+        pb.append_scanline(b"", 0)  # empty → skipped
         assert pb.flush() is None
         assert pb.line_count == 0
 
@@ -100,7 +99,7 @@ class TestPlaneBufferEdgeCases:
         target_fill = PLANE_BUF_INIT_FREE - PLANE_BUF_FLUSH_THRESH + 1
         entries_needed = target_fill // 8 + 1
         for _i in range(entries_needed):
-            pb.append_scanline(entry)
+            pb.append_scanline(entry, 0)
         assert pb.is_nearly_full()
 
     @pytest.mark.parametrize(
@@ -116,7 +115,7 @@ class TestPlaneBufferEdgeCases:
     def test_plane_params_in_header(self, plane_id, expected_qt, expected_cs):
         """Verify quant_type and comp_size in header for each plane."""
         pb = PlaneBuffer(plane_id=plane_id, bpl=BPL)
-        pb.append_scanline(b"\xaa\xbb")
+        pb.append_scanline(b"\xaa\xbb", 0)
         result = pb.flush()
         assert result is not None
         _, _, blob = result

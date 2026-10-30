@@ -9,7 +9,7 @@ from brother_xl2hb.codec import rle as rle_module
 from brother_xl2hb.codec.rle import group_bits_py, pack_groups_py
 
 pytestmark = pytest.mark.skipif(
-    not rle_module.HAS_CYTHON_RLE,
+    rle_module._rle_fast is None,
     reason="Cython _rle_fast not built — run `python setup_cython.py build_ext --inplace`",
 )
 

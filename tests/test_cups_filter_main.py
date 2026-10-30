@@ -42,6 +42,9 @@ _FAKE_GS = textwrap.dedent(
 
     args = sys.argv[1:]
     source = args[-1]
+    if "<" in source:
+        # Duplex copies: the job is run from PostScript, `... <hex path> run ...`.
+        source = bytes.fromhex(source[source.index("<") + 1 : source.index(">")]).decode()
     job = sys.stdin.buffer.read() if source == "-" else open(source, "rb").read()
     with open(os.environ["FAKE_GS_RECORD"], "w") as record:
         json.dump({{"args": args, "job": job.decode("latin-1"), "pid": os.getpid()}}, record)
@@ -58,10 +61,15 @@ _FAKE_GS = textwrap.dedent(
     rgb = [int(v) for v in os.environ.get("FAKE_GS_RGB", "200,120,40").split(",")]
     row = bytes(rgb) * width
     out = sys.stdout.buffer
-    for _ in range(int(os.environ.get("FAKE_GS_PAGES", "1"))):
+    # FAKE_GS_SEQUENCE: "C" a coloured page, "B" a blank one, "M" a copy mark.
+    sequence = os.environ.get("FAKE_GS_SEQUENCE", "C " * int(os.environ.get("FAKE_GS_PAGES", "1"))).split()
+    for token in sequence:
+        if token == "M":
+            out.write(b"P6\\n67 67\\n255\\n" + bytes([255]) * 3 * 67 * 67)
+            continue
         out.write(header)
         for _ in range(height):
-            out.write(row)
+            out.write(row if token == "C" else bytes([255]) * 3 * width)
     if mode == "truncate":
         # A second page that breaks off halfway, as when gs dies mid-job.
         out.write(header)
@@ -114,7 +122,7 @@ def _is_running(pid: int) -> bool:
 
 
 class _Stdout:
-    """Stand-in for sys.stdout: the filter writes to its binary `buffer`."""
+    """Stand-in for sys.stdout or sys.stdin: the filter uses its binary `buffer`."""
 
     def __init__(self, buffer: io.BytesIO) -> None:
         self.buffer = buffer
@@ -155,7 +163,7 @@ def run_main(fake_gs, monkeypatch, tmp_path, caplog):
     caplog.set_level(logging.INFO)
 
     def run(*, options=_OPTIONS, copies="1", file=None, stdin=_JOB, argv=None, output=None, **fake) -> Result:
-        for key in ("MODE", "PAGES", "RGB"):
+        for key in ("MODE", "PAGES", "RGB", "SEQUENCE"):
             monkeypatch.delenv(f"FAKE_GS_{key}", raising=False)
         for key, value in fake.items():
             monkeypatch.setenv(f"FAKE_GS_{key.upper()}", str(value))
@@ -166,6 +174,8 @@ def run_main(fake_gs, monkeypatch, tmp_path, caplog):
         monkeypatch.setattr(sys, "stdout", _Stdout(buffer))
         stdin_path = tmp_path / "stdin"
         stdin_path.write_bytes(stdin)
+        # Duplex copies spool sys.stdin; Ghostscript reads file descriptor 0.
+        monkeypatch.setattr(sys, "stdin", _Stdout(io.BytesIO(stdin)))
         caplog.clear()
         with _stdin_fd(stdin_path), pytest.raises(SystemExit) as exit_info:
             cups_filter.main(HL4150CDN)
@@ -239,6 +249,44 @@ def test_copies_argument_does_not_reach_the_job(run_main):
     assert two.returncode == 0
     assert "copies=2" in two.log
     assert one.stdout == two.stdout
+
+
+def test_duplex_copies_hand_ghostscript_the_job_as_a_file(run_main, fake_gs):
+    # Ghostscript runs the job once per copy, so stdin is spooled first.
+    result = run_main(options=f"{_OPTIONS} Duplex=DuplexNoTumble", copies="2")
+    assert result.returncode == 0, result.log
+    call = _gs_call(fake_gs)
+    assert call["args"][-1].endswith("repeat")
+    assert call["args"][-2] == cups_filter.DUPLEX_COPIES_PROLOGUE
+    assert call["job"].encode("latin-1") == _JOB
+    assert result.stdout == run_main(options=f"{_OPTIONS} Duplex=DuplexNoTumble").stdout
+
+
+@pytest.mark.parametrize(
+    ("skip_blank", "rendered", "printed"),
+    [
+        # The copy prints two pages after BRSkipBlank: no blank back.
+        ("ON", "C C B M C C B", "C C C C"),
+        # The copy prints three pages: a blank back, then the next copy.
+        ("OFF", "C C B M C C B", "C C B B C C B"),
+        # Three pages after BRSkipBlank: the blank back is kept.
+        ("ON", "C B C C M C B C C", "C C C B C C C"),
+    ],
+)
+def test_duplex_copies_start_on_a_new_sheet(run_main, skip_blank, rendered, printed):
+    options = f"{_OPTIONS} Duplex=DuplexNoTumble BRSkipBlank={skip_blank}"
+    copies = run_main(options=options, copies="2", sequence=rendered)
+    assert copies.returncode == 0, copies.log
+    assert f"total pages: {len(rendered.split()) - 1}" in copies.log
+    single = run_main(options=f"{_OPTIONS} Duplex=DuplexNoTumble", sequence=printed)
+    assert copies.stdout == single.stdout
+
+
+@pytest.mark.parametrize(("options", "copies"), [(_OPTIONS, "2"), (f"{_OPTIONS} Duplex=DuplexNoTumble", "1")])
+def test_other_jobs_stream_stdin_to_ghostscript(run_main, fake_gs, options, copies):
+    result = run_main(options=options, copies=copies)
+    assert result.returncode == 0, result.log
+    assert _gs_call(fake_gs)["args"][-1] == "-"
 
 
 def test_usage_error_without_cups_arguments(run_main):
