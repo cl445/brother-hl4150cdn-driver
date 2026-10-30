@@ -35,9 +35,9 @@ _FAKE_GS = textwrap.dedent(
 
     args = sys.argv[1:]
     source = args[-1]
-    if source.startswith("<"):
-        # Duplex copies: the job is run from PostScript, `<hex path> run ...`.
-        source = bytes.fromhex(source[1:source.index(">")]).decode()
+    if "<" in source:
+        # Duplex copies: the job is run from PostScript, `... <hex path> run ...`.
+        source = bytes.fromhex(source[source.index("<") + 1 : source.index(">")]).decode()
     job = sys.stdin.buffer.read() if source == "-" else open(source, "rb").read()
     with open(os.environ["FAKE_GS_RECORD"], "w") as record:
         json.dump({{"args": args, "job": job.decode("latin-1")}}, record)

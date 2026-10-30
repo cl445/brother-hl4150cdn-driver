@@ -78,7 +78,7 @@ def test_gs_command_with_collated_copies_reruns_the_job_file(cups_filter, monkey
     assert cmd[-3:-1] == ["-c", cups_filter.DUPLEX_COPIES_PROLOGUE]
     # The path goes in as a hex string, so parentheses need no escaping.
     assert cmd[-1] == cups_filter.DUPLEX_COPIES_RUN.format(job=job.encode().hex())
-    assert cmd[-1].startswith(f"<{job.encode().hex()}> run ")
+    assert f"<{job.encode().hex()}> run " in cmd[-1]
     assert job not in cmd[:-4]
 
 
@@ -157,6 +157,18 @@ def test_ghostscript_collates_duplex_copies(cups_filter, tmp_path, pages, copies
     uncollated = " ".join(str(n) for n in range(1, pages + 1) for _ in range(copies))
     assert _render(cups_filter, job, collate_copies=False) == uncollated
     assert _render(cups_filter, job, collate_copies=True) == expected
+
+
+def test_ghostscript_copies_do_not_share_job_state(cups_filter, tmp_path):
+    """A job that counts its runs in userdict prints the same on every copy."""
+    if cups_filter.shutil.which("gs") is None:
+        pytest.skip("Ghostscript not installed")
+    runs = "/BRTestRuns where { pop /BRTestRuns BRTestRuns 1 add def } { /BRTestRuns 1 def } ifelse"
+    job = tmp_path / "job.ps"
+    job.write_bytes(
+        _test_job(2, _NUM_COPIES.format(n=2) + "\n" + runs).replace(b"0.1 setgray", b"BRTestRuns 10 div setgray")
+    )
+    assert _render(cups_filter, job, collate_copies=True) == "1 2 M 1 2"
 
 
 @pytest.mark.parametrize("setup", ["", "<</NumCopies null>> setpagedevice", "<</NumCopies 1>> setpagedevice"])

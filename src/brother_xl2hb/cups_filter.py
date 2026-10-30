@@ -42,7 +42,9 @@ GS_EXIT_GRACE = 2.0
 # that ends on a front side a blank back, so the next one starts on a new
 # sheet, as in the copies pstops collates itself. The filter decides that
 # after BRSkipBlank has dropped blank pages, so the blank back survives it
-# and the copy's page count is the one that is printed.
+# and the copy's page count is the one that is printed. Each run is wrapped
+# in save and restore, so state a job leaves behind (userdict entries, for
+# one) cannot change the next copy.
 DUPLEX_COPIES_PROLOGUE = (
     "/BRNumCopies 1 def "
     "/setpagedevice { dup /NumCopies known { "
@@ -52,7 +54,10 @@ DUPLEX_COPIES_PROLOGUE = (
     "/BRCopyEnd { currentpagedevice /PageSize get << /PageSize [8 8] >> setpagedevice showpage "
     "<< /PageSize 3 -1 roll >> setpagedevice } bind def"
 )
-DUPLEX_COPIES_RUN = "<{job}> run BRNumCopies 1 sub {{ BRCopyEnd <{job}> run }} repeat"
+DUPLEX_COPIES_RUN = (
+    "/BRJob save def <{job}> run BRNumCopies BRJob restore "
+    "1 sub {{ BRCopyEnd /BRJob save def <{job}> run BRJob restore }} repeat"
+)
 # A Ghostscript page at most this many pixels wide and high is a copy mark
 # (BRCopyEnd's 8x8 pt page is 67x67 at 600 dpi); no printable page is that small.
 COPY_MARK_MAX_PIXELS = 100
