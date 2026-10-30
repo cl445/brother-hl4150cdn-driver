@@ -96,6 +96,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Grayscale (BRMonoColor=Mono) ignores the Red, Green and Blue keys and
   keeps Brightness and Contrast with BRColorMatching=None, as the
   original does.
+- `Copies` and `Collate` from an rc file (CLI `--rc`) give the original's
+  bytes: uncollated, each page is sent `Copies` times in a row with
+  PageCopies = Copies, duplex sides counting sends; with `Collate=ON`
+  each page goes once with PageCopies 1. Repeated sends reuse the
+  rendered bytes. CUPS jobs carry one copy and are unchanged.
 
 ## [1.2.0] — 2026-10-28
 
