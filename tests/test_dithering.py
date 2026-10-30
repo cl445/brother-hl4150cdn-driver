@@ -657,11 +657,12 @@ class TestBayerFallbackWarning:
         from brother_xl2hb.color.dither import load_dither_tables
 
         lut_dir = HL4150CDN.lut_dir
-        if not (lut_dir / "0600-k_cache09.bin").exists():
+        present = ("0600-k_cache09.bin", "0600-m_cache09.bin")
+        if not all((lut_dir / name).exists() for name in present):
             pytest.skip("BRCD blobs not extracted")
         model_dir = tmp_path / HL4150CDN.key
         model_dir.mkdir()
-        for name in ("0600-k_cache09.bin", "0600-m_cache09.bin"):
+        for name in present:
             (model_dir / name).symlink_to(lut_dir / name)
         with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
             load_dither_tables(str(model_dir), cache=HL4150CDN.dither_cache)
