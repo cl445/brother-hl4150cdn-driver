@@ -8,7 +8,7 @@ filters (colour grid, PJL, which pages go bottom-up).
 
 import copy
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -176,7 +176,7 @@ class PrinterModel:
             A copy of `settings`, or `settings` itself if the model supports all of it.
         """
         defaults = PrintSettings()
-        supported = {
+        supported: dict[str, Collection[object]] = {
             "page_size": self.paper_sizes,
             "media_type": self.media_types,
             "input_slot": self.media_source,
@@ -226,22 +226,26 @@ class PrinterModel:
         """BeginPage MediaSize for `page_size`: enum value or name string.
 
         Returns:
-            The `media_size` entry; A4 (2) with a warning for unknown sizes.
+            The `media_size` entry; for an unknown size, with a warning, the
+            entry of the default page size (as `restrict` falls back to it).
         """
         size = self.media_size.get(page_size)
         if size is None:
-            logger.warning("Unknown media size %r, defaulting to A4", page_size)
-            return 2
+            default = PrintSettings().page_size
+            logger.warning("Unknown media size %r, defaulting to %s", page_size, default)
+            return self.media_size[default]
         return size
 
     def media_type_code(self, media_type: str) -> bytes:
         """BeginPage MediaType string for `media_type`.
 
         Returns:
-            The `media_types` entry; dRegular with a warning for unknown types.
+            The `media_types` entry; for an unknown type, with a warning, the
+            entry of the default media type (as `restrict` falls back to it).
         """
         type_str = self.media_types.get(media_type)
         if type_str is None:
-            logger.warning("Unknown media type %r, defaulting to Regular", media_type)
-            return b"dRegular"
+            default = PrintSettings().media_type
+            logger.warning("Unknown media type %r, defaulting to %s", media_type, default)
+            return self.media_types[default]
         return type_str

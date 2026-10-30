@@ -5,7 +5,7 @@
 # The driver needs the printer's calibration tables (colour LUTs and dither
 # tables) to drive the hardware. Those tables ship inside the official
 # Brother LPR driver and are not redistributed here — this script downloads the
-# `.deb`, verifies its MD5, and copies the tables into
+# `.deb`, verifies its SHA-256, and copies the tables into
 # src/brother_xl2hb/lut/<model>/ and src/brother_xl2hb/color_data/<model>/.
 # Both directories are gitignored. The unpacked package stays in
 # .brother-blobs/<model>/extracted/ for the comparison tools.
@@ -34,7 +34,7 @@ case "$MODEL" in
 hl4150cdn)
     DEB_URL="https://download.brother.com/welcome/dlf005940/hl4150cdnlpr-1.1.1-5.i386.deb"
     DEB_FILE="$WORK_DIR/hl4150cdnlpr-1.1.1-5.i386.deb"
-    DEB_MD5="dd803993d4a29a432d63141201821b82"
+    DEB_SHA256="31897d727277311f5f84a15bfd6fcb983b4e658790aeefa4284d1803dd9d0cc4"
 
     FILTER_BIN_PATH="usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
     LUT_PATH_IN_DEB="usr/local/Brother/Printer/hl4150cdn/inf/lut"
@@ -98,25 +98,25 @@ else
     curl -sSL --fail -o "$DEB_FILE" "$DEB_URL"
 fi
 
-# --- 2. Verify MD5 ----------------------------------------------------------
+# --- 2. Verify SHA-256 ------------------------------------------------------
 
-actual_md5=""
-if command -v md5sum >/dev/null 2>&1; then
-    actual_md5=$(md5sum "$DEB_FILE" | awk '{print $1}')
-elif command -v md5 >/dev/null 2>&1; then
-    actual_md5=$(md5 -q "$DEB_FILE")
+actual_sha256=""
+if command -v sha256sum >/dev/null 2>&1; then
+    actual_sha256=$(sha256sum "$DEB_FILE" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+    actual_sha256=$(shasum -a 256 "$DEB_FILE" | awk '{print $1}')
 else
-    echo "ERROR: neither md5sum nor md5 found" >&2
+    echo "ERROR: neither sha256sum nor shasum found" >&2
     exit 1
 fi
-if [[ "$actual_md5" != "$DEB_MD5" ]]; then
-    echo "ERROR: MD5 mismatch on $DEB_FILE" >&2
-    echo "  expected $DEB_MD5"     >&2
-    echo "  got      $actual_md5"  >&2
+if [[ "$actual_sha256" != "$DEB_SHA256" ]]; then
+    echo "ERROR: SHA-256 mismatch on $DEB_FILE" >&2
+    echo "  expected $DEB_SHA256"     >&2
+    echo "  got      $actual_sha256"  >&2
     echo "Refusing to extract — the offsets in this script were computed against the official $(basename "$DEB_FILE")." >&2
     exit 1
 fi
-echo "[2/4] MD5 OK ($DEB_MD5)"
+echo "[2/4] SHA-256 OK ($DEB_SHA256)"
 
 # --- 3. Unpack the deb and copy the BRCD dither tables ---------------------
 

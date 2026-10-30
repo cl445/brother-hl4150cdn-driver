@@ -3,6 +3,10 @@
 Supports both positive saturation (boost) and negative (desaturation),
 with min/mid/max channel sorting, hue-preserving mid-channel
 interpolation, and gray/black/white pixel skipping.
+
+The numpy functions here are the reference implementation.
+`adjust_saturation` uses the native kernel in `_color_fast` when it is
+built and falls back to :func:`adjust_saturation_py` otherwise.
 """
 
 import functools
@@ -11,8 +15,16 @@ from collections.abc import Buffer
 import numpy as np
 import numpy.typing as npt
 
+from brother_xl2hb import _native
+
+_color_fast = _native.load("_color_fast")
+
 # Divisor that scales the [-20, +20] saturation knob into per-channel deltas.
 _SCALE_FACTOR = 50.0
+
+# Pixels per numpy pass: caps the int32/float64 temporaries at a few MB
+# instead of ~75 MB for a 128-row A4 band.
+_CHUNK_PIXELS = 1 << 16
 
 
 def adjust_saturation(rgb_row: Buffer, width: int, sat_mode: int) -> bytes:
@@ -36,8 +48,21 @@ def adjust_saturation(rgb_row: Buffer, width: int, sat_mode: int) -> bytes:
         raise ValueError(msg)
     if sat_mode == 0:
         return bytes(rgb_row)
+    if _color_fast is not None:
+        return _color_fast.adjust_saturation(np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3), width, sat_mode)
+    return adjust_saturation_py(rgb_row, width, sat_mode)
+
+
+def adjust_saturation_py(rgb_row: Buffer, width: int, sat_mode: int) -> bytes:
+    """Pure-numpy :func:`adjust_saturation`, the reference for the native kernel.
+
+    Returns:
+        Adjusted RGB bytes (width * 3 bytes).
+    """
     rgb = np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3).reshape(width, 3).copy()
-    _adjust_saturation_inplace(rgb, sat_mode)
+    if sat_mode != 0:
+        for start in range(0, width, _CHUNK_PIXELS):
+            _adjust_saturation_inplace(rgb[start : start + _CHUNK_PIXELS], sat_mode)
     return rgb.tobytes()
 
 

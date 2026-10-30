@@ -10,7 +10,14 @@ is shared with _band_fast through _rle_fast.pxd.
 from cpython.bytes cimport PyBytes_FromStringAndSize
 
 
-def group_bits(bytes data, int group_size):
+cdef int _check_group_size(int group_size) except -1:
+    # Same contract as rle.check_group_size.
+    if group_size < 1 or group_size > 32:
+        raise ValueError(f"group size {group_size} outside 1..32")
+    return 0
+
+
+def group_bits(const unsigned char[::1] data, int group_size):
     """Group raw bytes into MSB-first values of `group_size` bits each.
 
     Last group is zero-padded if the bit count isn't a multiple of
@@ -18,8 +25,12 @@ def group_bits(bytes data, int group_size):
 
     Returns:
         list[int] of length ceil(len(data)*8 / group_size).
+
+    Raises:
+        ValueError: If `group_size` is outside 1..32.
     """
-    cdef Py_ssize_t n = len(data)
+    _check_group_size(group_size)
+    cdef Py_ssize_t n = data.shape[0]
     cdef Py_ssize_t total_bits = n * 8
     if total_bits == 0:
         return []
@@ -27,7 +38,7 @@ def group_bits(bytes data, int group_size):
     cdef Py_ssize_t n_full = total_bits // group_size
     cdef Py_ssize_t remaining = total_bits - n_full * group_size
     cdef Py_ssize_t total = n_full + (1 if remaining > 0 else 0)
-    cdef const unsigned char *p = data
+    cdef const unsigned char *p = &data[0]
     cdef unsigned long long buf = 0
     cdef int buf_bits = 0
     cdef Py_ssize_t i, byte_i = 0
@@ -65,7 +76,11 @@ def pack_groups(list groups, int group_size):
 
     Returns:
         bytes of length ceil(len(groups) * group_size / 8).
+
+    Raises:
+        ValueError: If `group_size` is outside 1..32.
     """
+    _check_group_size(group_size)
     cdef Py_ssize_t n = len(groups)
     if n == 0:
         return b""
@@ -220,12 +235,11 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
     """Port of rle.sw_rle_encode; state names follow the Python version.
 
     `bits` selects the settings of rle.CONFIG_10BIT / CONFIG_12BIT /
-    CONFIG_20BIT (context size, literal overflow, skip_counts_current);
-    keep the two in sync. `wbuf` is scratch space for at least n + 2 words.
+    CONFIG_20BIT (context size, literal overflow); keep the two in sync.
+    `wbuf` is scratch space for at least n + 2 words.
     """
     cdef int ctx_size = 5 if bits == 10 else 3
     cdef Py_ssize_t lit_overflow = 0x7FF if bits == 20 else 0xFFF
-    cdef bint skip_counts_current = bits == 10
     cdef unsigned int ctx[5]
     cdef Py_ssize_t wi = 0, match_count = 0, run_len = 0, lit_n, k
     cdef Py_ssize_t wlen = 0
@@ -266,8 +280,6 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                 state = 1
                 continue
             if match_count == 2:
-                if not skip_counts_current:
-                    _emit_run(o, cur, 1, bits)
                 state = 3
                 continue
             wbuf[1] = w
@@ -322,10 +334,6 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                         _emit_run(o, wbuf[0], 1, bits)
                     else:
                         _emit_literal(o, wbuf, lit_n, bits)
-                    state = 3
-                    continue
-                if not skip_counts_current:
-                    _emit_run(o, wbuf[0], 1, bits)
                 state = 3
                 continue
 
@@ -338,8 +346,6 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                 wbuf[0] = w
                 wlen = 1
                 run_len = 2
-                if match_count > 2:
-                    match_count = 2
                 state = 1
                 continue
 
@@ -355,8 +361,6 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                 wbuf[1] = w
                 wlen = 2
                 run_len = 2
-                if match_count > 2:
-                    match_count = 2
                 continue
 
             wbuf[wlen] = w
@@ -390,8 +394,6 @@ cdef void _sw_rle(const unsigned int *words, Py_ssize_t n, int bits, OutBuf *o, 
                 _emit_run(o, wbuf[0], 1, bits)
             else:
                 _emit_literal(o, wbuf, lit_n, bits)
-        elif not skip_counts_current:
-            _emit_run(o, wbuf[0], 1, bits)
         if match_count > 0:
             _emit_context_skip(o, match_count)
         return
@@ -459,16 +461,15 @@ cdef Py_ssize_t encode_scratch_words(Py_ssize_t n_bytes, int bits) noexcept nogi
     return 2 * ((n_bytes * 8 + bits - 1) // bits) + 2
 
 
-def encode_sw_rle(bytes data, int bits):
+def encode_sw_rle(const unsigned char[::1] data, int bits):
     """Encode one plane scanline with the sliding-window RLE, incl. raw fallback.
 
-    See `encode_line`.
+    See `encode_line`. `data` is any contiguous byte buffer.
 
     Returns:
         Compressed bytes; empty if every word is zero.
     """
-    cdef Py_ssize_t n_bytes = len(data)
-    cdef const unsigned char *p = data
+    cdef Py_ssize_t n_bytes = data.shape[0]
     cdef unsigned int *scratch
     cdef OutBuf o
     cdef Py_ssize_t n
@@ -485,7 +486,7 @@ def encode_sw_rle(bytes data, int bits):
     o.cap = 0
     o.failed = False
     try:
-        n = encode_line(p, n_bytes, bits, scratch, &o)
+        n = encode_line(&data[0], n_bytes, bits, scratch, &o)
         if n < 0:
             raise MemoryError()
         return PyBytes_FromStringAndSize(<char *>o.data, o.len)

@@ -9,6 +9,8 @@ of them is missing or disagrees with the model's tables.
 import logging
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -77,3 +79,55 @@ def test_cups_filter_shim_runs_the_model(model):
 def test_scripts_know_the_model(model, script):
     """Each script has a `case` block for the model."""
     assert re.search(rf"^\s*{model.key}\)", (_ROOT / script).read_text(), re.MULTILINE)
+
+
+@_MODELS
+def test_install_script_knows_whether_grids_are_generated(model):
+    """install.sh's warning about missing colour grids follows the model's `generated_grids`."""
+    block = re.search(rf"^\s*{model.key}\)(.*?);;", (_ROOT / "cups/install.sh").read_text(), re.MULTILINE | re.DOTALL)
+    assert block
+    setting = re.search(r"^\s*GENERATED_GRIDS=(\w+)", block[1], re.MULTILINE)
+    assert setting
+    assert setting[1] == str(model.generated_grids).lower()
+
+
+def _fake_package(parent: Path, origin: str) -> None:
+    """A stand-in `brother_xl2hb` in `parent` whose `cups_filter.main` prints `origin`."""
+    pkg = parent / "brother_xl2hb"
+    (pkg / "models").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "cups_filter.py").write_text(f"def main(model):\n    print({origin!r})\n")
+    (pkg / "models" / "__init__.py").write_text(f"MODELS = dict.fromkeys({list(MODELS)!r})\n")
+
+
+def _run_shim(shim: Path) -> str:
+    """Run the shim without PYTHONPATH; return what the fake `main` printed."""
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, "-S", str(shim)], capture_output=True, text=True, env=env, cwd=shim.parent, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+@_MODELS
+def test_installed_shim_uses_the_package_next_to_it(model, tmp_path):
+    """install.sh's layout: a `src/` beside the lib dir must not shadow the installed package."""
+    shim = _ROOT / "cups" / f"br{model.key}-filter"
+    lib_dir = tmp_path / "lib" / f"br{model.key}"
+    lib_dir.mkdir(parents=True)
+    installed = lib_dir / f"br{model.key}-filter.py"
+    installed.write_text(shim.read_text())
+    _fake_package(lib_dir, "installed")
+    _fake_package(tmp_path / "lib" / "src", "stray src")
+    assert _run_shim(installed) == "installed"
+
+
+@_MODELS
+def test_repository_shim_uses_src(model, tmp_path):
+    shim = _ROOT / "cups" / f"br{model.key}-filter"
+    (tmp_path / "cups").mkdir()
+    copy = tmp_path / "cups" / shim.name
+    copy.write_text(shim.read_text())
+    _fake_package(tmp_path / "src", "repository")
+    assert _run_shim(copy) == "repository"

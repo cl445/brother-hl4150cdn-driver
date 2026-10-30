@@ -11,6 +11,7 @@ from typing import NamedTuple
 import numpy as np
 import numpy.typing as npt
 
+from brother_xl2hb import _native
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.color.dither import (
     DitherChannel,
@@ -18,20 +19,8 @@ from brother_xl2hb.color.dither import (
 from brother_xl2hb.render.lines import ColourSetup, LineCodes, adjust_rgb, fine_overrun_rows
 from brother_xl2hb.render.rows import RowBlocks, page_rows, white_rows
 
-try:
-    from brother_xl2hb._native._band_fast import render_band  # type: ignore[import-not-found]
-
-    HAS_BAND_KERNEL = True
-except ImportError:
-    HAS_BAND_KERNEL = False
-
-
-try:
-    from brother_xl2hb._native._fine_fast import render_band_fine  # type: ignore[import-not-found]
-
-    HAS_FINE_BAND_KERNEL = True
-except ImportError:
-    HAS_FINE_BAND_KERNEL = False
+_band_fast = _native.load("_band_fast")
+_fine_fast = _native.load("_fine_fast")
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +60,9 @@ def band_kernel_colour(
         The kernel's colour arguments, or None for the per-line path.
     """
     if is_fine:
-        if not HAS_FINE_BAND_KERNEL or any(channel.nibble_levels is None for channel in channels.values()):
+        if _fine_fast is None or any(channel.nibble_levels is None for channel in channels.values()):
             return None
-    elif not HAS_BAND_KERNEL or any(channel.threshold_matrix is None for channel in channels.values()):
+    elif _band_fast is None or any(channel.threshold_matrix is None for channel in channels.values()):
         return None
     inverse = color_lut.inverse_lut(table)
     if inverse is not None:
@@ -146,7 +135,14 @@ def encode_lines_banded(
 
     Yields:
         Encoded planes of each input row, top to bottom.
+
+    Raises:
+        RuntimeError: If the kernel for `is_fine` is not loaded.
     """
+    native = _fine_fast if is_fine else _band_fast
+    if native is None:
+        msg = "encode_lines_banded needs the native kernel; check band_kernel_colour first"
+        raise RuntimeError(msg)
     # Prepare the dither tables up front; the render threads only read them.
     if is_fine:
         tables = tuple(np.ascontiguousarray(channels[c].nibble_levels) for c in "KCMY")
@@ -162,9 +158,9 @@ def encode_lines_banded(
         lengths = np.empty((n, 4), dtype=np.int32)
         if is_fine:
             overrun = fine_overrun_rows(band, width)
-            data = render_band_fine(rgb, skip, overrun, width, first_line, sw, *kernel_colour, *tables, lengths)
+            data = native.render_band_fine(rgb, skip, overrun, width, first_line, sw, *kernel_colour, *tables, lengths)
         else:
-            data = render_band(rgb, skip, width, first_line, sw, *kernel_colour, *tables, lengths)
+            data = native.render_band(rgb, skip, width, first_line, sw, *kernel_colour, *tables, lengths)
         codes: list[LineCodes] = []
         pos = 0
         for k_len, c_len, m_len, y_len in lengths.tolist():

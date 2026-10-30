@@ -27,7 +27,9 @@ on the options.
 ## Requirements
 
 - Linux with CUPS and Ghostscript (`install.sh` does not support macOS)
-- Python 3.13+ and [`uv`](https://docs.astral.sh/uv/)
+- Python 3.13 or newer as the system `python3`, with `venv` (Debian:
+  `python3-venv`). Debian 13 and Raspberry Pi OS based on it ship 3.13;
+  Debian 12 (bookworm) ships 3.11, which is too old.
 - Recommended: a C compiler and the Python headers (Debian:
   `sudo apt install build-essential python3-dev`). `install.sh` then
   builds the native modules; without them the driver is several times
@@ -44,7 +46,6 @@ on the options.
 git clone https://github.com/cl445/brother-hl4150cdn-driver.git
 cd brother-hl4150cdn-driver
 
-uv sync --all-extras
 ./scripts/extract_blobs.sh
 sudo cups/install.sh                                            # filter + PPD
 sudo cups/install.sh --add-printer socket://<printer-ip>:9100   # network, optional
@@ -66,6 +67,12 @@ sudo lpadmin -p Brother_HL-4150CDN -E \
 ```
 
 `sudo cups/uninstall.sh --remove-printer` cleans up.
+
+`install.sh` is the only supported way to install the driver. It sets up
+its own virtual environment under `/usr/local/lib/br<model>/` and needs
+neither `uv` nor a Python package: the wheel that `uv build` makes holds
+only the Python code, without Brother's tables, the PPD and the CUPS
+filter.
 
 All three scripts take the printer model: `extract_blobs.sh <model>`,
 `install.sh --model <model>`, `uninstall.sh --model <model>`. It defaults
@@ -108,7 +115,8 @@ All options appear in the standard print dialog. Pass them as
 | `BRSaturation` | -20 … 20 | |
 | `BRRed`, `BRGreen`, `BRBlue` | -20 … 20 | Per-channel colour adjustment |
 
-Copies come from the standard `-n` / `copies` option.
+Copies come from the standard `-n` / `copies` option. In duplex they are
+always collated, so each copy starts on a new sheet.
 
 ## CLI without CUPS
 
@@ -126,6 +134,9 @@ cat page.ppm | uv run brother-xl2hb > /dev/usb/lp0
 ```
 
 ## Development
+
+Development needs [`uv`](https://docs.astral.sh/uv/). CI tests on
+Python 3.13 and 3.14.
 
 ```bash
 uv sync --all-extras
@@ -173,8 +184,12 @@ The Cython modules are optional in development too; build them in place
 with:
 
 ```bash
-uv run --with cython,setuptools python setup_cython.py build_ext --inplace
+uv run --with cython==3.3.0,setuptools==84.2.1 python setup_cython.py build_ext --inplace
 ```
+
+pytest refuses to start while a built extension is older than its
+`.pyx`. `BRXL2HB_PURE_PYTHON=1` makes the driver ignore the built
+extensions and use the pure-Python fallbacks.
 
 The test fixtures in `tests/fixtures/` are zstd-compressed XL2HB
 captures from the manufacturer's filter — pytest decompresses them on
@@ -211,13 +226,15 @@ uv run python scripts/trace_dither.py solid:128,128,128 --lines 4
 Normal). It prints `IDENTICAL` or the first differing byte; for a
 single-page Fine job it also decodes the original's scanlines and reports,
 per plane, whether the dithered data or the encoder differs. The
-original's output is cached in `build/fine-diff-cache/`, so reruns only
+original's output is cached in `.cache/fine-diff/`, so reruns only
 cost the Python side. `--save DIR` keeps both streams, `--dump DIR` the
 per-line comparison. Run any script with `--help` for the test patterns
 and options.
 
 `trace_dither.py` builds a Docker image with qemu-user and gdb on first
-use, as Docker Desktop's i386 emulation does not support ptrace.
+use, as Docker Desktop's i386 emulation does not support ptrace. Its
+traces are cached in `.cache/trace-dither/`. `build/` belongs to
+setuptools alone and can be deleted at any time.
 
 ## License
 

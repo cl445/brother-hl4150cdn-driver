@@ -78,6 +78,12 @@ def test_truncated_page_raises_in_consumer():
         collect_rows(blocks, _TARGET_W, _TARGET_H)
 
 
+def test_collect_rows_rejects_blocks_short_of_the_page():
+    blocks = iter([np.zeros((3, 8 * 3), np.uint8), np.zeros((2, 8 * 3), np.uint8)])
+    with pytest.raises(ValueError, match="page has 5 rows, expected 8"):
+        collect_rows(blocks, 8, 8)
+
+
 def test_empty_stream_yields_nothing():
     assert list(iter_ppm_pages(io.BytesIO(b""), _WINDOW)) == []
 
