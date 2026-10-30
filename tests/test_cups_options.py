@@ -290,7 +290,7 @@ class TestPpdDefaults:
 class TestIppColorMode:
     """IPP print-color-mode from generic and AirPrint clients, like sides for duplex."""
 
-    @pytest.mark.parametrize("mode", ["monochrome", "bi-level", "process-monochrome"])
+    @pytest.mark.parametrize("mode", ["monochrome", "bi-level", "process-monochrome", "process-bi-level"])
     def test_monochrome_prints_mono(self, mode):
         s = PrintSettings.from_cups_options(f"print-color-mode={mode}", ppd_defaults={"BRMonoColor": "Auto"})
         assert s.mono_color == MonoColor.MONO
