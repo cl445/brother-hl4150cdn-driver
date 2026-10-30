@@ -385,8 +385,13 @@ class CancelOnSigterm:
             raise JobCanceledError
 
     def flush(self) -> None:
-        """Flush the wrapped output."""
-        self._output.flush()
+        """Flush the wrapped output; a SIGTERM meanwhile takes effect afterwards.
+
+        Raises:
+            JobCanceledError: If SIGTERM arrived while flushing.
+        """
+        with self.uninterrupted():
+            self._output.flush()
 
 
 def print_job(

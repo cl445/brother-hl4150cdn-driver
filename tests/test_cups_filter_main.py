@@ -588,6 +588,19 @@ def test_sigterm_while_closing_the_session_lets_the_close_finish():
     assert output == whole.getvalue()
 
 
+def test_sigterm_while_flushing_lets_the_flush_finish():
+    flushed = []
+
+    class SigtermOnFlush(io.BytesIO):
+        def flush(self):
+            signal.raise_signal(signal.SIGTERM)
+            flushed.append(True)
+
+    with cups_filter.CancelOnSigterm(SigtermOnFlush()) as job_output, pytest.raises(cups_filter.JobCanceledError):
+        job_output.flush()
+    assert flushed == [True]
+
+
 def test_gs_that_does_not_exit_after_its_output_is_killed(fake_gs, tmp_path, monkeypatch, caplog):
     from brother_xl2hb import cups_filter
 
