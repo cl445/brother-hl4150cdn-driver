@@ -13,11 +13,14 @@ import dataclasses
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable, Iterator
+import threading
+from collections.abc import Callable, Generator, Iterable, Iterator
 from pathlib import Path
+from types import FrameType
 from typing import BinaryIO, cast
 
 import numpy as np
@@ -33,6 +36,8 @@ from brother_xl2hb.settings import DuplexMode, PrintSettings, read_ppd_defaults
 # Seconds to wait for Ghostscript to exit on its own after the job failed
 # (it has usually closed its output already) before it is killed.
 GS_EXIT_GRACE = 2.0
+# Seconds Ghostscript gets to exit after it has closed its output.
+GS_EXIT_TIMEOUT = 30.0
 
 # Uncollated copies reach Ghostscript as NumCopies (pstops and pdftops put
 # it into the PostScript), and Ghostscript emits each page that many times
@@ -130,13 +135,14 @@ def build_gs_command(
 
 def iter_printable_pages(
     stream: BinaryIO, page_size: str, model: PrinterModel, *, copy_marks: bool = False
-) -> Iterator[Page | None]:
+) -> Generator[Page | None]:
     """Yield (width, height, row_blocks) per GS page, cut to the printable area.
 
     Pages are read on a background thread in blocks of scanlines (see
     page_stream), so Ghostscript keeps rasterising while a page renders
     and no page-sized buffer is allocated. With `copy_marks`, Ghostscript's
-    copy mark pages (see DUPLEX_COPIES_PROLOGUE) come out as None.
+    copy mark pages (see DUPLEX_COPIES_PROLOGUE) come out as None. Closing
+    this iterator stops that thread.
 
     Yields:
         Printable width and height, and the page's row blocks; None for a copy mark.
@@ -144,14 +150,15 @@ def iter_printable_pages(
     target_w, target_h = model.paper_sizes[page_size]
     window = (*model.page_origin, target_w, target_h)
     page_num = 0
-    for src_w, src_h, blocks in iter_ppm_pages(stream, window):
-        if copy_marks and src_w <= COPY_MARK_MAX_PIXELS and src_h <= COPY_MARK_MAX_PIXELS:
-            logger.info("end of copy")
-            yield None
-            continue
-        page_num += 1
-        logger.info("page %d: %dx%d pixels from GS, printable %dx%d", page_num, src_w, src_h, target_w, target_h)
-        yield target_w, target_h, blocks
+    with iter_ppm_pages(stream, window) as ppm_pages:
+        for src_w, src_h, blocks in ppm_pages:
+            if copy_marks and src_w <= COPY_MARK_MAX_PIXELS and src_h <= COPY_MARK_MAX_PIXELS:
+                logger.info("end of copy")
+                yield None
+                continue
+            page_num += 1
+            logger.info("page %d: %dx%d pixels from GS, printable %dx%d", page_num, src_w, src_h, target_w, target_h)
+            yield target_w, target_h, blocks
 
 
 def sheets_per_copy(pages: Iterable[Page | None], *, skip_blank: bool) -> Iterator[Page]:
@@ -214,7 +221,13 @@ class PageCounter:
 
 
 def send_pages(
-    gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO, model: PrinterModel, *, copy_marks: bool = False
+    gs_stdout: BinaryIO,
+    settings: PrintSettings,
+    output: BinaryIO,
+    model: PrinterModel,
+    *,
+    copy_marks: bool = False,
+    uninterrupted: Callable[[], contextlib.AbstractContextManager[None]] = contextlib.nullcontext,
 ) -> int:
     """Render Ghostscript's PPM stream into one XL2HB job on `output`.
 
@@ -222,32 +235,33 @@ def send_pages(
     filter, so only the current page is held in RAM. Nothing is written
     when Ghostscript produces no page. If the stream breaks off, the
     exception propagates with the job's complete pages already written and
-    the session closed (see filter_pages).
+    the session closed (see filter_pages, which also takes `uninterrupted`).
 
     Returns:
         Number of pages read from Ghostscript.
     """
-    counter = PageCounter(iter_printable_pages(gs_stdout, settings.page_size, model, copy_marks=copy_marks))
+    printable = iter_printable_pages(gs_stdout, settings.page_size, model, copy_marks=copy_marks)
+    counter = PageCounter(printable)
     pages: Iterable[Page]
     if copy_marks:
         pages = sheets_per_copy(counter, skip_blank=settings.skip_blank)
         # Blank pages are dropped already; the blank backs must stay.
         settings = dataclasses.replace(settings, skip_blank=False)
     else:
+        # filter_pages drops blank pages itself.
         pages = (page for page in counter if page is not None)
-        if settings.skip_blank:
-            pages = drop_blank_pages(pages)
     pages = iter(pages)
     try:
         first = next(pages, None)
         if first is not None:
             pages = chain_peeked(first, pages)
             del first
-            filter_pages(pages, settings, output, model)
+            filter_pages(pages, settings, output, model, uninterrupted=uninterrupted)
     except Exception as exc:
         exc.add_note(f"while reading page {counter.count} from Ghostscript")
         raise
     finally:
+        printable.close()
         with contextlib.suppress(OSError):
             output.flush()
     return counter.count
@@ -275,13 +289,125 @@ def log_gs_stderr(stderr_file: BinaryIO, level: int) -> None:
             logger.log(level, "GS: %s", line.rstrip())
 
 
+class JobCanceledError(Exception):
+    """CUPS canceled the job: the filter got SIGTERM."""
+
+
+class CancelOnSigterm:
+    """Raise JobCanceledError on SIGTERM, but never in the middle of a write.
+
+    CUPS stops a canceled job by sending its filters SIGTERM, which would
+    end Python on the spot: Ghostscript kept running, and the session were
+    left open. As a context manager this turns the signal into JobCanceledError
+    and stands in for the job's `output`: a SIGTERM during a write takes
+    effect once the write is complete, so a page already being sent still
+    gets out whole. Pages are rendered into memory before they are written
+    (see job.filter_pages), so the printer then sees the session closed
+    after the last complete page. Opening and closing the session are not
+    interrupted either (see `uninterrupted`). Only the first SIGTERM
+    cancels; the shutdown itself is not interrupted again.
+
+    The handler is installed only on the main thread, where Python runs
+    signal handlers.
+    """
+
+    def __init__(self, output: BinaryIO) -> None:
+        """Wrap `output`, the stream the job is written to."""
+        self._output = output
+        self._writing = False
+        self._shielded = False
+        self._pending = False
+        self._canceled = False
+        self._previous: signal.Handlers | Callable[[int, FrameType | None], object] | int | None = None
+        self._installed = False
+
+    def __enter__(self) -> BinaryIO:
+        """Install the SIGTERM handler.
+
+        Returns:
+            This object, to be written to in place of `output`.
+        """
+        if threading.current_thread() is threading.main_thread():
+            self._previous = signal.signal(signal.SIGTERM, self._on_sigterm)
+            self._installed = True
+        return cast("BinaryIO", self)
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Restore the previous SIGTERM handler."""
+        if self._installed:
+            signal.signal(signal.SIGTERM, self._previous)
+            self._installed = False
+
+    def _on_sigterm(self, _signum: int, _frame: FrameType | None) -> None:
+        if self._canceled:
+            return
+        self._canceled = True
+        if self._writing or self._shielded:
+            self._pending = True
+        else:
+            raise JobCanceledError
+
+    def write(self, data: bytes | bytearray | memoryview) -> int:
+        """Write `data` to the wrapped output.
+
+        Returns:
+            The number of bytes written.
+
+        Raises:
+            JobCanceledError: If SIGTERM arrived while writing.
+        """
+        self._writing = True
+        try:
+            written = self._output.write(data)
+        finally:
+            self._writing = False
+        if not self._shielded:
+            self._raise_pending()
+        return written
+
+    @contextlib.contextmanager
+    def uninterrupted(self) -> Iterator[None]:
+        """Hold a cancellation back until the block is done.
+
+        Inside another such block, it waits for the outer one.
+
+        Raises:
+            JobCanceledError: After the block, if SIGTERM arrived during it,
+                in place of any exception the block raised.
+        """
+        outer = self._shielded
+        self._shielded = True
+        try:
+            yield
+        finally:
+            self._shielded = outer
+            if not outer:
+                # Also when the block failed: the cancellation wins.
+                self._raise_pending()
+
+    def _raise_pending(self) -> None:
+        if self._pending:
+            self._pending = False
+            raise JobCanceledError
+
+    def flush(self) -> None:
+        """Flush the wrapped output; a SIGTERM meanwhile takes effect afterwards.
+
+        Raises:
+            JobCanceledError: If SIGTERM arrived while flushing.
+        """
+        with self.uninterrupted():
+            self._output.flush()
+
+
 def print_job(
     input_path: str, settings: PrintSettings, output: BinaryIO, model: PrinterModel = DEFAULT_MODEL, copies: int = 1
 ) -> int:
     """Run Ghostscript on `input_path` and send its pages to `output`.
 
     `copies` is the job's copy count from CUPS; in duplex, copies are
-    collated (see DUPLEX_COPIES_PROLOGUE).
+    collated (see DUPLEX_COPIES_PROLOGUE). A job canceled with SIGTERM ends
+    after its last complete page (see CancelOnSigterm) with status 0.
 
     Returns:
         The filter's exit status: 0 on success, 1 on any failure.
@@ -304,30 +430,47 @@ def print_job(
         gs_proc = subprocess.Popen(gs_cmd, stdout=subprocess.PIPE, stderr=gs_stderr)  # noqa: S603
         gs_stdout = cast("BinaryIO", gs_proc.stdout)  # a pipe: stdout=PIPE
         try:
-            try:
-                page_count = send_pages(gs_stdout, settings, output, model, copy_marks=collate_copies)
-            except Exception as exc:
-                status = stop_gs(gs_proc, GS_EXIT_GRACE)
-                if status:
-                    # Ghostscript died and its output broke off.
-                    logger.error("Ghostscript failed with exit status %d: %s", status, exc)
-                    for note in getattr(exc, "__notes__", ()):
-                        logger.error("%s", note)
-                    log_gs_stderr(gs_stderr, logging.ERROR)
-                else:
-                    logger.exception("job aborted")
-                    log_gs_stderr(gs_stderr, logging.INFO)
-                return 1
+            canceler = CancelOnSigterm(output)
+            with canceler as job_output:
+                try:
+                    page_count = send_pages(
+                        gs_stdout,
+                        settings,
+                        job_output,
+                        model,
+                        copy_marks=collate_copies,
+                        uninterrupted=canceler.uninterrupted,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, JobCanceledError):
+                        raise
+                    status = stop_gs(gs_proc, GS_EXIT_GRACE)
+                    if status:
+                        # Ghostscript died and its output broke off.
+                        logger.error("Ghostscript failed with exit status %d: %s", status, exc)
+                        for note in getattr(exc, "__notes__", ()):
+                            logger.error("%s", note)
+                        log_gs_stderr(gs_stderr, logging.ERROR)
+                    else:
+                        logger.exception("job aborted")
+                        log_gs_stderr(gs_stderr, logging.INFO)
+                    return 1
 
-            status = gs_proc.wait()
-            log_gs_stderr(gs_stderr, logging.ERROR if status else logging.INFO)
-            if status:
-                logger.error("Ghostscript exited with status %d", status)
+                status = stop_gs(gs_proc, GS_EXIT_TIMEOUT)
+                log_gs_stderr(gs_stderr, logging.ERROR if status != 0 else logging.INFO)
+                if status is None:
+                    logger.error("Ghostscript did not exit after its output ended, killed it")
+                elif status:
+                    logger.error("Ghostscript exited with status %d", status)
+                elif page_count == 0:
+                    logger.error("No pages produced by Ghostscript")
+                else:
+                    logger.info("total pages: %d", page_count)
+                    return 0
                 return 1
-            if page_count == 0:
-                logger.error("No pages produced by Ghostscript")
-                return 1
-            logger.info("total pages: %d", page_count)
+        except JobCanceledError:
+            # Ghostscript is killed below; whatever it still had is not wanted.
+            logger.info("job canceled")
             return 0
         finally:
             # Reap Ghostscript on every path, including interrupts.

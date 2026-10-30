@@ -153,6 +153,7 @@ class PrintSettings:
     input_slot: InputSlot = InputSlot.AUTO
     resolution: Resolution = Resolution.NORMAL
     copies: int = 1
+    collate: bool = False
     duplex: DuplexMode = DuplexMode.NONE
     mono_color: MonoColor = MonoColor.AUTO
     color_matching: ColorMatching = ColorMatching.NORMAL
@@ -222,6 +223,7 @@ class PrintSettings:
             settings.copies = valid_copies(_atoi(s["Copies"]))
 
         bool_map: dict[str, str] = {
+            "Collate": "collate",
             "BRGray": "improve_gray",
             "BREnhanceBlkPrt": "enhance_black",
             "TonerSaveMode": "toner_save",

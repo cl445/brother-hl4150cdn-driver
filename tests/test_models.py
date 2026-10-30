@@ -123,9 +123,9 @@ def test_image_height_without_imaging_area_is_the_paper_height_in_whole_points()
         (DuplexMode.TUMBLE, False, 1, False),
     ],
 )
-def test_hl4150cdn_sends_each_page_once(duplex, reverse, index, flipped):
-    settings = PrintSettings(duplex=duplex, reverse=reverse, copies=2)
-    assert HL4150CDN.page_sends(settings, index) == (PageSend(flip=flipped, copies=2),)
+def test_hl4150cdn_sends_a_single_copy_once(duplex, reverse, index, flipped):
+    settings = PrintSettings(duplex=duplex, reverse=reverse)
+    assert HL4150CDN.page_sends(settings, index) == (PageSend(flip=flipped, copies=1),)
 
 
 def test_a_page_sent_twice_is_rendered_twice_from_streamed_rows():

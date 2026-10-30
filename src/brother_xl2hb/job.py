@@ -9,11 +9,11 @@ single-page entry point. Both drive the HL-4150CDN unless given another
 import contextlib
 import io
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import BinaryIO
 
 from brother_xl2hb.models import DEFAULT_MODEL
-from brother_xl2hb.models.base import PrinterModel
+from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
 from brother_xl2hb.render.page import JobContext, render_page
 from brother_xl2hb.render.rows import Page, PageBuffer, PageData, collect_rows, is_blank_page
@@ -69,9 +69,6 @@ def filter_page(
     model: PrinterModel = DEFAULT_MODEL,
 ) -> None:
     """Convert PPM pixel data to XL2HB and write to output."""
-    if settings.skip_blank and is_blank_page(pixel_data):
-        return
-
     filter_pages([(width, height, pixel_data)], settings, output, model)
 
     _, paper_h = model.paper_sizes[settings.page_size]
@@ -81,11 +78,13 @@ def filter_page(
 def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> None:
     """Render pages in input order, each as the model's `page_sends` say.
 
-    A page sent more than once is collected into one buffer first, since
-    streamed row blocks can be read only once. Each send is rendered into memory (its compressed XL2HB, typically
-    well under 10 MB) and written to `output` only once it is complete, so
-    a failure while reading or rendering a page never leaves a half page
-    in the printer data stream.
+    A page sent in more than one way is collected into one buffer first,
+    since streamed row blocks can be read only once. Each distinct send is
+    rendered once into memory (its compressed XL2HB, typically well under
+    10 MB) and repeated sends write those bytes again, so many copies cost
+    no rendering time. A send reaches `output` only once it is complete,
+    so a failure while reading or rendering a page never leaves a half
+    page in the printer data stream.
     """
     page_buf = io.BytesIO()
     # A counter instead of enumerate(): enumerate keeps the last (index,
@@ -94,16 +93,18 @@ def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> N
     index = 0
     for width, height, pixel_data in pages:
         sends = job.model.page_sends(job.settings, index)
-        data: PageData = collect_rows(pixel_data, width, height) if len(sends) > 1 else pixel_data
+        data: PageData = collect_rows(pixel_data, width, height) if len(set(sends)) > 1 else pixel_data
+        rendered: dict[PageSend, bytes] = {}
         for send in sends:
-            page_buf.seek(0)
-            page_buf.truncate()
-            render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
-            with page_buf.getbuffer() as page:
-                output.write(page)
+            if send not in rendered:
+                page_buf.seek(0)
+                page_buf.truncate()
+                render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
+                rendered[send] = page_buf.getvalue()
+            output.write(rendered[send])
         # Release the page's raster before the next page is read; with
         # whole-page buffers (skip blank, flipped pages) two would add up.
-        del pixel_data, data
+        del pixel_data, data, rendered
         index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
 
 
@@ -112,48 +113,67 @@ def filter_pages(
     settings: PrintSettings,
     output: BinaryIO,
     model: PrinterModel = DEFAULT_MODEL,
+    *,
+    uninterrupted: Callable[[], contextlib.AbstractContextManager[None]] = contextlib.nullcontext,
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
     Pages are consumed lazily in input order. How each is sent (duplex
     sides, bottom-up for long-edge back sides and `settings.reverse`,
     copies) is the model's `page_sends`. `settings.skip_blank` drops
-    pure-white pages before that.
+    pure-white pages before that; if that leaves no page, nothing is
+    written at all.
 
     If reading or rendering a page fails, the exception propagates after
     the session has been closed and the PJL footer written. `output` then
     holds only the complete pages rendered before the failure.
+
+    Opening and closing the session run inside `uninterrupted()`; an
+    exception it raises when the block ends (a canceled job, see
+    cups_filter.CancelOnSigterm) finds the session either not begun or
+    complete, or closes it like a failed page.
 
     Args:
         pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings of the job
         output: writable binary stream
         model: the printer to drive
+        uninterrupted: context manager factory that keeps the session's
+            opening and closing writes together
     """
     settings = model.restrict(settings)
     if settings.skip_blank:
-        # Idempotent: callers that drop blanks first to detect an empty job
-        # hand over whole-page buffers, which are only viewed again here.
         pages = drop_blank_pages(pages)
-    output.write(model.pjl_header(settings))
-
+        first = next(pages, None)
+        if first is None:
+            logger.info("all pages blank, nothing to print")
+            return
+        pages = chain_peeked(first, pages)
+        del first
     # XL2HB stream — one session wrapping all pages.
     w = XL2HBWriter(output)
-    w.write_stream_header()
-    w.write_begin_session()
-    w.write_open_data_source()
-
+    opened = closing = False
     try:
+        with uninterrupted():
+            output.write(model.pjl_header(settings))
+            w.write_stream_header()
+            w.write_begin_session()
+            w.write_open_data_source()
+            opened = True
         _render_pages(pages, JobContext.create(settings, model), output)
+        with uninterrupted():
+            closing = True
+            _end_session(w, output, model)
     except Exception:
         # Only whole pages have reached `output` (see _render_pages), so
         # the session can still be closed: the printer prints the pages it
         # got and ends the job instead of waiting for the rest of a page.
-        # If `output` itself failed there is nothing more to do.
-        with contextlib.suppress(OSError):
-            _end_session(w, output, model)
+        # A close that already began is not written twice, and if `output`
+        # itself failed there is nothing more to do.
+        if opened and not closing:
+            with contextlib.suppress(OSError), uninterrupted():
+                _end_session(w, output, model)
         raise
-    _end_session(w, output, model)
 
 
 def _end_session(w: XL2HBWriter, output: BinaryIO, model: PrinterModel) -> None:
