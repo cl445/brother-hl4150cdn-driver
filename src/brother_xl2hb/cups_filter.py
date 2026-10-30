@@ -221,7 +221,13 @@ class PageCounter:
 
 
 def send_pages(
-    gs_stdout: BinaryIO, settings: PrintSettings, output: BinaryIO, model: PrinterModel, *, copy_marks: bool = False
+    gs_stdout: BinaryIO,
+    settings: PrintSettings,
+    output: BinaryIO,
+    model: PrinterModel,
+    *,
+    copy_marks: bool = False,
+    uninterrupted: Callable[[], contextlib.AbstractContextManager[None]] = contextlib.nullcontext,
 ) -> int:
     """Render Ghostscript's PPM stream into one XL2HB job on `output`.
 
@@ -229,7 +235,7 @@ def send_pages(
     filter, so only the current page is held in RAM. Nothing is written
     when Ghostscript produces no page. If the stream breaks off, the
     exception propagates with the job's complete pages already written and
-    the session closed (see filter_pages).
+    the session closed (see filter_pages, which also takes `uninterrupted`).
 
     Returns:
         Number of pages read from Ghostscript.
@@ -250,7 +256,7 @@ def send_pages(
         if first is not None:
             pages = chain_peeked(first, pages)
             del first
-            filter_pages(pages, settings, output, model)
+            filter_pages(pages, settings, output, model, uninterrupted=uninterrupted)
     except Exception as exc:
         exc.add_note(f"while reading page {counter.count} from Ghostscript")
         raise
@@ -297,8 +303,9 @@ class CancelOnSigterm:
     effect once the write is complete, so a page already being sent still
     gets out whole. Pages are rendered into memory before they are written
     (see job.filter_pages), so the printer then sees the session closed
-    after the last complete page. Only the first SIGTERM cancels; the
-    shutdown itself is not interrupted again.
+    after the last complete page. Opening and closing the session are not
+    interrupted either (see `uninterrupted`). Only the first SIGTERM
+    cancels; the shutdown itself is not interrupted again.
 
     The handler is installed only on the main thread, where Python runs
     signal handlers.
@@ -308,6 +315,7 @@ class CancelOnSigterm:
         """Wrap `output`, the stream the job is written to."""
         self._output = output
         self._writing = False
+        self._shielded = False
         self._pending = False
         self._canceled = False
         self._previous: signal.Handlers | Callable[[int, FrameType | None], object] | int | None = None
@@ -334,7 +342,7 @@ class CancelOnSigterm:
         if self._canceled:
             return
         self._canceled = True
-        if self._writing:
+        if self._writing or self._shielded:
             self._pending = True
         else:
             raise JobCanceledError
@@ -353,10 +361,28 @@ class CancelOnSigterm:
             written = self._output.write(data)
         finally:
             self._writing = False
+        if not self._shielded:
+            self._raise_pending()
+        return written
+
+    @contextlib.contextmanager
+    def uninterrupted(self) -> Iterator[None]:
+        """Hold a cancellation back until the block is done.
+
+        Raises:
+            JobCanceledError: After the block, if SIGTERM arrived during it.
+        """
+        self._shielded = True
+        try:
+            yield
+        finally:
+            self._shielded = False
+        self._raise_pending()
+
+    def _raise_pending(self) -> None:
         if self._pending:
             self._pending = False
             raise JobCanceledError
-        return written
 
     def flush(self) -> None:
         """Flush the wrapped output."""
@@ -393,9 +419,17 @@ def print_job(
         gs_proc = subprocess.Popen(gs_cmd, stdout=subprocess.PIPE, stderr=gs_stderr)  # noqa: S603
         gs_stdout = cast("BinaryIO", gs_proc.stdout)  # a pipe: stdout=PIPE
         try:
-            with CancelOnSigterm(output) as job_output:
+            canceler = CancelOnSigterm(output)
+            with canceler as job_output:
                 try:
-                    page_count = send_pages(gs_stdout, settings, job_output, model, copy_marks=collate_copies)
+                    page_count = send_pages(
+                        gs_stdout,
+                        settings,
+                        job_output,
+                        model,
+                        copy_marks=collate_copies,
+                        uninterrupted=canceler.uninterrupted,
+                    )
                 except Exception as exc:
                     if isinstance(exc, JobCanceledError):
                         raise

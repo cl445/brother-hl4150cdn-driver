@@ -28,7 +28,7 @@ from brother_xl2hb import cups_filter
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.protocol.pjl import generate_pjl_footer
-from brother_xl2hb.protocol.xl2hb import OP_END_SESSION
+from brother_xl2hb.protocol.xl2hb import OP_CLOSE_DATA_SOURCE, OP_END_SESSION
 from brother_xl2hb.settings import PageSize, PrintSettings
 
 _FILTER = Path(__file__).resolve().parent.parent / "cups" / "brhl4150cdn-filter"
@@ -541,9 +541,51 @@ def test_sigterm_ends_the_job_after_the_last_complete_page(fake_gs, tmp_path):
     assert "Traceback" not in stderr
     assert _gone(int(pid_path.read_text()))
 
+    # Whole pages, as many as the filter got to before the signal, then the session end.
     output = out_path.read_bytes()
-    assert output.endswith(bytes([OP_END_SESSION]) + generate_pjl_footer())
-    assert output in [_run(fake_gs, pages=n).stdout for n in (1, 2, 3)]
+    one, two = _run(fake_gs, pages=1).stdout, _run(fake_gs, pages=2).stdout
+    pages, rest = divmod(len(output) - len(one), len(two) - len(one))
+    assert rest == 0
+    assert pages >= 0
+    assert output == _run(fake_gs, pages=pages + 1).stdout
+
+
+class _SigtermOnWrite(io.BytesIO):
+    """Output that sends this process SIGTERM right after the write `trigger` picks."""
+
+    def __init__(self, trigger):
+        super().__init__()
+        self._trigger = trigger
+
+    def write(self, data):
+        written = super().write(data)
+        if self._trigger(bytes(data)):
+            signal.raise_signal(signal.SIGTERM)
+        return written
+
+
+def _canceled_session(trigger):
+    settings = PrintSettings()
+    pages = [(64, 64, bytes(64 * 64 * 3))]
+    out = _SigtermOnWrite(trigger)
+    canceler = cups_filter.CancelOnSigterm(out)
+    with canceler as job_output, pytest.raises(cups_filter.JobCanceledError):
+        filter_pages(pages, settings, job_output, HL4150CDN, uninterrupted=canceler.uninterrupted)
+    return out.getvalue(), settings, pages
+
+
+def test_sigterm_while_opening_the_session_still_closes_it():
+    output, settings, _ = _canceled_session(lambda data: data == HL4150CDN.pjl_header(PrintSettings()))
+    empty = io.BytesIO()
+    filter_pages([], settings, empty, HL4150CDN)
+    assert output == empty.getvalue()
+
+
+def test_sigterm_while_closing_the_session_lets_the_close_finish():
+    output, settings, pages = _canceled_session(lambda data: data.startswith(bytes([OP_CLOSE_DATA_SOURCE])))
+    whole = io.BytesIO()
+    filter_pages(pages, settings, whole, HL4150CDN)
+    assert output == whole.getvalue()
 
 
 def test_gs_that_does_not_exit_after_its_output_is_killed(fake_gs, tmp_path, monkeypatch, caplog):

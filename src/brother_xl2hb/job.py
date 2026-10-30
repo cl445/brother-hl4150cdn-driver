@@ -9,7 +9,7 @@ single-page entry point. Both drive the HL-4150CDN unless given another
 import contextlib
 import io
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import BinaryIO
 
 from brother_xl2hb.models import DEFAULT_MODEL
@@ -109,6 +109,8 @@ def filter_pages(
     settings: PrintSettings,
     output: BinaryIO,
     model: PrinterModel = DEFAULT_MODEL,
+    *,
+    uninterrupted: Callable[[], contextlib.AbstractContextManager[None]] = contextlib.nullcontext,
 ) -> None:
     """Render a job's pages inside a single XL2HB session.
 
@@ -122,11 +124,18 @@ def filter_pages(
     the session has been closed and the PJL footer written. `output` then
     holds only the complete pages rendered before the failure.
 
+    Opening and closing the session run inside `uninterrupted()`; an
+    exception it raises when the block ends (a canceled job, see
+    cups_filter.CancelOnSigterm) finds the session either not begun or
+    complete, or closes it like a failed page.
+
     Args:
         pages: iterable of (width, height, pixel_data) tuples
         settings: PrintSettings of the job
         output: writable binary stream
         model: the printer to drive
+        uninterrupted: context manager factory that keeps the session's
+            opening and closing writes together
     """
     settings = model.restrict(settings)
     if settings.skip_blank:
@@ -137,25 +146,30 @@ def filter_pages(
             return
         pages = chain_peeked(first, pages)
         del first
-    output.write(model.pjl_header(settings))
-
     # XL2HB stream — one session wrapping all pages.
     w = XL2HBWriter(output)
-    w.write_stream_header()
-    w.write_begin_session()
-    w.write_open_data_source()
-
+    opened = closing = False
     try:
+        with uninterrupted():
+            output.write(model.pjl_header(settings))
+            w.write_stream_header()
+            w.write_begin_session()
+            w.write_open_data_source()
+            opened = True
         _render_pages(pages, JobContext.create(settings, model), output)
+        with uninterrupted():
+            closing = True
+            _end_session(w, output, model)
     except Exception:
         # Only whole pages have reached `output` (see _render_pages), so
         # the session can still be closed: the printer prints the pages it
         # got and ends the job instead of waiting for the rest of a page.
-        # If `output` itself failed there is nothing more to do.
-        with contextlib.suppress(OSError):
-            _end_session(w, output, model)
+        # A close that already began is not written twice, and if `output`
+        # itself failed there is nothing more to do.
+        if opened and not closing:
+            with contextlib.suppress(OSError), uninterrupted():
+                _end_session(w, output, model)
         raise
-    _end_session(w, output, model)
 
 
 def _end_session(w: XL2HBWriter, output: BinaryIO, model: PrinterModel) -> None:

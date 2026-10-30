@@ -218,10 +218,10 @@ class PageStream:
         """
         if self._ended:
             raise StopIteration
-        if self._page is not None:
-            self._page.drain()
-            self._page = None
         try:
+            if self._page is not None:
+                self._page.drain()
+                self._page = None
             item = _get(self._q)
         except BaseException:
             self.close()

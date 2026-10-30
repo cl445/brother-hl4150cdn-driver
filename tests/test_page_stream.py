@@ -116,3 +116,15 @@ def test_reader_failure_after_close_does_not_block():
     pages.close()
     reader.join(timeout=10)
     assert not reader.is_alive()
+
+
+def test_failure_while_draining_a_page_ends_the_stream():
+    """A reader failure met while skipping the rest of a page closes the stream."""
+    width, height = 200, 300
+    stream = io.BytesIO(_ppm(_random_page(width, height, 0), width, height)[:-10])
+    with iter_ppm_pages(stream, (0, 0, width, height), block_rows=10, queue_blocks=1) as pages:
+        next(pages)
+        with pytest.raises(ValueError, match="incomplete"):
+            next(pages)
+        with pytest.raises(StopIteration):
+            next(pages)
