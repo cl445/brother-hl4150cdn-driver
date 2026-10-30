@@ -73,6 +73,20 @@ def color_data_root(tmp_path_factory):
     return root
 
 
+@pytest.fixture(scope="session")
+def installed_inverse_luts(color_data_root):
+    """`color_data_root` with all the HL-4150CDN's inverse LUTs, as install.sh writes them.
+
+    Building them takes about 20 s, so the session does it once for every
+    test that needs the real LUTs.
+    """
+    from brother_xl2hb.color.color_lut import write_inverse_luts
+    from brother_xl2hb.models import HL4150CDN
+
+    write_inverse_luts(HL4150CDN.inverse_lut_tables, color_data_root / HL4150CDN.key)
+    return color_data_root
+
+
 @pytest.fixture
 def use_color_data_root(monkeypatch):
     """Point every model's colour data at `root` for this test: `use_color_data_root(root)`.
