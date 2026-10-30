@@ -41,6 +41,9 @@ include = ["brother_xl2hb", "brother_xl2hb.*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+# An unclosed file or pipe fails its test. Pytest reports a ResourceWarning
+# raised in a finalizer as PytestUnraisableExceptionWarning.
+filterwarnings = ["error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning"]
 
 [tool.ruff]
 target-version = "py313"

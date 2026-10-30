@@ -115,7 +115,8 @@ All options appear in the standard print dialog. Pass them as
 | `BRSaturation` | -20 … 20 | |
 | `BRRed`, `BRGreen`, `BRBlue` | -20 … 20 | Per-channel colour adjustment |
 
-Copies come from the standard `-n` / `copies` option.
+Copies come from the standard `-n` / `copies` option. In duplex they are
+always collated, so each copy starts on a new sheet.
 
 ## CLI without CUPS
 
@@ -185,6 +186,10 @@ with:
 ```bash
 uv run --with cython==3.3.0,setuptools==84.2.1 python setup_cython.py build_ext --inplace
 ```
+
+pytest refuses to start while a built extension is older than its
+`.pyx`. `BRXL2HB_PURE_PYTHON=1` makes the driver ignore the built
+extensions and use the pure-Python fallbacks.
 
 The test fixtures in `tests/fixtures/` are zstd-compressed XL2HB
 captures from the manufacturer's filter — pytest decompresses them on
