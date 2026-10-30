@@ -5,13 +5,17 @@ import logging
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
+from brother_xl2hb import _native
 from brother_xl2hb.color.color_lut import write_inverse_luts
 from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.models import MODELS
 from brother_xl2hb.render.ppm import read_ppm
 from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
+
+if TYPE_CHECKING:
+    from brother_xl2hb.render.rows import Page
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +107,11 @@ def main(argv: list[str] | None = None) -> None:
         stream=sys.stderr,
     )
 
+    _native.log_status()
     settings = model.restrict(settings)
     logger.debug("Settings: %s", settings)
 
-    pages = iter_ppm_stream(sys.stdin.buffer)
+    pages: Iterator[Page] = iter_ppm_stream(sys.stdin.buffer)
     first = next(pages, None)
     if first is None:
         logger.error("No PPM data on stdin")

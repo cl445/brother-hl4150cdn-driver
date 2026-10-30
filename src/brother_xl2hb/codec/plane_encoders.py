@@ -9,6 +9,7 @@ All three return an empty bytestring when the input scanline is all-zero
 output would exceed the input length by more than 0x14 bytes.
 """
 
+from brother_xl2hb import _native
 from brother_xl2hb.codec.rle import (
     CONFIG_10BIT,
     CONFIG_12BIT,
@@ -20,12 +21,7 @@ from brother_xl2hb.codec.rle import (
     sw_rle_encode,
 )
 
-try:
-    from brother_xl2hb._native._rle_fast import encode_sw_rle  # type: ignore[import-not-found]
-
-    _HAS_CYTHON_SW_RLE = True
-except ImportError:
-    _HAS_CYTHON_SW_RLE = False
+_rle_fast = _native.load("_rle_fast")
 
 
 def _encode_via_sw_rle(
@@ -63,8 +59,8 @@ def encode_plane_12bit(data: BytesLike) -> bytes:
     Returns:
         Compressed data bytes, empty if the line is all-zero.
     """
-    if _HAS_CYTHON_SW_RLE:
-        return encode_sw_rle(data, 12)
+    if _rle_fast is not None:
+        return _rle_fast.encode_sw_rle(data, 12)
     return _encode_via_sw_rle(group_bits(data, 12), data, CONFIG_12BIT, 12)
 
 
@@ -77,8 +73,8 @@ def encode_plane_20bit(data: BytesLike) -> bytes:
     Returns:
         Compressed bytes, empty if the line is all-zero.
     """
-    if _HAS_CYTHON_SW_RLE:
-        return encode_sw_rle(data, 20)
+    if _rle_fast is not None:
+        return _rle_fast.encode_sw_rle(data, 20)
     return _encode_via_sw_rle(group_bits(data, 20), data, CONFIG_20BIT, 20)
 
 
@@ -91,6 +87,6 @@ def encode_plane_10bit(data: BytesLike) -> bytes:
     Returns:
         Compressed bytes, empty if the line is all-zero.
     """
-    if _HAS_CYTHON_SW_RLE:
-        return encode_sw_rle(data, 10)
+    if _rle_fast is not None:
+        return _rle_fast.encode_sw_rle(data, 10)
     return _encode_via_sw_rle(group_bits(data, 10), data, CONFIG_10BIT, 10)

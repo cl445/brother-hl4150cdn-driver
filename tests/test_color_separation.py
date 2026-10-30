@@ -9,9 +9,12 @@ tests/test_full_pipeline.py.
 import pytest
 
 from brother_xl2hb.color.color_lut import rgb_to_cmyk_lut
-from brother_xl2hb.color.dither import dither_channel_1bpp
+from brother_xl2hb.color.dither import dither_channel_1bpp, load_dither_tables
 from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.settings import ColorMatching, MediaType, PrintSettings
+
+# The generated Bayer K channel, the tables used without BRCD files.
+BAYER_K = load_dither_tables(cache=HL4150CDN.dither_cache)["K"]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,10 +41,10 @@ class TestOrderedDithering:
         With the 3D LUT, gray ink is spread across CMYK channels."""
         k_int, c_int, m_int, y_int = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760, HL4150CDN.grid())
         # Dither all channels and count total dots
-        k = dither_channel_1bpp(k_int, y=0, width=4760)
-        c = dither_channel_1bpp(c_int, y=0, width=4760)
-        m = dither_channel_1bpp(m_int, y=0, width=4760)
-        y_d = dither_channel_1bpp(y_int, y=0, width=4760)
+        k = dither_channel_1bpp(k_int, y=0, width=4760, channel=BAYER_K)
+        c = dither_channel_1bpp(c_int, y=0, width=4760, channel=BAYER_K)
+        m = dither_channel_1bpp(m_int, y=0, width=4760, channel=BAYER_K)
+        y_d = dither_channel_1bpp(y_int, y=0, width=4760, channel=BAYER_K)
         # At least some channel should have meaningful coverage
         total_bits = sum(b.bit_count() for b in (k + c + m + y_d)[: 595 * 4])
         assert total_bits > 500, f"50% gray should produce dots across CMYK, got {total_bits}"
@@ -50,8 +53,8 @@ class TestOrderedDithering:
         """25% gray should have fewer dots than 50% gray."""
         k_25_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(191, 191, 191), 4760, HL4150CDN.grid())
         k_50_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760, HL4150CDN.grid())
-        k_25 = dither_channel_1bpp(k_25_int, y=0, width=4760)
-        k_50 = dither_channel_1bpp(k_50_int, y=0, width=4760)
+        k_25 = dither_channel_1bpp(k_25_int, y=0, width=4760, channel=BAYER_K)
+        k_50 = dither_channel_1bpp(k_50_int, y=0, width=4760, channel=BAYER_K)
         bits_25 = sum(b.bit_count() for b in k_25[:595])
         bits_50 = sum(b.bit_count() for b in k_50[:595])
         assert bits_25 < bits_50
@@ -60,8 +63,8 @@ class TestOrderedDithering:
         """Different scanlines should produce different dot patterns
         (the dither matrix is position-dependent)."""
         k_int, _, _, _ = rgb_to_cmyk_lut(_make_rgb_row(128, 128, 128), 4760, HL4150CDN.grid())
-        k_y0 = dither_channel_1bpp(k_int, y=0, width=4760)
-        k_y1 = dither_channel_1bpp(k_int, y=1, width=4760)
+        k_y0 = dither_channel_1bpp(k_int, y=0, width=4760, channel=BAYER_K)
+        k_y1 = dither_channel_1bpp(k_int, y=1, width=4760, channel=BAYER_K)
         assert k_y0 != k_y1, "Dither should vary by y position"
 
     def test_brcd_table_loading(self):

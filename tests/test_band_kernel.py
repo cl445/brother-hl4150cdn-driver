@@ -5,17 +5,19 @@ import io
 import numpy as np
 import pytest
 
+from brother_xl2hb import _native
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render import bands
-from brother_xl2hb.render.bands import HAS_BAND_KERNEL, band_kernel_colour, render_threads
+from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded, render_threads
+from brother_xl2hb.render.lines import ColourSetup, encode_lines
 from brother_xl2hb.render.page import init_channels
 from brother_xl2hb.settings import ColorMatching, DuplexMode, MediaType, PrintSettings
 from fixture_utils import read_fixture
 from test_full_pipeline import _SETTING_VARIANTS, _duplex_test_pages, _run_settings_variant
 
-if not HAS_BAND_KERNEL:
+if bands._band_fast is None:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
 
 _A4_W, _A4_H = 4760, 6812
@@ -40,19 +42,10 @@ def no_inverse_lut(monkeypatch) -> None:
     monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: None)
 
 
-@pytest.fixture(scope="module")
-def installed_luts(color_data_root):
-    """All inverse LUTs (Normal and Vivid, with and without improve gray), as install.sh writes them."""
-    directory = color_data_root / HL4150CDN.key
-    if not list(directory.glob("inverse_lut_*.npy")):
-        color_lut.write_inverse_luts(HL4150CDN.inverse_lut_tables, directory)
-    return color_data_root
-
-
 @pytest.fixture
-def real_lut(use_color_data_root, installed_luts):
+def real_lut(use_color_data_root, installed_inverse_luts):
     """The real inverse LUTs, as installed by install.sh."""
-    use_color_data_root(installed_luts)
+    use_color_data_root(installed_inverse_luts)
 
 
 def _page(width: int, height: int, seed: int) -> bytes:
@@ -69,7 +62,7 @@ def _page(width: int, height: int, seed: int) -> bytes:
 
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
-    monkeypatch.setattr(bands, "HAS_BAND_KERNEL", kernel)
+    monkeypatch.setattr(bands, "_band_fast", _native.load("_band_fast") if kernel else None)
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
@@ -149,12 +142,30 @@ def test_kernel_reports_short_pages(monkeypatch):
         filter_pages([(_A4_W, 500, iter([rows]))], PrintSettings(), io.BytesIO())
 
 
+@pytest.mark.parametrize("threads", [0, 1])
+def test_banded_lines_run_to_the_end_of_the_page(threads, monkeypatch):
+    """Drained to the last row: on the calling thread, and with bands queued ahead of one render thread."""
+    height = 5 * bands._BAND_ROWS + 3
+    rows = np.frombuffer(_page(_A4_W, height, seed=5), np.uint8).reshape(height, -1)
+    settings = PrintSettings()
+    channels = init_channels(settings, HL4150CDN)
+    colour = ColourSetup(settings, HL4150CDN.color_table(settings), None)
+    kernel_colour = band_kernel_colour(colour.table, channels, is_fine=False)
+    assert kernel_colour is not None
+    sw, _ = HL4150CDN.image_dimensions("A4")
+    expected = list(encode_lines((rows,), _A4_W, sw, colour, channels, is_fine=False))
+
+    monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
+    banded = encode_lines_banded((rows,), _A4_W, sw, colour, channels, kernel_colour, is_fine=False)
+    assert [tuple(map(bytes, line)) for line in banded] == expected
+
+
 def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
     from brother_xl2hb.settings import Resolution
 
     fine_channels = init_channels(PrintSettings(resolution=Resolution.FINE), HL4150CDN)
     # Without the Fine kernel (_fine_fast, see test_cython_fine.py) Fine renders per line.
-    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", False)
+    monkeypatch.setattr(bands, "_fine_fast", None)
     assert band_kernel_colour(HL4150CDN.grid(), fine_channels, is_fine=True) is None
     # Fine channels hold per-level nibbles, not the threshold matrix the Normal kernel needs.
     assert band_kernel_colour(HL4150CDN.grid(), fine_channels, is_fine=False) is None

@@ -13,12 +13,9 @@ uses the native `_fine_fast` codec when it is built and falls back to
 :func:`encode_fine_plane_py` otherwise.
 """
 
-try:
-    from brother_xl2hb._native._fine_fast import encode_fine_plane as _encode_fine_plane_native  # type: ignore[import-not-found]
+from brother_xl2hb import _native
 
-    HAS_CYTHON_FINE = True
-except ImportError:
-    HAS_CYTHON_FINE = False
+_fine_fast = _native.load("_fine_fast")
 
 
 def compress_rle_preencode(data: bytes) -> bytes:
@@ -603,8 +600,8 @@ def encode_fine_plane(data: bytes) -> bytes:
     Returns:
         Compressed bytes, or empty bytes if the scanline is all-zero.
     """
-    if HAS_CYTHON_FINE:
-        return _encode_fine_plane_native(data)
+    if _fine_fast is not None:
+        return _fine_fast.encode_fine_plane(data)
     return encode_fine_plane_py(data)
 
 
