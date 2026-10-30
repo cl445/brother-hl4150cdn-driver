@@ -170,13 +170,17 @@ class TestRCFileFallbacks:
             ("Contrast=100", "contrast", 100),
             ("RedKey=-100", "red", -100),
             ("Saturation=99999999999", "saturation", 1_000_000),
+            ("Saturation=" + "9" * 5000, "saturation", 1_000_000),
+            ("Brightness=-" + "9" * 5000, "brightness", -1_000_000),
+            ("Brightness=" + "0" * 5000 + "42", "brightness", 42),
         ],
     )
     def test_numbers_read_like_atoi(self, tmp_path, line, attr, expected):
         assert getattr(self._read(tmp_path, line), attr) == expected
 
     @pytest.mark.parametrize(
-        ("value", "expected"), [("3", 3), ("0", 1), ("-1", 1), ("abc", 1), ("2x", 2), ("100000", 9999)]
+        ("value", "expected"),
+        [("3", 3), ("0", 1), ("-1", 1), ("abc", 1), ("2x", 2), ("100000", 9999), ("9" * 5000, 9999)],
     )
     def test_copies_limited(self, tmp_path, value, expected):
         assert self._read(tmp_path, f"Copies={value}").copies == expected

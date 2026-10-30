@@ -462,17 +462,26 @@ _RC_INT_LIMIT = 1_000_000
 """Largest rc colour adjustment kept; far past where the colour transforms saturate."""
 
 # ASCII only: C atoi skips C-locale whitespace and reads 0-9, no other digits.
-_ATOI = re.compile(r"\s*([+-]?\d+)", re.ASCII)
+_ATOI = re.compile(r"\s*([+-]?)0*(\d+)", re.ASCII)
+# Digits read at most; longer numbers saturate there, as strtol saturates.
+# Far past every limit applied to the result, and well under the length
+# int() refuses to convert.
+_ATOI_MAX_DIGITS = 18
 
 
 def _atoi(text: str) -> int:
     """`text` read as C's `atoi` reads it: the leading integer, else 0.
 
     Returns:
-        The integer.
+        The integer, saturated at 18 digits.
     """
     match = _ATOI.match(text)
-    return int(match.group(1)) if match else 0
+    if not match:
+        return 0
+    sign, digits = match.groups()
+    if len(digits) > _ATOI_MAX_DIGITS:
+        digits = "9" * _ATOI_MAX_DIGITS
+    return int(sign + digits)
 
 
 _SIDES_TO_DUPLEX = {
