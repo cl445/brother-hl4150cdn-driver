@@ -60,6 +60,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scripts/fine_diff.py` and `scripts/trace_dither.py` cache in `.cache/`
   instead of `build/`, which is left to setuptools.
 - CI also runs the tests on Python 3.14.
+- The Normal-mode plane encoders are named by word width:
+  `encode_plane_12bit` (K, Y; was `encode_plane(data, plane)`),
+  `encode_plane_20bit` (C; was `encode_c_plane`) and `encode_plane_10bit`
+  (M; was `encode_m_plane_10`).
 
 ### Fixed
 - The CUPS filter imports the package installed beside it first; a

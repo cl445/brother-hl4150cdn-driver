@@ -19,7 +19,7 @@ from brother_decode import (
     decode_rle_10bit,
 )
 from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane
-from brother_xl2hb.codec.plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
+from brother_xl2hb.codec.plane_encoders import encode_plane_10bit, encode_plane_12bit, encode_plane_20bit
 from brother_xl2hb.codec.rle import (
     CONFIG_10BIT,
     CONFIG_12BIT,
@@ -95,11 +95,11 @@ class TestKPlaneEncoding:
     )
     def test_k_plane(self, name, data, expected_hex):
         expected = bytes.fromhex(expected_hex)
-        result = encode_plane(data, "K")
+        result = encode_plane_12bit(data)
         assert result == expected
 
     def test_all_zero_returns_empty(self):
-        assert encode_plane(bytes(BPL), "K") == b""
+        assert encode_plane_12bit(bytes(BPL)) == b""
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class TestYPlaneEncoding:
     @pytest.mark.parametrize(("name", "data", "expected_hex"), [pytest.param(n, d, e, id=n) for n, d, e in _Y_VECTORS])
     def test_y_plane(self, name, data, expected_hex):
         expected = bytes.fromhex(expected_hex)
-        result = encode_plane(data, "Y")
+        result = encode_plane_12bit(data)
         assert result == expected
 
 
@@ -149,11 +149,11 @@ class TestCPlaneEncoding:
     @pytest.mark.parametrize(("name", "data", "expected_hex"), [pytest.param(n, d, e, id=n) for n, d, e in _C_VECTORS])
     def test_c_plane(self, name, data, expected_hex):
         expected = bytes.fromhex(expected_hex)
-        result = encode_c_plane(data)
+        result = encode_plane_20bit(data)
         assert result == expected
 
     def test_all_zero_returns_empty(self):
-        assert encode_c_plane(bytes(BPL)) == b""
+        assert encode_plane_20bit(bytes(BPL)) == b""
 
 
 # ---------------------------------------------------------------------------
@@ -180,11 +180,11 @@ class TestMPlane10Encoding:
     )
     def test_m10(self, name, data, expected_hex):
         expected = bytes.fromhex(expected_hex)
-        result = encode_m_plane_10(data)
+        result = encode_plane_10bit(data)
         assert result == expected
 
     def test_all_zero_returns_empty(self):
-        assert encode_m_plane_10(bytes(BPL)) == b""
+        assert encode_plane_10bit(bytes(BPL)) == b""
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +283,7 @@ class TestCPlaneDecoding:
         """Decode C-plane and verify re-encoding matches original."""
         compressed = bytes.fromhex(compressed_hex)
         decoded = decode_c_plane(compressed)
-        re_encoded = encode_c_plane(decoded)
+        re_encoded = encode_plane_20bit(decoded)
         assert re_encoded == compressed
 
 
@@ -312,7 +312,7 @@ class TestRoundtrip:
         [pytest.param(n, d, e, id=n) for n, d, e in _K_VECTORS],
     )
     def test_k_roundtrip(self, name, data, compressed_hex):
-        encoded = encode_plane(data, "K")
+        encoded = encode_plane_12bit(data)
         decoded = decode_plane(encoded, "K")
         assert decoded == data
 
@@ -321,7 +321,7 @@ class TestRoundtrip:
         [pytest.param(n, d, e, id=n) for n, d, e in _Y_VECTORS],
     )
     def test_y_roundtrip(self, name, data, compressed_hex):
-        encoded = encode_plane(data, "Y")
+        encoded = encode_plane_12bit(data)
         decoded = decode_plane(encoded, "Y")
         assert decoded == data
 
@@ -330,7 +330,7 @@ class TestRoundtrip:
         [pytest.param(n, d, e, id=n) for n, d, e in _M10_VECTORS],
     )
     def test_m10_roundtrip(self, name, data, compressed_hex):
-        encoded = encode_m_plane_10(data)
+        encoded = encode_plane_10bit(data)
         decoded = decode_m_plane(b"", encoded)
         assert decoded == data
 
@@ -340,22 +340,10 @@ class TestRoundtrip:
     )
     def test_c_roundtrip(self, name, data, compressed_hex):
         """C-plane roundtrip: encode → decode → re-encode matches."""
-        encoded = encode_c_plane(data)
+        encoded = encode_plane_20bit(data)
         decoded = decode_c_plane(encoded)
-        re_encoded = encode_c_plane(decoded)
+        re_encoded = encode_plane_20bit(decoded)
         assert re_encoded == encoded
-
-
-# ---------------------------------------------------------------------------
-# Input validation
-# ---------------------------------------------------------------------------
-
-
-class TestInputValidation:
-    def test_encode_plane_invalid_plane(self):
-        """ValueError for unknown plane identifier."""
-        with pytest.raises(ValueError, match="Unknown plane"):
-            encode_plane(bytes(BPL), "X")
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +369,7 @@ class TestCaptureCompression:
         for block in k_blocks:
             for i, entry in enumerate(block.entries):
                 decoded = decode_plane(entry, "K")
-                re_encoded = encode_plane(decoded, "K")
+                re_encoded = encode_plane_12bit(decoded)
                 assert re_encoded == entry, (
                     f"K block line {block.start_line} entry {i}: "
                     f"re-encoded {re_encoded.hex()} != original {entry.hex()}"

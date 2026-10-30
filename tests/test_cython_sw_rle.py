@@ -13,9 +13,9 @@ encode_sw_rle = _rle_fast.encode_sw_rle
 
 # Word size per plane encoder of plane_encoders.
 _VARIANTS = {
-    "K/Y 12-bit": (12, lambda data: plane_encoders.encode_plane(data, "K")),
-    "C 20-bit": (20, plane_encoders.encode_c_plane),
-    "M 10-bit": (10, plane_encoders.encode_m_plane_10),
+    "K/Y 12-bit": (12, plane_encoders.encode_plane_12bit),
+    "C 20-bit": (20, plane_encoders.encode_plane_20bit),
+    "M 10-bit": (10, plane_encoders.encode_plane_10bit),
 }
 
 
