@@ -191,6 +191,8 @@ cdef Py_ssize_t _pattern_flush(
 ) noexcept nogil:
     """Write the pattern header and payload at dst[*po], advancing *po.
 
+    The short headers are unreachable, as in fine_encoder._pattern_flush.
+
     Returns:
         Updated pattern start after the matched bytes.
     """
@@ -277,8 +279,8 @@ cdef Py_ssize_t _pattern_flush(
 cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) noexcept nogil:
     """Stage 2 into `dst`, which must hold 2 * n + 16 bytes.
 
-    The Python reference appends the input to a ring buffer and never drops
-    bytes from it, so `ring` here is simply the input itself.
+    As in the Python reference, `ring` is the input itself rather than the
+    binary's 1 KiB ring buffer.
 
     Returns:
         Number of bytes written.
@@ -291,7 +293,7 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
     cdef Py_ssize_t count = 0, lit_count
     cdef int phase = 0
     cdef uchar v, p0 = 0, p1 = 0, p2 = 0
-    cdef Py_ssize_t s1_len, s2_half, s2_len, s2_b_len, s3_b_len, s3_c_len, s3_alt_len
+    cdef Py_ssize_t s1_len, s2_half, s3_a_len, s2_b_len, s3_b_len, s3_c_len, s3_alt_len
 
     for i in range(n):
         v = ring[i]
@@ -370,10 +372,10 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
             s2_half >>= 1
 
             s = 3
-            s2_len = 1
+            s3_a_len = 1
             while s < 12 and ring[pp + s] == p0:
                 s += 3
-                s2_len += 1
+                s3_a_len += 1
 
             p1 = ring[pp + 1]
 
@@ -388,7 +390,7 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
 
             p2 = ring[pp + 2]
 
-            if s2_len < 2:
+            if s3_a_len < 2:
                 s3_b_len = 1
                 s3_c_len = 1
             else:
@@ -397,15 +399,15 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
                 while s < 12 and ring[pp + s] == p1:
                     s += 3
                     s3_b_len += 1
-                if s2_len < s3_b_len:
-                    s3_b_len = s2_len
+                if s3_a_len < s3_b_len:
+                    s3_b_len = s3_a_len
                 s = 5
                 s3_c_len = 1
                 while s < 12 and ring[pp + s] == p2:
                     s += 3
                     s3_c_len += 1
-                if s2_len < s3_c_len:
-                    s3_c_len = s2_len
+                if s3_a_len < s3_c_len:
+                    s3_c_len = s3_a_len
 
             s3_alt_len = 1
             if s3_b_len > 1:
@@ -439,7 +441,7 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
                 dst[o + 1] = ring[start + 1]
                 o += 2
                 start += 2
-            elif s2_len == 4:
+            elif s3_a_len == 4:
                 mode = 3
                 has_pattern = True
                 count = 4
@@ -464,17 +466,18 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
                     else:
                         lit_count = s3_b_len * 3
                         literal = True
-                elif s2_len >= 2 and s3_c_len >= 2:
+                elif s3_c_len >= 2:
                     lit_count = 2
                     literal = True
-                elif s2_len >= 3:
-                    lit_count = s2_len
-                    if s2_len > 3:
+                elif s3_a_len >= 3:
+                    lit_count = s3_a_len
+                    # Unreachable, as in fine_encoder.
+                    if s3_a_len > 3:
                         mode = 3
-                        count = s2_len
+                        count = s3_a_len
                         do_flush = True
                     else:
-                        lit_count = s2_len * 3
+                        lit_count = s3_a_len * 3
                         literal = True
                 elif s2_b_len >= 2:
                     lit_count = s2_b_len
@@ -499,6 +502,7 @@ cdef Py_ssize_t pattern_encode_c(const uchar *ring, Py_ssize_t n, uchar *dst) no
                         lit_count = 1
                     else:
                         lit_count = s1_len
+                        # Unreachable, as in fine_encoder.
                         if s1_len > 5:
                             mode = 0
                             count = s1_len
@@ -539,8 +543,6 @@ cdef Py_ssize_t encode_fine_plane_c(const uchar *src, Py_ssize_t n, uchar *scrat
     else:
         return 0
     m = rle_preencode_c(src, n, scratch)
-    if m == 0:
-        return 0
     return pattern_encode_c(scratch, m, dst)
 
 

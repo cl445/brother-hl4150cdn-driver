@@ -15,7 +15,7 @@ The original's output is cached by a hash of pages and rc file, so reruns
 only cost the Python side.
 
     uv run python scripts/fine_diff.py solid:0,255,255 --lines 8
-    uv run python scripts/fine_diff.py hramp --lines 64 --dump build/fine-diff
+    uv run python scripts/fine_diff.py hramp --lines 64 --dump .cache/fine-diff-dump
     uv run python scripts/fine_diff.py noise --rc Saturation=20
     uv run python scripts/fine_diff.py edges --paper Letter
     uv run python scripts/fine_diff.py bars --pages 4 --rc Duplex=DuplexNoTumble
@@ -37,6 +37,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import numpy as np
 import numpy.typing as npt
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
 
 BROTHER_DIR = ROOT / ".brother-blobs" / "hl4150cdn" / "extracted" / "usr" / "local" / "Brother"
 RC_TEMPLATE = BROTHER_DIR / "Printer" / "hl4150cdn" / "inf" / "brhl4150cdnrc"
-CACHE_DIR = ROOT / "build" / "fine-diff-cache"
+CACHE_DIR = ROOT / ".cache" / "fine-diff"
 DOCKER_IMAGE = "i386/debian:bookworm-slim"
 FILTER = "/usr/local/Brother/Printer/hl4150cdn/lpd/brhl4150cdnfilter"
 PAPERINF = "/usr/local/Brother/Printer/hl4150cdn/inf/paperinfij2"
@@ -248,7 +249,7 @@ def run_python(
     dither = dither_fns[True]
     encoders = dict(plane_encoders)
 
-    def recording_dither(row_arr, y, width, channel=None):
+    def recording_dither(row_arr, y, width, channel):
         if y != current["line"]:
             current.update(line=y, plane=0)
         return dither(row_arr, y, width, channel)
@@ -263,10 +264,10 @@ def run_python(
 
         return encode
 
-    has_kernel = bands.HAS_FINE_BAND_KERNEL
+    # The band kernel bypasses the hooks; the per-line path is its reference.
+    no_fine_kernel = mock.patch.object(bands, "_fine_fast", None)
     if record:
-        # The band kernel bypasses the hooks; the per-line path is its reference.
-        bands.HAS_FINE_BAND_KERNEL = False
+        no_fine_kernel.start()
         dither_fns[True] = recording_dither
         for plane in encoders:
             plane_encoders[plane] = recording_encoder(plane)
@@ -279,7 +280,8 @@ def run_python(
         if job:
             filter_pages(job, settings, out)
     finally:
-        bands.HAS_FINE_BAND_KERNEL = has_kernel
+        if record:
+            no_fine_kernel.stop()
         dither_fns[True] = dither
         plane_encoders.update(encoders)
     return out.getvalue(), calls

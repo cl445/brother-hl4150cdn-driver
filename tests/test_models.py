@@ -159,6 +159,16 @@ def test_unknown_names_fall_back_with_a_warning(caplog):
     assert "Unknown media type" in caplog.text
 
 
+def test_unknown_names_fall_back_to_the_models_own_defaults():
+    other = dataclasses.replace(
+        HL4150CDN,
+        media_size={**HL4150CDN.media_size, "A4": b"A4-NAME"},
+        media_types={**HL4150CDN.media_types, "Plain": b"dPlain"},
+    )
+    assert other.media_size_code("Folio") == b"A4-NAME"
+    assert other.media_type_code("Cardstock") == b"dPlain"
+
+
 def test_cli_rejects_an_unknown_model(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--model", "hl9999"])

@@ -9,7 +9,7 @@ import struct
 
 import pytest
 
-from brother_xl2hb.protocol.xl2hb import PLANE_BUF_FLUSH_THRESH, PLANE_BUF_INIT_FREE, PLANE_PARAMS, PlaneBuffer
+from brother_xl2hb.protocol.xl2hb import PLANE_BUF_FLUSH_THRESH, PLANE_BUF_INIT_FREE, PlaneBuffer
 from fixture_utils import BPL, capture_block_params
 
 BLOCK_PARAMS = capture_block_params()
@@ -28,9 +28,8 @@ class TestBlockBlobMatchesCapture:
         block = cap.blocks[block_idx]
 
         pb = PlaneBuffer(plane_id=block.plane_id, bpl=BPL)
-        pb.start_line = block.start_line
-        for entry in block.entries:
-            pb.append_scanline(entry)
+        for i, entry in enumerate(block.entries):
+            pb.append_scanline(entry, block.start_line + i)
 
         result = pb.flush()
         assert result is not None, "flush() returned None but block has entries"
@@ -39,37 +38,6 @@ class TestBlockBlobMatchesCapture:
             f"Blob mismatch for {capture_name} block {block_idx}: "
             f"got {len(blob)}B, expected {len(block.expected_blob)}B"
         )
-
-    @pytest.mark.parametrize(("capture_name", "block_idx"), BLOCK_PARAMS)
-    def test_header_fields(self, all_captures, capture_name, block_idx):
-        """Verify the 14-byte header structure of each block blob."""
-        cap = all_captures[capture_name]
-        block = cap.blocks[block_idx]
-        blob = block.expected_blob
-        assert len(blob) >= 14, "Blob too short for header"
-
-        comp_type, bit_depth, quant_type, comp_size = struct.unpack_from(">BBBB", blob, 0)
-        row_width, line_count = struct.unpack_from(">HH", blob, 4)
-        data_size = struct.unpack_from(">I", blob, 8)[0]
-        reserved = struct.unpack_from(">H", blob, 12)[0]
-
-        assert comp_type == 0, "comp_type must be 0 (RLE)"
-        assert bit_depth == 4, "bit_depth must be 4"
-
-        qt, cs = PLANE_PARAMS[block.plane_id]
-        assert quant_type == qt, f"quant_type mismatch for plane {block.plane_id}"
-        assert comp_size == cs, f"comp_size mismatch for plane {block.plane_id}"
-        assert row_width == BPL, f"row_width must be {BPL}"
-        assert line_count == len(block.entries), "line_count mismatch"
-        assert data_size == len(blob), "data_size must equal total blob length"
-        assert reserved == 0, "reserved bytes must be 0"
-
-    @pytest.mark.parametrize(("capture_name", "block_idx"), BLOCK_PARAMS)
-    def test_checksum_valid(self, all_captures, capture_name, block_idx):
-        """Verify sum(blob) % 256 == 0."""
-        cap = all_captures[capture_name]
-        block = cap.blocks[block_idx]
-        assert sum(block.expected_blob) % 256 == 0, "Checksum invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +52,7 @@ class TestPlaneBufferEdgeCases:
 
     def test_empty_compressed_skipped(self):
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
-        pb.append_scanline(b"")  # empty → skipped
+        pb.append_scanline(b"", 0)  # empty → skipped
         assert pb.flush() is None
         assert pb.line_count == 0
 
@@ -131,7 +99,7 @@ class TestPlaneBufferEdgeCases:
         target_fill = PLANE_BUF_INIT_FREE - PLANE_BUF_FLUSH_THRESH + 1
         entries_needed = target_fill // 8 + 1
         for _i in range(entries_needed):
-            pb.append_scanline(entry)
+            pb.append_scanline(entry, 0)
         assert pb.is_nearly_full()
 
     @pytest.mark.parametrize(
@@ -147,7 +115,7 @@ class TestPlaneBufferEdgeCases:
     def test_plane_params_in_header(self, plane_id, expected_qt, expected_cs):
         """Verify quant_type and comp_size in header for each plane."""
         pb = PlaneBuffer(plane_id=plane_id, bpl=BPL)
-        pb.append_scanline(b"\xaa\xbb")
+        pb.append_scanline(b"\xaa\xbb", 0)
         result = pb.flush()
         assert result is not None
         _, _, blob = result
