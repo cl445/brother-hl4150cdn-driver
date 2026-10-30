@@ -10,7 +10,7 @@ LUT, 4bpp pattern data) are dumped once.
 
     uv run python scripts/trace_dither.py solid:0,255,255 --lines 16
     uv run python scripts/trace_dither.py hramp --lines 4 --show 64
-    uv run python scripts/trace_dither.py solid:128,128,128 --rc Saturation=20 --save build/trace.npz
+    uv run python scripts/trace_dither.py solid:128,128,128 --rc Saturation=20 --save .cache/trace.npz
 
 The traced filter's own XL2HB output is checked against the traced dither
 output: every traced line must equal what `decode_fine_plane` decodes from
@@ -50,7 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends qemu-user gdb-m
 COPY --from=sysroot /usr /sysroot/usr
 RUN ln -s usr/lib /sysroot/lib && ln -s usr/bin /sysroot/bin && ln -s usr/sbin /sysroot/sbin
 """
-CACHE_DIR = fine_diff.ROOT / "build" / "trace-dither-cache"
+CACHE_DIR = fine_diff.ROOT / ".cache" / "trace-dither"
 CHANNELS = "CMYK"  # order of the four input and output arguments
 TRACER_VERSION = "1"
 
@@ -98,7 +98,7 @@ class DitherCall:
     def levels(self, channel: str) -> npt.NDArray[np.uint8]:
         """The output as one 4-bit level per pixel."""
         packed = self.out[channel]
-        return np.stack([packed >> 4, packed & 0xF], axis=1).reshape(-1)
+        return np.stack([packed >> 4, packed & 0xF], axis=1).reshape(-1).astype(np.uint8, copy=False)
 
 
 @dataclass
@@ -282,7 +282,7 @@ def overflow_zeroed(call: DitherCall) -> set[str]:
     last_zero = call.runs[-1] >= 2 and all(call.run_values[c][-1] == 0 for c in CHANNELS)
     end = (call.x_start + int(call.runs.sum())) // 2
     ptrs = call.args[10:14]
-    out = set()
+    out: set[str] = set()
     if last_zero and (call.x_start + int(call.runs.sum())) % 2 == 0:
         for prev, nxt, name in zip(ptrs, ptrs[1:], CHANNELS[1:], strict=False):
             if prev + end == nxt:
@@ -318,10 +318,11 @@ def compare_python_tables(trace: DitherTrace) -> None:
     py = load_brcd_tables(str(lut_dir), fine=True, cache=HL4150CDN.dither_cache) or {}
     for c in CHANNELS:
         t, p = trace.tables[c], py.get(c)
-        if p is None or getattr(p, "nibble_levels", None) is None:
+        levels = None if p is None else p.nibble_levels
+        if p is None or levels is None:
             print(f"  {c}: python has no nibble_levels (w={getattr(p, 'width', None)}, h={getattr(p, 'height', None)})")
             continue
-        same = p.nibble_levels.shape == (256, t.height, t.width) and np.array_equal(p.nibble_levels, t.levels())
+        same = levels.shape == (256, t.height, t.width) and np.array_equal(levels, t.levels())
         print(f"  {c}: original {t.width}x{t.height}, python {p.width}x{p.height}, levels identical: {same}")
 
 
@@ -360,7 +361,7 @@ def save_npz(trace: DitherTrace, path: Path) -> None:
     for name, t in trace.tables.items():
         data[f"table_{name}"] = t.levels()
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, **data)
+    np.savez_compressed(path, allow_pickle=False, **data)
     print(f"saved {path}")
 
 

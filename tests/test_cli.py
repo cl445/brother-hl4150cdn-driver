@@ -2,12 +2,14 @@
 
 import io
 import sys
+from pathlib import Path
 
 import pytest
 
 from brother_xl2hb import cli
 from brother_xl2hb.job import filter_pages
-from brother_xl2hb.settings import PageSize, PrintSettings
+from brother_xl2hb.models import HL4150CDN
+from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 from fixture_utils import assert_matches_fixture
 
 
@@ -118,3 +120,37 @@ def test_cli_paper_takes_the_models_spellings(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         _run_cli(monkeypatch, ["--paper", "Tabloid"], _ppm(8, 4, (0, 0, 0)))
     assert "unknown paper size 'Tabloid'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flags", "overrides"),
+    [
+        (["--mono"], {"mono_color": MonoColor.MONO}),
+        (["--fine"], {"resolution": Resolution.FINE}),
+        (["--toner-save"], {"toner_save": True}),
+        (["--duplex", "long"], {"duplex": DuplexMode.NO_TUMBLE}),
+        (["--duplex", "short"], {"duplex": DuplexMode.TUMBLE}),
+        (["-m", "-f", "-t"], {"mono_color": MonoColor.MONO, "resolution": Resolution.FINE, "toner_save": True}),
+    ],
+)
+def test_cli_setting_flags(monkeypatch, flags, overrides):
+    pages = [(8, 4, (200, 120, 40)), (8, 4, (0, 0, 0))]
+    stream = b"".join(_ppm(w, h, rgb) for w, h, rgb in pages)
+    out = _run_cli(monkeypatch, flags, stream)
+
+    def render(settings):
+        expected = io.BytesIO()
+        filter_pages([(w, h, bytes(rgb) * (w * h)) for w, h, rgb in pages], settings, expected)
+        return expected.getvalue()
+
+    assert out == render(PrintSettings(**overrides))
+    assert out != render(PrintSettings())
+
+
+@pytest.mark.parametrize(("argv", "directory"), [(["--precompute-lut"], None), (["--precompute-lut", "luts"], "luts")])
+def test_cli_precompute_lut_writes_the_models_inverse_luts(monkeypatch, argv, directory):
+    calls = []
+    monkeypatch.setattr(cli, "write_inverse_luts", lambda tables, out_dir: calls.append((tables, out_dir)))
+    # Nothing is read from stdin or written to stdout.
+    assert _run_cli(monkeypatch, argv, b"") == b""
+    assert calls == [(HL4150CDN.inverse_lut_tables, None if directory is None else Path(directory))]

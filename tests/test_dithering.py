@@ -11,7 +11,11 @@ output, one channel at a time.
 
 import pytest
 
+from brother_xl2hb.color.dither import load_dither_tables
 from brother_xl2hb.models import HL4150CDN
+
+# The generated Bayer K channel, the tables used without BRCD files.
+BAYER_K = load_dither_tables(cache=HL4150CDN.dither_cache)["K"]
 
 # ---------------------------------------------------------------------------
 # Dither module API
@@ -47,7 +51,7 @@ class TestOrdered1bpp:
         from brother_xl2hb.color.dither import dither_channel_1bpp
 
         row = bytes([255] * 4760)
-        result = dither_channel_1bpp(row, y=0, width=4760)
+        result = dither_channel_1bpp(row, y=0, width=4760, channel=BAYER_K)
         assert not any(result)
 
     def test_black_input_all_dots(self):
@@ -55,7 +59,7 @@ class TestOrdered1bpp:
         from brother_xl2hb.color.dither import dither_channel_1bpp
 
         row = bytes([0] * 4760)
-        result = dither_channel_1bpp(row, y=0, width=4760)
+        result = dither_channel_1bpp(row, y=0, width=4760, channel=BAYER_K)
         bpl = (4760 + 7) // 8
         assert len(result) == bpl
         # All bits set for active pixels
@@ -69,7 +73,7 @@ class TestOrdered1bpp:
         from brother_xl2hb.color.dither import dither_channel_1bpp
 
         row = bytes([128] * 4760)
-        result = dither_channel_1bpp(row, y=0, width=4760)
+        result = dither_channel_1bpp(row, y=0, width=4760, channel=BAYER_K)
         bits_set = sum(b.bit_count() for b in result[:595])
         # Allow 10% tolerance
         assert 1900 < bits_set < 2860, f"Expected ~2380 bits, got {bits_set}"
@@ -81,7 +85,7 @@ class TestOrdered1bpp:
         coverages = []
         for gray in [224, 192, 128, 64, 32]:
             row = bytes([gray] * 4760)
-            result = dither_channel_1bpp(row, y=0, width=4760)
+            result = dither_channel_1bpp(row, y=0, width=4760, channel=BAYER_K)
             bits = sum(b.bit_count() for b in result[:595])
             coverages.append(bits)
         # Each should be strictly greater than the previous
@@ -93,8 +97,8 @@ class TestOrdered1bpp:
         from brother_xl2hb.color.dither import dither_channel_1bpp
 
         row = bytes([128] * 4760)
-        result_y0 = dither_channel_1bpp(row, y=0, width=4760)
-        result_y1 = dither_channel_1bpp(row, y=1, width=4760)
+        result_y0 = dither_channel_1bpp(row, y=0, width=4760, channel=BAYER_K)
+        result_y1 = dither_channel_1bpp(row, y=1, width=4760, channel=BAYER_K)
         assert result_y0 != result_y1, "Dither should vary by y position"
 
     def test_deterministic(self):
@@ -102,8 +106,8 @@ class TestOrdered1bpp:
         from brother_xl2hb.color.dither import dither_channel_1bpp
 
         row = bytes([128] * 4760)
-        a = dither_channel_1bpp(row, y=42, width=4760)
-        b = dither_channel_1bpp(row, y=42, width=4760)
+        a = dither_channel_1bpp(row, y=42, width=4760, channel=BAYER_K)
+        b = dither_channel_1bpp(row, y=42, width=4760, channel=BAYER_K)
         assert a == b
 
 
@@ -120,7 +124,7 @@ class TestOrdered1ch4bpp:
         from brother_xl2hb.color.dither import dither_channel_4bpp
 
         row = bytes([255] * 4760)
-        result = dither_channel_4bpp(row, y=0, width=4760)
+        result = dither_channel_4bpp(row, y=0, width=4760, channel=BAYER_K)
         assert not any(result)
 
     def test_black_input_all_max_nibbles(self):
@@ -128,7 +132,7 @@ class TestOrdered1ch4bpp:
         from brother_xl2hb.color.dither import dither_channel_4bpp
 
         row = bytes([0] * 4760)
-        result = dither_channel_4bpp(row, y=0, width=4760)
+        result = dither_channel_4bpp(row, y=0, width=4760, channel=BAYER_K)
         assert all(b == 0xFF for b in result)
 
     def test_output_length(self):
@@ -137,7 +141,7 @@ class TestOrdered1ch4bpp:
 
         for width in [4760, 100, 32]:
             row = bytes([128] * width)
-            result = dither_channel_4bpp(row, y=0, width=width)
+            result = dither_channel_4bpp(row, y=0, width=width, channel=BAYER_K)
             assert len(result) == (width + 1) // 2
 
     def test_output_length_odd_width(self):
@@ -145,7 +149,7 @@ class TestOrdered1ch4bpp:
         from brother_xl2hb.color.dither import dither_channel_4bpp
 
         row = bytes([0] * 33)  # all black
-        result = dither_channel_4bpp(row, y=0, width=33)
+        result = dither_channel_4bpp(row, y=0, width=33, channel=BAYER_K)
         assert len(result) == 17  # (33 + 1) // 2
         # Last byte: high nibble = 15 (pixel 32), low nibble = 0 (padding)
         assert result[-1] == 0xF0
@@ -156,12 +160,12 @@ class TestOrdered1ch4bpp:
 
         # All black: every nibble = 15 → 0xFF per byte
         row = bytes([0] * 2)
-        result = dither_channel_4bpp(row, y=0, width=2)
+        result = dither_channel_4bpp(row, y=0, width=2, channel=BAYER_K)
         assert result[0] == 0xFF
 
         # Single pixel (odd width): high nibble set, low nibble zero
         row = bytes([0] * 1)
-        result = dither_channel_4bpp(row, y=0, width=1)
+        result = dither_channel_4bpp(row, y=0, width=1, channel=BAYER_K)
         assert result[0] == 0xF0
 
     def test_50pct_gray_coverage(self):
@@ -169,7 +173,7 @@ class TestOrdered1ch4bpp:
         from brother_xl2hb.color.dither import dither_channel_4bpp
 
         row = bytes([128] * 4760)
-        result = dither_channel_4bpp(row, y=0, width=4760)
+        result = dither_channel_4bpp(row, y=0, width=4760, channel=BAYER_K)
         # Extract all nibbles and compute average
         nibbles = []
         for b in result:
@@ -186,7 +190,7 @@ class TestOrdered1ch4bpp:
         sums = []
         for gray in [224, 192, 128, 64, 32]:
             row = bytes([gray] * 4760)
-            result = dither_channel_4bpp(row, y=0, width=4760)
+            result = dither_channel_4bpp(row, y=0, width=4760, channel=BAYER_K)
             nibble_sum = 0
             for b in result:
                 nibble_sum += (b >> 4) & 0x0F
@@ -200,8 +204,8 @@ class TestOrdered1ch4bpp:
         from brother_xl2hb.color.dither import dither_channel_4bpp
 
         row = bytes([128] * 4760)
-        result_y0 = dither_channel_4bpp(row, y=0, width=4760)
-        result_y1 = dither_channel_4bpp(row, y=1, width=4760)
+        result_y0 = dither_channel_4bpp(row, y=0, width=4760, channel=BAYER_K)
+        result_y1 = dither_channel_4bpp(row, y=1, width=4760, channel=BAYER_K)
         assert result_y0 != result_y1, "4bpp dither should vary by y position"
 
     def test_deterministic(self):
@@ -209,8 +213,8 @@ class TestOrdered1ch4bpp:
         from brother_xl2hb.color.dither import dither_channel_4bpp
 
         row = bytes([128] * 4760)
-        a = dither_channel_4bpp(row, y=42, width=4760)
-        b = dither_channel_4bpp(row, y=42, width=4760)
+        a = dither_channel_4bpp(row, y=42, width=4760, channel=BAYER_K)
+        b = dither_channel_4bpp(row, y=42, width=4760, channel=BAYER_K)
         assert a == b
 
     def test_nibble_values_in_range(self):
@@ -219,7 +223,7 @@ class TestOrdered1ch4bpp:
 
         for gray in [0, 64, 128, 192, 255]:
             row = bytes([gray] * 100)
-            result = dither_channel_4bpp(row, y=7, width=100)
+            result = dither_channel_4bpp(row, y=7, width=100, channel=BAYER_K)
             for b in result:
                 assert (b >> 4) <= 15
                 assert (b & 0x0F) <= 15
@@ -464,9 +468,34 @@ class TestFineBRCDTables:
         row_bytes = (width * height + 7) // 8
         path = tmp_path / "odd.bin"
         path.write_bytes(b"BRCD1\0" + struct.pack("<HH", width, height) + bytes(256 * row_bytes))
-        dither_load_brcd(str(path))  # fine as a 1bpp table
         with pytest.raises(ValueError, match="multiple of 8"):
             dither_load_brcd(str(path), nibbles=True)
+
+    @pytest.mark.parametrize(("version", "nibbles"), [(b"1", False), (b"0", True)])
+    def test_version_must_match_the_table_kind(self, tmp_path, version, nibbles):
+        """A Fine ('1') table is not read as Normal ('0'), nor the other way round."""
+        import struct
+
+        from brother_xl2hb.color.dither import dither_load_brcd
+
+        width, height = 16, 2
+        path = tmp_path / "table.bin"
+        path.write_bytes(b"BRCD" + version + b"\0" + struct.pack("<HH", width, height) + bytes(256 * 4))
+        with pytest.raises(ValueError, match="BRCD version"):
+            dither_load_brcd(str(path), nibbles=nibbles)
+
+    def test_dot_at_ink_zero_is_rejected(self, tmp_path):
+        """A 1bpp dot at ink level 0 has no uint8 threshold (it would wrap to 255)."""
+        import struct
+
+        from brother_xl2hb.color.dither import dither_load_brcd
+
+        width, height = 16, 2
+        patterns = b"\x80\0\0\0" + b"\xff" * (255 * 4)
+        path = tmp_path / "table.bin"
+        path.write_bytes(b"BRCD0\0" + struct.pack("<HH", width, height) + patterns)
+        with pytest.raises(ValueError, match="ink level 0"):
+            dither_load_brcd(str(path))
 
     def test_load_fine_brcd_channels(self):
         """Should load all 4 Fine BRCD channels."""
@@ -534,7 +563,7 @@ class TestArrVariants:
         arr_fn = getattr(dither, f"{fn_name}_arr")
         bytes_fn = getattr(dither, fn_name)
         for y in range(3):
-            assert arr_fn(row, y, width) == bytes_fn(row.tobytes(), y, width)
+            assert arr_fn(row, y, width, BAYER_K) == bytes_fn(row.tobytes(), y, width, BAYER_K)
 
 
 def test_native_1bpp_dither_matches_numpy(monkeypatch):
@@ -543,7 +572,8 @@ def test_native_1bpp_dither_matches_numpy(monkeypatch):
 
     from brother_xl2hb.color import dither
 
-    if not dither.HAS_CYTHON_DITHER:
+    native_module = dither._dither_fast
+    if native_module is None:
         pytest.skip("_dither_fast extension not built")
     rng = np.random.default_rng(1)
     channels = dither.load_dither_tables(cache=HL4150CDN.dither_cache)
@@ -552,9 +582,9 @@ def test_native_1bpp_dither_matches_numpy(monkeypatch):
         strided = np.repeat(row, 2)[::2]  # non-contiguous view, as from a KCMY column
         for y in (0, 17, 31):
             native = dither.dither_channel_1bpp_arr(strided, y, width, channels["C"])
-            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER", False)
+            monkeypatch.setattr(dither, "_dither_fast", None)
             reference = dither.dither_channel_1bpp_arr(strided, y, width, channels["C"])
-            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER", True)
+            monkeypatch.setattr(dither, "_dither_fast", native_module)
             assert native == reference
 
 
@@ -570,7 +600,7 @@ class TestBayerFallbackWarning:
     def _fresh_warning_state(self, monkeypatch):
         from brother_xl2hb.color import dither
 
-        monkeypatch.setattr(dither, "_bayer_fallback_warned", set())
+        monkeypatch.setattr(dither, "_fallback_warned", set())
 
     def _fallback_warnings(self, caplog):
         return [r for r in caplog.records if r.name == "brother_xl2hb.color.dither" and r.levelname == "WARNING"]
@@ -592,14 +622,52 @@ class TestBayerFallbackWarning:
             for _ in range(3):
                 load_dither_tables(str(tmp_path), cache=HL4150CDN.dither_cache)
                 load_dither_tables(str(tmp_path), fine=True, cache=HL4150CDN.dither_cache)
-        assert len(self._fallback_warnings(caplog)) == 1
+        warnings = self._fallback_warnings(caplog)
+        assert len(warnings) == 2
+        assert "0600-*_cache09.bin" in warnings[0].getMessage()
+        assert "capt-*_cache09.bin" in warnings[1].getMessage()
 
         with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
             load_dither_tables(str(tmp_path), toner_save=True, cache=HL4150CDN.dither_cache)
             load_dither_tables(str(tmp_path), toner_save=True, cache=HL4150CDN.dither_cache)
         warnings = self._fallback_warnings(caplog)
-        assert len(warnings) == 2
-        assert "-TS_cache09.bin" in warnings[1].getMessage()
+        assert len(warnings) == 3
+        assert "0600-*-TS_cache09.bin" in warnings[2].getMessage()
+
+    def test_fine_falls_back_to_normal_tables_with_warning(self, tmp_path, caplog):
+        from brother_xl2hb.color.dither import load_dither_tables
+
+        lut_dir = HL4150CDN.lut_dir
+        if not (lut_dir / "0600-k_cache09.bin").exists():
+            pytest.skip("BRCD blobs not extracted")
+        model_dir = tmp_path / HL4150CDN.key
+        model_dir.mkdir()
+        for blob in lut_dir.glob("0600-*_cache09.bin"):
+            (model_dir / blob.name).symlink_to(blob)
+        with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
+            channels = load_dither_tables(str(model_dir), fine=True, cache=HL4150CDN.dither_cache)
+        assert channels["K"].nibble_levels is None
+        [warning] = self._fallback_warnings(caplog)
+        message = warning.getMessage()
+        assert "capt-*_cache09.bin missing" in message
+        assert "Normal-mode tables 0600-*_cache09.bin" in message
+        assert f"scripts/extract_blobs.sh {HL4150CDN.key}" in message
+
+    def test_partial_set_names_the_missing_files(self, tmp_path, caplog):
+        from brother_xl2hb.color.dither import load_dither_tables
+
+        lut_dir = HL4150CDN.lut_dir
+        present = ("0600-k_cache09.bin", "0600-m_cache09.bin")
+        if not all((lut_dir / name).exists() for name in present):
+            pytest.skip("BRCD blobs not extracted")
+        model_dir = tmp_path / HL4150CDN.key
+        model_dir.mkdir()
+        for name in present:
+            (model_dir / name).symlink_to(lut_dir / name)
+        with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
+            load_dither_tables(str(model_dir), cache=HL4150CDN.dither_cache)
+        [warning] = self._fallback_warnings(caplog)
+        assert "Dither tables 0600-c_cache09.bin, 0600-y_cache09.bin missing" in warning.getMessage()
 
     def test_present_tables_do_not_warn(self, caplog):
 
