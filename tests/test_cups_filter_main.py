@@ -616,6 +616,38 @@ def test_nested_uninterrupted_blocks_cancel_after_the_outer_one():
     assert reached == [True]
 
 
+def test_exception_in_nested_block_keeps_the_outer_block_shielded():
+    class InnerError(Exception):
+        pass
+
+    canceler = cups_filter.CancelOnSigterm(io.BytesIO())
+    reached = []
+
+    def inner_raises_then_signal():
+        with canceler.uninterrupted():
+            with pytest.raises(InnerError), canceler.uninterrupted():
+                raise InnerError
+            signal.raise_signal(signal.SIGTERM)
+            reached.append(True)
+
+    with canceler, pytest.raises(cups_filter.JobCanceledError):
+        inner_raises_then_signal()
+    assert reached == [True]
+
+
+def test_sigterm_in_a_failing_block_cancels_the_job():
+    canceler = cups_filter.CancelOnSigterm(io.BytesIO())
+
+    def signal_then_fail():
+        with canceler.uninterrupted():
+            signal.raise_signal(signal.SIGTERM)
+            raise OSError
+
+    with canceler, pytest.raises(cups_filter.JobCanceledError) as excinfo:
+        signal_then_fail()
+    assert isinstance(excinfo.value.__context__, OSError)
+
+
 def test_gs_that_does_not_exit_after_its_output_is_killed(fake_gs, tmp_path, monkeypatch, caplog):
     from brother_xl2hb import cups_filter
 

@@ -372,7 +372,8 @@ class CancelOnSigterm:
         Inside another such block, it waits for the outer one.
 
         Raises:
-            JobCanceledError: After the block, if SIGTERM arrived during it.
+            JobCanceledError: After the block, if SIGTERM arrived during it,
+                in place of any exception the block raised.
         """
         outer = self._shielded
         self._shielded = True
@@ -380,8 +381,9 @@ class CancelOnSigterm:
             yield
         finally:
             self._shielded = outer
-        if not outer:
-            self._raise_pending()
+            if not outer:
+                # Also when the block failed: the cancellation wins.
+                self._raise_pending()
 
     def _raise_pending(self) -> None:
         if self._pending:
