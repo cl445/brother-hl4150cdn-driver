@@ -1,6 +1,5 @@
 name: Printer support
 description: Propose support for another Brother printer, ideally because you want to work on it.
-title: "Support for <printer model>"
 labels: ["printer-support"]
 body:
   - type: markdown

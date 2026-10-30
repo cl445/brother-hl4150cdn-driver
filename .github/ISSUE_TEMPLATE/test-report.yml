@@ -1,6 +1,5 @@
 name: Test report
 description: Tell us how the driver prints on your printer, whether it works or not.
-title: "Test report: <printer model>"
 labels: ["test-report"]
 body:
   - type: markdown
@@ -36,6 +35,16 @@ body:
         - Network (socket://)
         - USB
         - Other
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall result
+      options:
+        - Works as it is
+        - Works with problems
+        - Does not print
+    validations:
+      required: true
   - type: checkboxes
     id: tested
     attributes:

@@ -13,6 +13,7 @@ i386 libraries, ARM and other architectures.
 Eight more Brother models use exactly the same filter as the HL-4150CDN
 and should work as they are: HL-4140CN, HL-4570CDW, DCP-9055CDN,
 DCP-9270CDN, MFC-9460CDN, MFC-9465CDN, MFC-9560CDW and MFC-9970CDW.
+The HL-4140CN has no duplex unit, so leave Duplex off there.
 They are untested so far; if you have one,
 [a test report](https://github.com/cl445/brother-hl4150cdn-driver/issues/new?template=test-report.yml)
 helps. See [Other Brother printers](#other-brother-printers) for the rest
