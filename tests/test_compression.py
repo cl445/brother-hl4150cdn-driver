@@ -217,6 +217,13 @@ class TestGroupBits:
     def test_empty_input(self):
         assert group_bits(b"", 12) == []
 
+    @pytest.mark.parametrize("group_size", [0, 33])
+    def test_rejects_unsupported_group_size(self, group_size):
+        with pytest.raises(ValueError, match="group size"):
+            group_bits(b"\x01\x02\x03\x04\x05", group_size)
+        with pytest.raises(ValueError, match="group size"):
+            pack_groups([1, 2], group_size)
+
 
 class TestPackGroups:
     def test_roundtrip_12bit(self):

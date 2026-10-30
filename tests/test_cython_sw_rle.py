@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from brother_xl2hb.codec import plane_encoders
-from brother_xl2hb.codec.rle import group_bits_py
+from brother_xl2hb.codec.rle import BytesLike, group_bits_py
 
 _rle_fast = pytest.importorskip("brother_xl2hb._native._rle_fast")
 if not hasattr(_rle_fast, "encode_sw_rle"):
@@ -25,7 +25,7 @@ def python_encoder(monkeypatch):
     monkeypatch.setattr(plane_encoders, "_rle_fast", None)
     monkeypatch.setattr(plane_encoders, "group_bits", group_bits_py)
 
-    def encode(variant: str, data: bytes) -> bytes:
+    def encode(variant: str, data: BytesLike) -> bytes:
         return _VARIANTS[variant][1](data)
 
     return encode
@@ -104,3 +104,17 @@ def test_matches_python_encoder_literal_overflow(variant, n_literals, python_enc
 def test_rejects_unknown_word_size():
     with pytest.raises(ValueError, match="unsupported"):
         encode_sw_rle(b"\x01", 16)
+
+
+@pytest.mark.parametrize("variant", _VARIANTS)
+def test_accepts_buffers(variant, python_encoder):
+    """Like the Python fallback, the native encoder takes any contiguous byte buffer."""
+    bits, _ = _VARIANTS[variant]
+    data = _rows()[5]
+    expected = python_encoder(variant, data)
+    assert encode_sw_rle(bytearray(data), bits) == expected
+    assert encode_sw_rle(memoryview(data), bits) == expected
+    assert encode_sw_rle(np.frombuffer(data, np.uint8), bits) == expected
+    assert python_encoder(variant, bytearray(data)) == expected
+    assert python_encoder(variant, memoryview(data)) == expected
+    assert encode_sw_rle(bytearray(), bits) == b""

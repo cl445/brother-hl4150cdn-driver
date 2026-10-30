@@ -54,3 +54,32 @@ def test_round_trip(cy, group_size):
         repacked = cy.pack_groups(groups, group_size)
         expected = pack_groups_py(group_bits_py(data, group_size), group_size)
         assert repacked == expected
+
+
+@pytest.mark.parametrize("group_size", [10, 12, 20])
+def test_group_bits_accepts_buffers(cy, group_size):
+    data = bytes(np.random.default_rng(5).integers(0, 256, 597, dtype=np.uint8))
+    expected = group_bits_py(data, group_size)
+    for buf in (bytearray(data), memoryview(data)):
+        assert cy.group_bits(buf, group_size) == expected
+        assert group_bits_py(buf, group_size) == expected
+    assert cy.group_bits(np.frombuffer(data, np.uint8), group_size) == expected
+    assert cy.group_bits(bytearray(), group_size) == []
+
+
+@pytest.mark.parametrize("group_size", [1, 31, 32])
+def test_group_bits_widest_and_narrowest(cy, group_size):
+    data = bytes(np.random.default_rng(6).integers(0, 256, 37, dtype=np.uint8))
+    groups = cy.group_bits(data, group_size)
+    assert groups == group_bits_py(data, group_size)
+    assert cy.pack_groups(groups, group_size) == pack_groups_py(groups, group_size)
+
+
+@pytest.mark.parametrize("group_size", [-1, 0, 33, 64])
+def test_rejects_unsupported_group_size(cy, group_size):
+    for fn in (cy.group_bits, group_bits_py):
+        with pytest.raises(ValueError, match="group size"):
+            fn(b"\x01\x02\x03\x04\x05", group_size)
+    for fn in (cy.pack_groups, pack_groups_py):
+        with pytest.raises(ValueError, match="group size"):
+            fn([1, 2], group_size)

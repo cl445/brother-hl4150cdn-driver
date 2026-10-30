@@ -6,7 +6,7 @@
 
 All three return an empty bytestring when the input scanline is all-zero
 (no ink), and fall back to a raw literal dump when their compressed
-output would otherwise exceed the input length.
+output would exceed the input length by more than 0x14 bytes.
 """
 
 from brother_xl2hb import _native
@@ -14,6 +14,7 @@ from brother_xl2hb.codec.rle import (
     CONFIG_10BIT,
     CONFIG_12BIT,
     CONFIG_20BIT,
+    BytesLike,
     SwRleConfig,
     finalize_compressed,
     group_bits,
@@ -32,7 +33,7 @@ _12BIT_PLANES = ("K", "Y")
 
 def _encode_via_sw_rle(
     words: list[int],
-    data: bytes,
+    data: BytesLike,
     config: SwRleConfig,
     word_bits: int,
 ) -> bytes:
@@ -51,8 +52,11 @@ def _encode_via_sw_rle(
     return finalize_compressed(output, data, word_bits)
 
 
-def encode_plane(data: bytes, plane: str = "K") -> bytes:
+def encode_plane(data: BytesLike, plane: str = "K") -> bytes:
     """Encode a single scanline of K or Y plane data using 12-bit sliding-window RLE.
+
+    K and Y use the same encoder; `plane` only guards against routing
+    another plane here.
 
     Args:
         data: Raw 1bpp plane data (BPL bytes per line).
@@ -72,7 +76,7 @@ def encode_plane(data: bytes, plane: str = "K") -> bytes:
     return _encode_via_sw_rle(group_bits(data, 12), data, CONFIG_12BIT, 12)
 
 
-def encode_c_plane(data: bytes) -> bytes:
+def encode_c_plane(data: BytesLike) -> bytes:
     """Encode C-plane data (comp_size=20 block).
 
     Packs input bytes into 20-bit words MSB-first, then runs the
@@ -86,7 +90,7 @@ def encode_c_plane(data: bytes) -> bytes:
     return _encode_via_sw_rle(group_bits(data, 20), data, CONFIG_20BIT, 20)
 
 
-def encode_m_plane_10(data: bytes) -> bytes:
+def encode_m_plane_10(data: BytesLike) -> bytes:
     """Encode M-plane data using 10-bit sliding-window RLE.
 
     Uses a 5-word context window for context-skip prediction. Total
