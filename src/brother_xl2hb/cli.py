@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
+from brother_xl2hb import _native
 from brother_xl2hb.color.color_lut import write_inverse_luts
 from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
 from brother_xl2hb.models import MODELS
@@ -106,6 +107,7 @@ def main(argv: list[str] | None = None) -> None:
         stream=sys.stderr,
     )
 
+    _native.log_status()
     settings = model.restrict(settings)
     logger.debug("Settings: %s", settings)
 
