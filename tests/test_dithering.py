@@ -572,7 +572,8 @@ def test_native_1bpp_dither_matches_numpy(monkeypatch):
 
     from brother_xl2hb.color import dither
 
-    if not dither.HAS_CYTHON_DITHER:
+    native_module = dither._dither_fast
+    if native_module is None:
         pytest.skip("_dither_fast extension not built")
     rng = np.random.default_rng(1)
     channels = dither.load_dither_tables(cache=HL4150CDN.dither_cache)
@@ -581,9 +582,9 @@ def test_native_1bpp_dither_matches_numpy(monkeypatch):
         strided = np.repeat(row, 2)[::2]  # non-contiguous view, as from a KCMY column
         for y in (0, 17, 31):
             native = dither.dither_channel_1bpp_arr(strided, y, width, channels["C"])
-            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER", False)
+            monkeypatch.setattr(dither, "_dither_fast", None)
             reference = dither.dither_channel_1bpp_arr(strided, y, width, channels["C"])
-            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER", True)
+            monkeypatch.setattr(dither, "_dither_fast", native_module)
             assert native == reference
 
 
@@ -599,7 +600,7 @@ class TestBayerFallbackWarning:
     def _fresh_warning_state(self, monkeypatch):
         from brother_xl2hb.color import dither
 
-        monkeypatch.setattr(dither, "_bayer_fallback_warned", set())
+        monkeypatch.setattr(dither, "_fallback_warned", set())
 
     def _fallback_warnings(self, caplog):
         return [r for r in caplog.records if r.name == "brother_xl2hb.color.dither" and r.levelname == "WARNING"]
@@ -621,14 +622,52 @@ class TestBayerFallbackWarning:
             for _ in range(3):
                 load_dither_tables(str(tmp_path), cache=HL4150CDN.dither_cache)
                 load_dither_tables(str(tmp_path), fine=True, cache=HL4150CDN.dither_cache)
-        assert len(self._fallback_warnings(caplog)) == 1
+        warnings = self._fallback_warnings(caplog)
+        assert len(warnings) == 2
+        assert "0600-*_cache09.bin" in warnings[0].getMessage()
+        assert "capt-*_cache09.bin" in warnings[1].getMessage()
 
         with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
             load_dither_tables(str(tmp_path), toner_save=True, cache=HL4150CDN.dither_cache)
             load_dither_tables(str(tmp_path), toner_save=True, cache=HL4150CDN.dither_cache)
         warnings = self._fallback_warnings(caplog)
-        assert len(warnings) == 2
-        assert "-TS_cache09.bin" in warnings[1].getMessage()
+        assert len(warnings) == 3
+        assert "0600-*-TS_cache09.bin" in warnings[2].getMessage()
+
+    def test_fine_falls_back_to_normal_tables_with_warning(self, tmp_path, caplog):
+        from brother_xl2hb.color.dither import load_dither_tables
+
+        lut_dir = HL4150CDN.lut_dir
+        if not (lut_dir / "0600-k_cache09.bin").exists():
+            pytest.skip("BRCD blobs not extracted")
+        model_dir = tmp_path / HL4150CDN.key
+        model_dir.mkdir()
+        for blob in lut_dir.glob("0600-*_cache09.bin"):
+            (model_dir / blob.name).symlink_to(blob)
+        with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
+            channels = load_dither_tables(str(model_dir), fine=True, cache=HL4150CDN.dither_cache)
+        assert channels["K"].nibble_levels is None
+        [warning] = self._fallback_warnings(caplog)
+        message = warning.getMessage()
+        assert "capt-*_cache09.bin missing" in message
+        assert "Normal-mode tables 0600-*_cache09.bin" in message
+        assert f"scripts/extract_blobs.sh {HL4150CDN.key}" in message
+
+    def test_partial_set_names_the_missing_files(self, tmp_path, caplog):
+        from brother_xl2hb.color.dither import load_dither_tables
+
+        lut_dir = HL4150CDN.lut_dir
+        present = ("0600-k_cache09.bin", "0600-m_cache09.bin")
+        if not all((lut_dir / name).exists() for name in present):
+            pytest.skip("BRCD blobs not extracted")
+        model_dir = tmp_path / HL4150CDN.key
+        model_dir.mkdir()
+        for name in present:
+            (model_dir / name).symlink_to(lut_dir / name)
+        with caplog.at_level("WARNING", logger="brother_xl2hb.color.dither"):
+            load_dither_tables(str(model_dir), cache=HL4150CDN.dither_cache)
+        [warning] = self._fallback_warnings(caplog)
+        assert "Dither tables 0600-c_cache09.bin, 0600-y_cache09.bin missing" in warning.getMessage()
 
     def test_present_tables_do_not_warn(self, caplog):
 

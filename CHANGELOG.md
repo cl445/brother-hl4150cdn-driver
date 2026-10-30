@@ -42,6 +42,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (the unpacked package to `.brother-blobs/<model>/`); re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of
   1.2.0 in `/usr/local/lib/brhl4150cdn/`.
+- The CUPS filter and the CLI log once per job which Cython kernels are
+  in use: a warning that names the missing ones and how to rebuild them
+  (e.g. after a Python upgrade), INFO otherwise. `BRXL2HB_PURE_PYTHON=1`
+  forces the pure-Python fallbacks.
+- Fallbacks that change the output warn and name the missing files and
+  `scripts/extract_blobs.sh <model>`: the generated rgb/srgb default
+  grids (was INFO) and Normal-mode dither tables for Fine mode (was
+  INFO). The Bayer warning names the Fine tables when those are missing.
+- pytest stops when a built native extension is older than its
+  `.pyx`/`.pxd`.
 - `scripts/extract_blobs.sh` checks the downloaded package's SHA-256
   instead of its MD5.
 - `cups/install.sh` installs numpy below 3 and builds the native modules
@@ -69,6 +79,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - An rc file with an unknown choice, a `%` or a non-number no longer
   stops the CLI; it reads them as Brother's filter does (default,
   C `atoi`, BRResolution other than Normal is Fine).
+- Uncollated copies in duplex no longer print a page on both sides of a
+  sheet. Ghostscript repeated each page for NumCopies; in duplex it now
+  renders the whole job once per copy, and a copy that prints an odd
+  number of pages gets a blank back, so the next copy starts on a new
+  sheet. The count is taken after BRSkipBlank, which keeps that blank
+  back. Simplex copies are unchanged.
 - Grayscale (BRMonoColor=Mono) ignores the Red, Green and Blue keys and
   keeps Brightness and Contrast with BRColorMatching=None, as the
   original does.

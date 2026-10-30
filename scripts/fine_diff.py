@@ -37,6 +37,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import numpy as np
 import numpy.typing as npt
@@ -263,10 +264,10 @@ def run_python(
 
         return encode
 
-    has_kernel = bands.HAS_FINE_BAND_KERNEL
+    # The band kernel bypasses the hooks; the per-line path is its reference.
+    no_fine_kernel = mock.patch.object(bands, "_fine_fast", None)
     if record:
-        # The band kernel bypasses the hooks; the per-line path is its reference.
-        bands.HAS_FINE_BAND_KERNEL = False
+        no_fine_kernel.start()
         dither_fns[True] = recording_dither
         for plane in encoders:
             plane_encoders[plane] = recording_encoder(plane)
@@ -279,7 +280,8 @@ def run_python(
         if job:
             filter_pages(job, settings, out)
     finally:
-        bands.HAS_FINE_BAND_KERNEL = has_kernel
+        if record:
+            no_fine_kernel.stop()
         dither_fns[True] = dither
         plane_encoders.update(encoders)
     return out.getvalue(), calls

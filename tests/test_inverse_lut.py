@@ -104,7 +104,8 @@ def test_cached_lookup_matches_direct_interp(installed, table) -> None:
 @pytest.mark.parametrize("table", INVERSE_LUT_TABLES, ids=_TABLE_IDS)
 def test_full_cube_matches_native_interp(installed, table) -> None:
     """Every one of the 16.7M entries equals what the native kernel interpolates without the LUT."""
-    if not color_lut.HAS_CYTHON_COLOR:
+    native = color_lut._color_fast
+    if native is None:
         pytest.skip("_color_fast extension not built")
     table = _at(table, installed)
     inv = inverse_lut(table)
@@ -113,7 +114,7 @@ def test_full_cube_matches_native_interp(installed, table) -> None:
     rgb = np.stack([r.ravel(), g.ravel(), b.ravel()], axis=1).tobytes()
     n = 256**3
     planes = np.empty((4, n), dtype=np.uint8)
-    color_lut.interp_kcmy(rgb, n, *color_lut.interp_arrays(table), planes[0], planes[1], planes[2], planes[3])
+    native.interp_kcmy(rgb, n, *color_lut.interp_arrays(table), planes[0], planes[1], planes[2], planes[3])
     np.testing.assert_array_equal(inv.reshape(-1, 4), planes.T)
 
 
@@ -184,7 +185,7 @@ def test_write_inverse_luts_removes_stale_files(tmp_path) -> None:
 
 def test_native_gather_matches_numpy_path(monkeypatch) -> None:
     """The Cython gather and the numpy fancy-index path agree, incl. over-long rows."""
-    if not color_lut.HAS_CYTHON_COLOR:
+    if color_lut._color_fast is None:
         pytest.skip("_color_fast extension not built")
     rng = np.random.default_rng(3)
     lut = rng.integers(0, 256, color_lut._INVERSE_LUT_SHAPE, dtype=np.uint8)
@@ -192,7 +193,7 @@ def test_native_gather_matches_numpy_path(monkeypatch) -> None:
 
     sample = _sample_rgb(seed=11, width=5000)
     native = color_lut.rgb_to_cmyk_lut_arr(sample, 4768, HL4150CDN.grid())
-    monkeypatch.setattr(color_lut, "HAS_CYTHON_COLOR", False)
+    monkeypatch.setattr(color_lut, "_color_fast", None)
     reference = color_lut.rgb_to_cmyk_lut_arr(sample, 4768, HL4150CDN.grid())
     for got, want in zip(native, reference, strict=True):
         np.testing.assert_array_equal(got, want)

@@ -19,6 +19,8 @@ from enum import IntEnum, auto
 
 import numpy as np
 
+from brother_xl2hb import _native
+
 
 def group_bits_py(data: bytes, group_size: int) -> list[int]:
     """Group input byte data into values of group_size bits each (MSB first).
@@ -68,14 +70,29 @@ def pack_groups_py(groups: list[int], group_size: int) -> bytes:
     return np.packbits(bit_matrix.ravel()).tobytes()
 
 
-try:
-    from brother_xl2hb._native._rle_fast import group_bits, pack_groups  # type: ignore[import-not-found]
+_rle_fast = _native.load("_rle_fast")
 
-    HAS_CYTHON_RLE = True
-except ImportError:
-    group_bits = group_bits_py
-    pack_groups = pack_groups_py
-    HAS_CYTHON_RLE = False
+
+def group_bits(data: bytes, group_size: int) -> list[int]:
+    """:func:`group_bits_py` in `_rle_fast` when it is loaded.
+
+    Returns:
+        The groups, as :func:`group_bits_py`.
+    """
+    if _rle_fast is not None:
+        return _rle_fast.group_bits(data, group_size)
+    return group_bits_py(data, group_size)
+
+
+def pack_groups(groups: list[int], group_size: int) -> bytes:
+    """:func:`pack_groups_py` in `_rle_fast` when it is loaded.
+
+    Returns:
+        The packed bytes, as :func:`pack_groups_py`.
+    """
+    if _rle_fast is not None:
+        return _rle_fast.pack_groups(groups, group_size)
+    return pack_groups_py(groups, group_size)
 
 
 def emit_count_ext(output: bytearray, remaining: int) -> None:
