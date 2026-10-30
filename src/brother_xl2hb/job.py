@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator
 from typing import BinaryIO
 
 from brother_xl2hb.models import DEFAULT_MODEL
-from brother_xl2hb.models.base import PrinterModel
+from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
 from brother_xl2hb.render.page import JobContext, render_page
 from brother_xl2hb.render.rows import Page, PageBuffer, PageData, collect_rows, is_blank_page
@@ -81,11 +81,13 @@ def filter_page(
 def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> None:
     """Render pages in input order, each as the model's `page_sends` say.
 
-    A page sent more than once is collected into one buffer first, since
-    streamed row blocks can be read only once. Each send is rendered into memory (its compressed XL2HB, typically
-    well under 10 MB) and written to `output` only once it is complete, so
-    a failure while reading or rendering a page never leaves a half page
-    in the printer data stream.
+    A page sent in more than one way is collected into one buffer first,
+    since streamed row blocks can be read only once. Each distinct send is
+    rendered once into memory (its compressed XL2HB, typically well under
+    10 MB) and repeated sends write those bytes again, so many copies cost
+    no rendering time. A send reaches `output` only once it is complete,
+    so a failure while reading or rendering a page never leaves a half
+    page in the printer data stream.
     """
     page_buf = io.BytesIO()
     # A counter instead of enumerate(): enumerate keeps the last (index,
@@ -94,16 +96,18 @@ def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> N
     index = 0
     for width, height, pixel_data in pages:
         sends = job.model.page_sends(job.settings, index)
-        data: PageData = collect_rows(pixel_data, width, height) if len(sends) > 1 else pixel_data
+        data: PageData = collect_rows(pixel_data, width, height) if len(set(sends)) > 1 else pixel_data
+        rendered: dict[PageSend, bytes] = {}
         for send in sends:
-            page_buf.seek(0)
-            page_buf.truncate()
-            render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
-            with page_buf.getbuffer() as page:
-                output.write(page)
+            if send not in rendered:
+                page_buf.seek(0)
+                page_buf.truncate()
+                render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
+                rendered[send] = page_buf.getvalue()
+            output.write(rendered[send])
         # Release the page's raster before the next page is read; with
         # whole-page buffers (skip blank, flipped pages) two would add up.
-        del pixel_data, data
+        del pixel_data, data, rendered
         index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
 
 
