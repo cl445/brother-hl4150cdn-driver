@@ -601,6 +601,21 @@ def test_sigterm_while_flushing_lets_the_flush_finish():
     assert flushed == [True]
 
 
+def test_nested_uninterrupted_blocks_cancel_after_the_outer_one():
+    canceler = cups_filter.CancelOnSigterm(io.BytesIO())
+    reached = []
+
+    def flush_then_signal():
+        with canceler.uninterrupted():
+            job_output.flush()
+            signal.raise_signal(signal.SIGTERM)
+            reached.append(True)
+
+    with canceler as job_output, pytest.raises(cups_filter.JobCanceledError):
+        flush_then_signal()
+    assert reached == [True]
+
+
 def test_gs_that_does_not_exit_after_its_output_is_killed(fake_gs, tmp_path, monkeypatch, caplog):
     from brother_xl2hb import cups_filter
 
