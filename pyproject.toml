@@ -19,6 +19,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Printing",
     "Topic :: System :: Hardware :: Hardware Drivers",
 ]
@@ -35,10 +36,14 @@ dev = ["ruff>=0.16.8", "nox>=2026.8.17", "pyrefly>=1.3.1", "deptry>=0.21"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["brother_xl2hb", "brother_xl2hb.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+# An unclosed file or pipe fails its test. Pytest reports a ResourceWarning
+# raised in a finalizer as PytestUnraisableExceptionWarning.
+filterwarnings = ["error::ResourceWarning", "error::pytest.PytestUnraisableExceptionWarning"]
 
 [tool.ruff]
 target-version = "py313"

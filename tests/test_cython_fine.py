@@ -6,6 +6,7 @@ import random
 import numpy as np
 import pytest
 
+from brother_xl2hb import _native
 from brother_xl2hb.codec import fine_encoder
 from brother_xl2hb.codec.fine_encoder import compress_pattern_encode, compress_rle_preencode, encode_fine_plane_py
 from brother_xl2hb.color import color_lut, dither
@@ -17,6 +18,8 @@ from brother_xl2hb.render.page import init_channels
 from brother_xl2hb.settings import ColorMatching, MediaType, PageSize, PrintSettings, Resolution
 
 _fine_fast = pytest.importorskip("brother_xl2hb._native._fine_fast")
+if _native.load("_fine_fast") is None:
+    pytest.skip(f"native kernels disabled by {_native.PURE_PYTHON_VAR}", allow_module_level=True)
 
 _LENGTHS = [0, 1, 2, 11, 12, 13, 1023, 1024, 1025, 2380, 4000]
 _PALETTE = [0x00, 0xFF, 0x0F, 0xF0, 0x0E, 0xE0, 0xF6, 0x6F, 0x44, 0x20, 0x02, 0x11, 0xEE, 0x1F, 0xF1]
@@ -99,9 +102,9 @@ def test_encode_fine_plane_accepts_buffers():
 
 def test_encode_fine_plane_dispatch(monkeypatch):
     data = _random_line(random.Random(8), 2380)
-    assert fine_encoder.HAS_CYTHON_FINE
+    assert fine_encoder._fine_fast is not None
     native = fine_encoder.encode_fine_plane(data)
-    monkeypatch.setattr(fine_encoder, "HAS_CYTHON_FINE", False)
+    monkeypatch.setattr(fine_encoder, "_fine_fast", None)
     assert fine_encoder.encode_fine_plane(data) == native == encode_fine_plane_py(data)
 
 
@@ -116,9 +119,9 @@ def test_dither_row_4bpp_matches_numpy(seed, monkeypatch):
         row = rng.integers(0, 256, 2 * width + 10, dtype=np.uint8)[::2]
         for y in (0, 5, 30, 31, 6811):
             native = dither.dither_channel_4bpp_arr(row, y, width, channel)
-            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER_4BPP", False)
+            monkeypatch.setattr(dither, "_fine_fast", None)
             reference = dither.dither_channel_4bpp_arr(row, y, width, channel)
-            monkeypatch.setattr(dither, "HAS_CYTHON_DITHER_4BPP", True)
+            monkeypatch.setattr(dither, "_fine_fast", _fine_fast)
             assert native == reference, (width, y)
 
 
@@ -174,7 +177,7 @@ def _fine_page(width: int, height: int, seed: int) -> bytes:
 
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
-    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", kernel)
+    monkeypatch.setattr(bands, "_fine_fast", _fine_fast if kernel else None)
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
     out = io.BytesIO()
     filter_pages(pages, settings, out)
@@ -223,9 +226,9 @@ def test_fine_kernel_matches_per_line_path_for_widths(width, page_size, fine_cha
 def test_fine_kernel_selection(fine_channels, monkeypatch):
     table = HL4150CDN.grid()
     assert band_kernel_colour(table, fine_channels, is_fine=True) is not None
-    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", False)
+    monkeypatch.setattr(bands, "_fine_fast", None)
     assert band_kernel_colour(table, fine_channels, is_fine=True) is None
-    monkeypatch.setattr(bands, "HAS_FINE_BAND_KERNEL", True)
+    monkeypatch.setattr(bands, "_fine_fast", _fine_fast)
     # Bayer fallback channels (no BRCD tables) have no nibble tables: per-line path.
     assert band_kernel_colour(table, dither._build_bayer_tables(toner_save=False), is_fine=True) is None
 

@@ -15,14 +15,9 @@ from collections.abc import Buffer
 import numpy as np
 import numpy.typing as npt
 
-try:
-    from brother_xl2hb._native._color_fast import (  # type: ignore[import-not-found]
-        adjust_saturation as _adjust_saturation_native,
-    )
+from brother_xl2hb import _native
 
-    HAS_CYTHON_SATURATION = True
-except ImportError:
-    HAS_CYTHON_SATURATION = False
+_color_fast = _native.load("_color_fast")
 
 # Divisor that scales the [-20, +20] saturation knob into per-channel deltas.
 _SCALE_FACTOR = 50.0
@@ -53,8 +48,8 @@ def adjust_saturation(rgb_row: Buffer, width: int, sat_mode: int) -> bytes:
         raise ValueError(msg)
     if sat_mode == 0:
         return bytes(rgb_row)
-    if HAS_CYTHON_SATURATION:
-        return _adjust_saturation_native(np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3), width, sat_mode)
+    if _color_fast is not None:
+        return _color_fast.adjust_saturation(np.frombuffer(rgb_row, dtype=np.uint8, count=width * 3), width, sat_mode)
     return adjust_saturation_py(rgb_row, width, sat_mode)
 
 
