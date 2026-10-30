@@ -237,19 +237,32 @@ def pjl_header(settings: PrintSettings) -> bytes:
 
 
 def page_sends(settings: PrintSettings, index: int) -> tuple[PageSend, ...]:
-    """How brhl4150cdnfilter sends the page at `index`: once, with PageCopies = copies.
+    """How brhl4150cdnfilter sends the page at `index`.
 
-    With duplex every second page is a back side. Long-edge back pages go
-    bottom-up with the back-side marker (rows mirrored, columns not).
-    BRReverse makes Brother's filter send every page that way, so on a
-    long-edge back page the two cancel out (verified against captures).
+    Uncollated (rc `Collate=OFF`, its default) it sends each page `copies`
+    times in a row, every send with PageCopies = copies, so the printer
+    makes copies² sheets of it (print_loop's copy loop; CUPS jobs carry
+    copies = 1). With `Collate=ON` it leaves copies to its caller: one
+    send, PageCopies 1.
+
+    Sides count sends, not pages: with duplex every second send is a back
+    side. Long-edge back sides go bottom-up with the back-side marker (rows
+    mirrored, columns not). BRReverse makes Brother's filter send every
+    page that way, so on a long-edge back side the two cancel out.
+    Verified against captures for 1-3 copies, simplex and duplex, reverse
+    and skip blank, in both resolutions.
 
     Returns:
-        A single `PageSend`.
+        One `PageSend` per transmission, in order.
     """
-    back_side = settings.duplex != DuplexMode.NONE and index % 2 == 1
-    flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
-    return (PageSend(flip=flip, copies=settings.copies),)
+    copies = 1 if settings.collate else settings.copies
+    n_sends = max(copies, 1)
+    sends = []
+    for side in range(index * n_sends, (index + 1) * n_sends):
+        back_side = settings.duplex != DuplexMode.NONE and side % 2 == 1
+        flip = (back_side and settings.duplex == DuplexMode.NO_TUMBLE) != settings.reverse
+        sends.append(PageSend(flip=flip, copies=copies))
+    return tuple(sends)
 
 
 HL4150CDN = PrinterModel(
