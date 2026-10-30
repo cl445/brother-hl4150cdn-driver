@@ -173,6 +173,23 @@ def encode_lines(
         yield encoders[0](k_dots), encoders[1](c_dots), encoders[2](m_dots), encoders[3](y_dots)
 
 
+# Rows converted to luma at a time. A flipped page arrives as one whole-page
+# block, and `_luma` widens to uint32 with temporaries, ~9 bytes per input
+# byte: unsplit, an A4 page peaks near 1 GB.
+_MONO_CHUNK_ROWS = 128
+
+
+def _split_rows(blocks: RowBlocks, rows: int) -> Iterator[npt.NDArray[np.uint8]]:
+    """Cut row blocks into views of at most `rows` rows.
+
+    Yields:
+        (rows, width * 3) uint8 views, top to bottom.
+    """
+    for block in blocks:
+        for lo in range(0, block.shape[0], rows):
+            yield block[lo : lo + rows]
+
+
 def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
     """Rec. 601 luma of (rows, width * 3) RGB rows, rounded as the original driver does.
 
@@ -207,7 +224,7 @@ def encode_lines_mono(
     pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
     line_idx = 0
 
-    for block in blocks:
+    for block in _split_rows(blocks, _MONO_CHUNK_ROWS):
         n = block.shape[0]
         white = white_rows(block).tolist()
         rgb = block

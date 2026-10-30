@@ -66,6 +66,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (M; was `encode_m_plane_10`).
 
 ### Fixed
+- Grayscale pages handed over as one block (the command-line tool,
+  reverse print, long-edge duplex back sides) peaked near 1 GB of
+  memory for A4; they are now converted in slices of 128 rows and stay
+  below 200 MB.
 - The CUPS filter imports the package installed beside it first; a
   `src/` directory next to its own directory (the repository layout) is
   only a fallback when that package is missing.
