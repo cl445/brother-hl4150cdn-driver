@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from brother_xl2hb import _native
 from brother_xl2hb.color.color_lut import write_inverse_luts
-from brother_xl2hb.job import chain_peeked, drop_blank_pages, filter_pages
+from brother_xl2hb.job import chain_peeked, filter_pages
 from brother_xl2hb.models import DEFAULT_MODEL, MODELS
 from brother_xl2hb.render.ppm import read_ppm
 from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
@@ -122,15 +122,6 @@ def main(argv: list[str] | None = None) -> None:
     pages = chain_peeked(first, pages)
     del first
 
-    if settings.skip_blank:
-        pages = drop_blank_pages(pages)
-
-    first = next(pages, None)
-    if first is None:
-        logger.info("All pages blank, nothing to print")
-        return
-    pages = chain_peeked(first, pages)
-    del first
     output = sys.stdout.buffer
     filter_pages(pages, settings, output, model)
     output.flush()
