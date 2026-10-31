@@ -96,7 +96,7 @@ class TestLUTGeneration:
             idx = i * 289 + i * 17 + i  # r=g=b=i
             cmyk = generated_lut[idx]
             # For dark neutrals, K should be significant
-            # Note: original LUT has K=0 starting at grid point 10
+            # The original LUT has K=0 from grid point 10 on
             if i < 10:
                 assert cmyk[3] > 0, f"Grid ({i},{i},{i}): K should be > 0"
 

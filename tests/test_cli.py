@@ -82,7 +82,7 @@ def test_cli_reads_existing_rc_file(monkeypatch, tmp_path):
 
 
 def test_cli_fine_help_describes_the_mode(monkeypatch, capsys):
-    """Fine mode was checked on the printer on 2026-10-28; the help no longer warns about it."""
+    """The help describes Fine mode as byte-identical to the original filter, without a warning."""
     monkeypatch.setenv("COLUMNS", "500")  # no line wrapping inside words
     with pytest.raises(SystemExit):
         cli.main(["--help"])

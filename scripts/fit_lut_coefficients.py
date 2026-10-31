@@ -7,9 +7,9 @@ Decomposes the 17x17x17 -> CMYK LUT into three physically interpretable layers:
 
 Joint least-squares fit of all layers simultaneously.
 
-This is the first-pass fit that color_lut_gen.py started from, not the
-generator of its shipped coefficients: those use 7x7x7 (rgb) and 9x9x9
-(srgb) residual grids plus sparse corrections. The script is kept as a record of the method.
+This is the method color_lut_gen.py builds on, not the generator of its
+shipped coefficients: those use 7x7x7 (rgb) and 9x9x9 (srgb) residual
+grids plus sparse corrections.
 
 Usage:
     uv run python scripts/fit_lut_coefficients.py [-o fitted_coefficients.py]
@@ -260,12 +260,9 @@ def generate_interp_tables_reference() -> np.ndarray:
                 # Fractional values (0-16 range)
                 rf, gf, bf = r_frac, g_frac, b_frac
 
-                # The 8 corner weights for tetrahedral interpolation
-                # Corner order: [0,17,1,18,289,306,290,307] in the flat array
-                # which maps to: (r,g,b) offsets:
-                #   0: (0,0,0)  1: (0,1,0)  2: (1,0,0)  3: (1,1,0)
-                #   4: (0,0,1)  5: (0,1,1)  6: (1,0,0)  7: (1,1,1)
-                # Actually in the driver order:
+                # The 8 corner weights for tetrahedral interpolation, in the
+                # driver's corner order [0,17,1,18,289,306,290,307] (offsets
+                # into the flat grid):
                 #   corner 0: base            = (r_lo, g_lo, b_lo)
                 #   corner 1: base+17         = (r_lo, g_lo+1, b_lo)
                 #   corner 2: base+1          = (r_lo+1, g_lo, b_lo)

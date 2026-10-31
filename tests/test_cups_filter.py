@@ -41,7 +41,7 @@ def test_gs_command_sets_the_page_size_in_points(cups_filter, monkeypatch, page_
 
 @pytest.mark.parametrize("page_size", ["Executive", "Env10", "EnvMonarch", "A4"])
 def test_ghostscript_renders_the_requested_size(cups_filter, tmp_path, page_size):
-    """Executive, Com-10 and Monarch came out as Letter while gs got paper names."""
+    """Ghostscript renders each page size at its PPD dimensions, not as Letter."""
     if cups_filter.shutil.which("gs") is None:
         pytest.skip("Ghostscript not installed")
     job = tmp_path / "job.ps"

@@ -19,7 +19,7 @@ def _ppm(pixel_data: bytes, width: int, height: int) -> bytes:
 
 
 def _reference_crop(pixel_data, src_width, src_height, target_w, target_h):
-    """The original per-row crop: printable window at (100, 100), white-padded."""
+    """Row-by-row reference crop: printable window at (100, 100), white-padded."""
     crop_w = min(target_w, src_width - 100)
     crop_h = min(target_h, src_height - 100)
     if crop_w <= 0 or crop_h <= 0:
