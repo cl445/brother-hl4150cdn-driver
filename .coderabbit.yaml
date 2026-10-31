@@ -27,6 +27,10 @@ reviews:
     ignore_title_keywords:
       - "WIP"
       - "DO NOT MERGE"
+    # Dependabot's lock-file bumps are covered by CI (byte-identity tests)
+    # and would use up the hourly review quota.
+    ignore_usernames:
+      - "dependabot[bot]"
 
   # Captures of Brother's filter (zstd), generated Cython C and the lock file
   # are not reviewable.
