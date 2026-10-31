@@ -2,12 +2,14 @@
 
 import io
 import sys
+from pathlib import Path
 
 import pytest
 
 from brother_xl2hb import cli
 from brother_xl2hb.job import filter_pages
-from brother_xl2hb.settings import PageSize, PrintSettings
+from brother_xl2hb.models import DEFAULT_MODEL, HL4150CDN
+from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 from fixture_utils import assert_matches_fixture
 
 
@@ -118,3 +120,62 @@ def test_cli_paper_takes_the_models_spellings(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         _run_cli(monkeypatch, ["--paper", "Tabloid"], _ppm(8, 4, (0, 0, 0)))
     assert "unknown paper size 'Tabloid'" in capsys.readouterr().err
+
+
+def test_cli_model_defaults_to_the_packages_default(monkeypatch, capsys):
+    monkeypatch.setenv("COLUMNS", "500")
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert f"Printer model (default: {DEFAULT_MODEL.key})" in capsys.readouterr().out
+
+
+def test_cli_without_rc_keeps_brothers_default_gray(monkeypatch):
+    """Brother's default rc (brhl4150cdnrc) has BRGray=OFF; only the PPD defaults it ON."""
+    out = _run_cli(monkeypatch, [], _ppm(8, 4, (90, 90, 90)))
+    expected = io.BytesIO()
+    filter_pages([(8, 4, bytes((90, 90, 90)) * 32)], PrintSettings(improve_gray=False), expected)
+    assert out == expected.getvalue()
+
+
+def test_cli_rc_with_odd_values_falls_back(monkeypatch, tmp_path):
+    """Unknown choices and a % in a value fall back as in Brother's filter instead of failing."""
+    rc = tmp_path / "brhl4150cdnrc"
+    rc.write_text("[hl4150cdn]\nPageSize=Foo\nBrightness=5%\nCopies=-1\n")
+    out = _run_cli(monkeypatch, ["--rc", str(rc)], _ppm(8, 4, (0, 0, 0)))
+    expected = io.BytesIO()
+    filter_pages([(8, 4, bytes(3) * 32)], PrintSettings(brightness=5), expected)
+    assert out == expected.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("flags", "overrides"),
+    [
+        (["--mono"], {"mono_color": MonoColor.MONO}),
+        (["--fine"], {"resolution": Resolution.FINE}),
+        (["--toner-save"], {"toner_save": True}),
+        (["--duplex", "long"], {"duplex": DuplexMode.NO_TUMBLE}),
+        (["--duplex", "short"], {"duplex": DuplexMode.TUMBLE}),
+        (["-m", "-f", "-t"], {"mono_color": MonoColor.MONO, "resolution": Resolution.FINE, "toner_save": True}),
+    ],
+)
+def test_cli_setting_flags(monkeypatch, flags, overrides):
+    pages = [(8, 4, (200, 120, 40)), (8, 4, (0, 0, 0))]
+    stream = b"".join(_ppm(w, h, rgb) for w, h, rgb in pages)
+    out = _run_cli(monkeypatch, flags, stream)
+
+    def render(settings):
+        expected = io.BytesIO()
+        filter_pages([(w, h, bytes(rgb) * (w * h)) for w, h, rgb in pages], settings, expected)
+        return expected.getvalue()
+
+    assert out == render(PrintSettings(**overrides))
+    assert out != render(PrintSettings())
+
+
+@pytest.mark.parametrize(("argv", "directory"), [(["--precompute-lut"], None), (["--precompute-lut", "luts"], "luts")])
+def test_cli_precompute_lut_writes_the_models_inverse_luts(monkeypatch, argv, directory):
+    calls = []
+    monkeypatch.setattr(cli, "write_inverse_luts", lambda tables, out_dir: calls.append((tables, out_dir)))
+    # Nothing is read from stdin or written to stdout.
+    assert _run_cli(monkeypatch, argv, b"") == b""
+    assert calls == [(HL4150CDN.inverse_lut_tables, None if directory is None else Path(directory))]

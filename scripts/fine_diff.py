@@ -37,6 +37,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import numpy as np
 import numpy.typing as npt
@@ -46,7 +47,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 from brother_decode import decode_fine_plane  # noqa: E402
 from brother_xl2hb.codec.fine_encoder import compress_rle_preencode, encode_fine_plane  # noqa: E402
-from brother_xl2hb.job import drop_blank_pages, filter_pages  # noqa: E402
+from brother_xl2hb.job import filter_pages  # noqa: E402
 from brother_xl2hb.models import HL4150CDN  # noqa: E402
 from brother_xl2hb.render import bands  # noqa: E402
 from brother_xl2hb.render.lines import DITHER_FNS, PLANE_ENCODERS  # noqa: E402
@@ -263,23 +264,22 @@ def run_python(
 
         return encode
 
-    has_kernel = bands.HAS_FINE_BAND_KERNEL
+    # The band kernel bypasses the hooks; the per-line path is its reference.
+    no_fine_kernel = mock.patch.object(bands, "_fine_fast", None)
     if record:
-        # The band kernel bypasses the hooks; the per-line path is its reference.
-        bands.HAS_FINE_BAND_KERNEL = False
+        no_fine_kernel.start()
         dither_fns[True] = recording_dither
         for plane in encoders:
             plane_encoders[plane] = recording_encoder(plane)
     try:
         out = io.BytesIO()
         job: list[tuple[int, int, PageData]] = [(page.shape[1], page.shape[0], page) for page in pages]
-        if settings.skip_blank:
-            job = list(drop_blank_pages(job))
-        # Production prints nothing at all when every page is blank.
+        # filter_pages also writes nothing when skip blank drops every page.
         if job:
             filter_pages(job, settings, out)
     finally:
-        bands.HAS_FINE_BAND_KERNEL = has_kernel
+        if record:
+            no_fine_kernel.stop()
         dither_fns[True] = dither
         plane_encoders.update(encoders)
     return out.getvalue(), calls

@@ -153,6 +153,7 @@ class PrintSettings:
     input_slot: InputSlot = InputSlot.AUTO
     resolution: Resolution = Resolution.NORMAL
     copies: int = 1
+    collate: bool = False
     duplex: DuplexMode = DuplexMode.NONE
     mono_color: MonoColor = MonoColor.AUTO
     color_matching: ColorMatching = ColorMatching.NORMAL
@@ -176,36 +177,77 @@ class PrintSettings:
         `aliases` are the model's spellings of option values (see
         `PrinterModel.aliases`).
 
+        Values are read as brhl4150cdnfilter reads them (checked against
+        it in Docker): an unknown choice keeps the default, with a
+        warning, and only an exact ON is on; a BRResolution other than
+        Normal is Fine; numbers are C `atoi`, so "50%" is 50, "abc" is 0
+        and they are not limited to the PPD's -20..20 (only to
+        ±`_RC_INT_LIMIT`, where the colour maths still fits 32 bits, as
+        in the original). Copies outside 1..`MAX_COPIES` are limited,
+        unlike the original, which sends PageCopies 0 for 0 and 65535
+        for -1.
+
         Returns:
             Populated settings instance (defaults if the file has no sections).
         """
         spelled = alias_lookup(aliases)
         settings = cls()
-        config = configparser.ConfigParser()
+        config = configparser.ConfigParser(interpolation=None)
         config.read(path)
         if not config.sections():
             return settings
         s = config[config.sections()[0]]
-        settings.media_type = MediaType(spelled("media_type", s.get("MediaType", settings.media_type)))
-        settings.page_size = PageSize(spelled("page_size", s.get("PageSize", settings.page_size)))
-        settings.input_slot = InputSlot(spelled("input_slot", s.get("InputSlot", settings.input_slot)))
-        settings.resolution = Resolution(s.get("BRResolution", settings.resolution))
-        settings.copies = int(s.get("Copies", str(settings.copies)))
-        settings.duplex = DuplexMode(spelled("duplex", s.get("Duplex", settings.duplex)))
-        settings.mono_color = MonoColor(spelled("mono_color", s.get("BRMonoColor", settings.mono_color)))
-        settings.color_matching = ColorMatching(s.get("BRColorMatching", settings.color_matching))
-        settings.improve_gray = s.get("BRGray", "OFF") == "ON"
-        settings.enhance_black = s.get("BREnhanceBlkPrt", "OFF") == "ON"
-        settings.toner_save = s.get("TonerSaveMode", "OFF") == "ON"
-        settings.improve_output = ImproveOutput(s.get("BRImproveOutput", "OFF"))
-        settings.brightness = int(s.get("Brightness", "0"))
-        settings.contrast = int(s.get("Contrast", "0"))
-        settings.red = int(s.get("RedKey", "0"))
-        settings.green = int(s.get("GreenKey", "0"))
-        settings.blue = int(s.get("BlueKey", "0"))
-        settings.saturation = int(s.get("Saturation", "0"))
-        settings.skip_blank = s.get("BRSkipBlank", "OFF") == "ON"
-        settings.reverse = s.get("BRReverse", "OFF") == "ON"
+
+        enum_map: dict[str, tuple[str, type[StrEnum]]] = {
+            "MediaType": ("media_type", MediaType),
+            "PageSize": ("page_size", PageSize),
+            "InputSlot": ("input_slot", InputSlot),
+            "Duplex": ("duplex", DuplexMode),
+            "BRMonoColor": ("mono_color", MonoColor),
+            "BRColorMatching": ("color_matching", ColorMatching),
+            "BRImproveOutput": ("improve_output", ImproveOutput),
+        }
+        for rc_key, (attr, enum_cls) in enum_map.items():
+            if rc_key in s:
+                try:
+                    setattr(settings, attr, enum_cls(spelled(attr, s[rc_key])))
+                except ValueError:
+                    logger.warning("Unknown %s value %r, keeping default", rc_key, s[rc_key])
+
+        if "BRResolution" in s:
+            if s["BRResolution"] not in tuple(Resolution):
+                logger.warning("Unknown BRResolution value %r, using Fine", s["BRResolution"])
+            settings.resolution = Resolution.NORMAL if s["BRResolution"] == Resolution.NORMAL else Resolution.FINE
+
+        if "Copies" in s:
+            settings.copies = valid_copies(_atoi(s["Copies"]))
+
+        bool_map: dict[str, str] = {
+            "Collate": "collate",
+            "BRGray": "improve_gray",
+            "BREnhanceBlkPrt": "enhance_black",
+            "TonerSaveMode": "toner_save",
+            "BRSkipBlank": "skip_blank",
+            "BRReverse": "reverse",
+        }
+        for rc_key, attr in bool_map.items():
+            setattr(settings, attr, s.get(rc_key, "OFF") == "ON")
+
+        int_map: dict[str, str] = {
+            "Brightness": "brightness",
+            "Contrast": "contrast",
+            "RedKey": "red",
+            "GreenKey": "green",
+            "BlueKey": "blue",
+            "Saturation": "saturation",
+        }
+        for rc_key, attr in int_map.items():
+            if rc_key in s:
+                value = _atoi(s[rc_key])
+                if abs(value) > _RC_INT_LIMIT:
+                    value = max(-_RC_INT_LIMIT, min(_RC_INT_LIMIT, value))
+                    logger.warning("%s=%s out of range, using %d", rc_key, s[rc_key], value)
+                setattr(settings, attr, value)
         return settings
 
     @classmethod
@@ -219,11 +261,15 @@ class PrintSettings:
         """Parse a CUPS option string into PrintSettings.
 
         CUPS passes options as space-separated Key=Value pairs, e.g.:
-        ``"PageSize=A4 Duplex=DuplexNoTumble BRBrightness=5"``. It only
-        passes what the job carries, so the queue's PPD defaults
-        (`ppd_defaults`, see `read_ppd_defaults`) apply first and the job's
-        options override them, as Brother's cupswrapper does. An IPP
-        `sides` in the job still beats a PPD default duplex.
+        ``"PageSize=A4 Duplex=DuplexNoTumble BRBrightness=5"``, quoted as
+        `parse_cups_options` reads them. It only passes what the job
+        carries, so the queue's PPD defaults (`ppd_defaults`, see
+        `read_ppd_defaults`) apply first and the job's options override
+        them, as Brother's cupswrapper does. The IPP options of generic
+        clients, `sides` and `print-color-mode=monochrome`, beat the PPD
+        defaults but not the job's own Duplex or BRMonoColor. IPP
+        `print-quality` is not mapped: Fine is a separate, much slower
+        mode, chosen with BRResolution only.
 
         `aliases` are the model's spellings of option values (see
         `PrinterModel.aliases`).
@@ -233,13 +279,9 @@ class PrintSettings:
         """
         spelled = alias_lookup(aliases)
         settings = cls()
-        settings.copies = copies
+        settings.copies = valid_copies(copies)
 
-        job_opts: dict[str, str] = {}
-        for token in options_str.split():
-            if "=" in token:
-                key, value = token.split("=", 1)
-                job_opts[key] = value
+        job_opts = parse_cups_options(options_str)
         opts = {**(ppd_defaults or {}), **job_opts}
 
         # Enum options
@@ -268,11 +310,22 @@ class PrintSettings:
             else:
                 settings.duplex = sides
 
+        # IPP "print-color-mode" when the job has no BRMonoColor: monochrome
+        # prints K-only; color and auto leave the PPD's choice (Auto by
+        # default), since FullColor would turn off the colour detection.
+        if "BRMonoColor" not in job_opts and "print-color-mode" in opts:
+            mode = opts["print-color-mode"]
+            if mode in _MONOCHROME_COLOR_MODES:
+                settings.mono_color = MonoColor.MONO
+            elif mode not in _COLOR_MODES:
+                logger.warning("Unknown print-color-mode value %r, keeping default", mode)
+
         # Resolution: "600x2400dpi" -> Fine, else Normal
         if "BRResolution" in opts:
             settings.resolution = Resolution.FINE if opts["BRResolution"] == "600x2400dpi" else Resolution.NORMAL
 
-        # Boolean options (ON/OFF)
+        # Boolean options (ON/OFF, also true/false and yes/no in any case:
+        # `-o noBRGray` reaches the filter as BRGray=false)
         bool_map: dict[str, str] = {
             "BRTonerSaveMode": "toner_save",
             "BRSkipBlank": "skip_blank",
@@ -282,7 +335,11 @@ class PrintSettings:
         }
         for cups_key, attr in bool_map.items():
             if cups_key in opts:
-                setattr(settings, attr, opts[cups_key] == "ON")
+                value = _BOOLEANS.get(opts[cups_key].lower())
+                if value is None:
+                    logger.warning("Unknown %s value %r, keeping default", cups_key, opts[cups_key])
+                else:
+                    setattr(settings, attr, value)
 
         # Integer options (-20..+20)
         int_map: dict[str, str] = {
@@ -321,8 +378,121 @@ def read_ppd_defaults(path: str | Path) -> dict[str, str]:
     return dict(_PPD_DEFAULT.findall(text))
 
 
+def parse_cups_options(options: str) -> dict[str, str]:
+    """Split a CUPS option string into options as `cupsParseOptions` does.
+
+    Options are separated by whitespace. A value may be quoted with '…' or
+    "…" (quotes removed), a backslash takes the next character literally,
+    and a {…} collection is kept as it is. A name without `=` is a
+    boolean: ``noName`` gives Name=false, any other name=true. A later
+    option of the same name replaces an earlier one.
+
+    Returns:
+        Option name → value.
+    """
+    opts: dict[str, str] = {}
+    pos, end = 0, len(options)
+    while pos < end:
+        while pos < end and options[pos].isspace():
+            pos += 1
+        start = pos
+        while pos < end and not options[pos].isspace() and options[pos] != "=":
+            pos += 1
+        name = options[start:pos]
+        if not name:
+            break
+        while pos < end and options[pos].isspace():
+            pos += 1
+        if pos >= end or options[pos] != "=":
+            if name[:2].lower() == "no":
+                opts[name[2:]] = "false"
+            else:
+                opts[name] = "true"
+            continue
+        pos += 1
+        value: list[str] = []
+        while pos < end and not options[pos].isspace():
+            char = options[pos]
+            if char in "'\"":
+                pos += 1
+                while pos < end and options[pos] != char:
+                    if options[pos] == "\\" and pos + 1 < end:
+                        pos += 1
+                    value.append(options[pos])
+                    pos += 1
+                pos += 1
+            elif char == "{":
+                depth = 0
+                while pos < end:
+                    if options[pos] == "\\" and pos + 1 < end:
+                        pos += 1
+                    elif options[pos] == "{":
+                        depth += 1
+                    elif options[pos] == "}":
+                        depth -= 1
+                    value.append(options[pos])
+                    pos += 1
+                    if depth == 0:
+                        break
+            else:
+                if char == "\\" and pos + 1 < end:
+                    pos += 1
+                value.append(options[pos])
+                pos += 1
+        opts[name] = "".join(value)
+    return opts
+
+
+MAX_COPIES = 9999
+"""Most copies a job may ask for: CUPS's default MaxCopies; PageCopies is 16 bits."""
+
+
+def valid_copies(copies: int) -> int:
+    """`copies` limited to 1..`MAX_COPIES`, with a warning if it was outside.
+
+    Returns:
+        The number of copies to print.
+    """
+    if 1 <= copies <= MAX_COPIES:
+        return copies
+    limited = max(1, min(MAX_COPIES, copies))
+    logger.warning("Copies=%d out of range, printing %d", copies, limited)
+    return limited
+
+
+_RC_INT_LIMIT = 1_000_000
+"""Largest rc colour adjustment kept; far past where the colour transforms saturate."""
+
+# ASCII only: C atoi skips C-locale whitespace and reads 0-9, no other digits.
+_ATOI = re.compile(r"\s*([+-]?)0*(\d+)", re.ASCII)
+# Digits read at most; longer numbers saturate there, as strtol saturates.
+# Far past every limit applied to the result, and well under the length
+# int() refuses to convert.
+_ATOI_MAX_DIGITS = 18
+
+
+def _atoi(text: str) -> int:
+    """`text` read as C's `atoi` reads it: the leading integer, else 0.
+
+    Returns:
+        The integer, saturated at 18 digits.
+    """
+    match = _ATOI.match(text)
+    if not match:
+        return 0
+    sign, digits = match.groups()
+    if len(digits) > _ATOI_MAX_DIGITS:
+        digits = "9" * _ATOI_MAX_DIGITS
+    return int(sign + digits)
+
+
 _SIDES_TO_DUPLEX = {
     "one-sided": DuplexMode.NONE,
     "two-sided-long-edge": DuplexMode.NO_TUMBLE,
     "two-sided-short-edge": DuplexMode.TUMBLE,
 }
+
+_MONOCHROME_COLOR_MODES = frozenset({"monochrome", "bi-level", "process-monochrome", "process-bi-level"})
+_COLOR_MODES = frozenset({"color", "auto", "auto-monochrome", "highlight"})
+
+_BOOLEANS = {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False}

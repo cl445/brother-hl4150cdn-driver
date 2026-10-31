@@ -1,0 +1,28 @@
+# Dependabot: monthly, one grouped PR per ecosystem.
+# Docs: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    # Bump uv.lock only. The lower bounds in pyproject.toml (numpy>=2.5.3)
+    # stay where they are, so an install that meets them needs no upgrade.
+    versioning-strategy: "lockfile-only"
+    groups:
+      python:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"

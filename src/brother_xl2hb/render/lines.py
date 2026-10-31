@@ -4,14 +4,13 @@ Reference for the native band kernels (`bands`), which must match it byte for by
 """
 
 from collections.abc import Buffer, Callable, Iterator
-from functools import partial
 from typing import NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 
 from brother_xl2hb.codec.fine_encoder import encode_fine_plane
-from brother_xl2hb.codec.plane_encoders import encode_c_plane, encode_m_plane_10, encode_plane
+from brother_xl2hb.codec.plane_encoders import encode_plane_10bit, encode_plane_12bit, encode_plane_20bit
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.color.dither import (
     DitherChannel,
@@ -34,16 +33,16 @@ BLANK_LINE: LineCodes = (b"", b"", b"", b"")
 DITHER_FNS = {False: dither_channel_1bpp_arr, True: dither_channel_4bpp_arr}
 
 
-# Per-mode plane encoders, keyed by plane id; partial() pins the K/Y label.
+# Per-mode plane encoders, keyed by plane id.
 _PlaneEncoder = Callable[[bytes], bytes]
 
 
 PLANE_ENCODERS: dict[bool, dict[int, _PlaneEncoder]] = {
     False: {  # Normal mode: 12-bit K/Y RLE, 20-bit C, 10-bit M
-        0: partial(encode_plane, plane="K"),
-        1: encode_c_plane,
-        2: encode_m_plane_10,
-        3: partial(encode_plane, plane="Y"),
+        0: encode_plane_12bit,
+        1: encode_plane_20bit,
+        2: encode_plane_10bit,
+        3: encode_plane_12bit,
     },
     True: dict.fromkeys(range(4), encode_fine_plane),  # Fine mode: same encoder for all planes
 }
@@ -174,6 +173,23 @@ def encode_lines(
         yield encoders[0](k_dots), encoders[1](c_dots), encoders[2](m_dots), encoders[3](y_dots)
 
 
+# Rows converted to luma at a time. A flipped page arrives as one whole-page
+# block, and `_luma` widens to uint32 with temporaries, ~9 bytes per input
+# byte: unsplit, an A4 page peaks near 1 GB.
+_MONO_CHUNK_ROWS = 128
+
+
+def _split_rows(blocks: RowBlocks, rows: int) -> Iterator[npt.NDArray[np.uint8]]:
+    """Cut row blocks into views of at most `rows` rows.
+
+    Yields:
+        (rows, width * 3) uint8 views, top to bottom.
+    """
+    for block in blocks:
+        for lo in range(0, block.shape[0], rows):
+            yield block[lo : lo + rows]
+
+
 def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
     """Rec. 601 luma of (rows, width * 3) RGB rows, rounded as the original driver does.
 
@@ -208,7 +224,7 @@ def encode_lines_mono(
     pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
     line_idx = 0
 
-    for block in blocks:
+    for block in _split_rows(blocks, _MONO_CHUNK_ROWS):
         n = block.shape[0]
         white = white_rows(block).tolist()
         rgb = block

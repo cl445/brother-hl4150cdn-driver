@@ -5,7 +5,7 @@ Colour lookup, ordered dither and sliding-window RLE for a whole band in
 one call without the GIL, so bands can render on several threads. Output
 is byte-identical to the per-line path in lines.encode_lines: colour
 through the inverse LUT (or interpolated in the colour grid), 1bpp
-threshold dither, then encode_plane / encode_c_plane / encode_m_plane_10.
+threshold dither, then encode_plane_12bit / encode_plane_20bit / encode_plane_10bit.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
@@ -16,7 +16,7 @@ from brother_xl2hb._native._color_fast cimport interp_pixel
 from brother_xl2hb._native._rle_fast cimport OutBuf, encode_line, encode_scratch_words
 
 # RLE word size per plane (K, C, M, Y), as in
-# plane_encoders.encode_plane / encode_c_plane / encode_m_plane_10.
+# plane_encoders.encode_plane_12bit / encode_plane_20bit / encode_plane_10bit.
 cdef int[4] _BITS = [12, 20, 10, 12]
 
 _LUT_SIZE = 256 * 256 * 256 * 4

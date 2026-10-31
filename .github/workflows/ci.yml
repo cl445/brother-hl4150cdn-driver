@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: "3.13"
           enable-cache: true
@@ -43,7 +43,7 @@ jobs:
         python: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
@@ -58,6 +58,6 @@ jobs:
         # The Cython comparison tests skip when a module is missing; fail
         # here instead so a broken build cannot pass silently.
         if: matrix.variant == 'cython'
-        run: uv run python -c "import sys; sys.path.insert(0, 'src'); from brother_xl2hb._native import _rle_fast, _color_fast, _dither_fast, _band_fast, _fine_fast"
+        run: uv run python -c "import sys; sys.path.insert(0, 'src'); from brother_xl2hb import _native; sys.exit(_native.summary() if _native.missing() else 0)"
       - name: Run pytest
         run: uv run pytest tests/

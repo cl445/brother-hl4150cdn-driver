@@ -27,6 +27,10 @@ reviews:
     ignore_title_keywords:
       - "WIP"
       - "DO NOT MERGE"
+    # Dependabot's lock-file bumps are covered by CI (byte-identity tests)
+    # and would use up the hourly review quota.
+    ignore_usernames:
+      - "dependabot[bot]"
 
   # Captures of Brother's filter (zstd), generated Cython C and the lock file
   # are not reviewable.
@@ -59,8 +63,9 @@ reviews:
         change to one side without the other or without a parity test.
         `boundscheck=False`, `wraparound=False` and `cdivision=True` are
         intentional, so check index arithmetic and divisors by hand. Code
-        under `nogil` must not touch Python objects. The target includes a
-        Raspberry Pi 3B+ (aarch64, 905 MB RAM): watch allocations per band.
+        under `nogil` must not touch Python objects. The driver runs on any
+        architecture; the smallest machine it runs on is a Raspberry Pi 3B+
+        (aarch64, 905 MB RAM), so watch allocations per band.
     - path: "src/brother_xl2hb/models/**"
       instructions: >-
         Everything printer-specific belongs in a `PrinterModel`
@@ -78,7 +83,7 @@ reviews:
         Python must call the real pure-Python path, not a copy of it.
     - path: "cups/**"
       instructions: >-
-        Installed and run by CUPS on Linux, typically a Raspberry Pi.
+        Installed and run by CUPS on Linux, on any architecture.
         `install.sh`/`uninstall.sh` run as root: quote everything, keep
         `set -euo pipefail`, keep them idempotent. The PPD follows Brother's
         own PPD; its shared OrderDependency values and padded labels are

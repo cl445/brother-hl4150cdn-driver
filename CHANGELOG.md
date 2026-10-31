@@ -42,6 +42,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (the unpacked package to `.brother-blobs/<model>/`); re-run it
   after pulling. `cups/install.sh` replaces the flat module layout of
   1.2.0 in `/usr/local/lib/brhl4150cdn/`.
+- The CUPS filter and the CLI log once per job which Cython kernels are
+  in use: a warning that names the missing ones and how to rebuild them
+  (e.g. after a Python upgrade), INFO otherwise. `BRXL2HB_PURE_PYTHON=1`
+  forces the pure-Python fallbacks.
+- Fallbacks that change the output warn and name the missing files and
+  `scripts/extract_blobs.sh <model>`: the generated rgb/srgb default
+  grids (was INFO) and Normal-mode dither tables for Fine mode (was
+  INFO). The Bayer warning names the Fine tables when those are missing.
+- pytest stops when a built native extension is older than its
+  `.pyx`/`.pxd`.
 - `scripts/extract_blobs.sh` checks the downloaded package's SHA-256
   instead of its MD5.
 - `cups/install.sh` installs numpy below 3 and builds the native modules
@@ -50,8 +60,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scripts/fine_diff.py` and `scripts/trace_dither.py` cache in `.cache/`
   instead of `build/`, which is left to setuptools.
 - CI also runs the tests on Python 3.14.
+- The Normal-mode plane encoders are named by word width:
+  `encode_plane_12bit` (K, Y; was `encode_plane(data, plane)`),
+  `encode_plane_20bit` (C; was `encode_c_plane`) and `encode_plane_10bit`
+  (M; was `encode_m_plane_10`).
 
 ### Fixed
+- Grayscale pages handed over as one block (the command-line tool,
+  reverse print, long-edge duplex back sides) peaked near 1 GB of
+  memory for A4; they are now converted in slices of 128 rows and stay
+  below 200 MB.
 - The CUPS filter imports the package installed beside it first; a
   `src/` directory next to its own directory (the repository layout) is
   only a fallback when that package is missing.
@@ -59,9 +77,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the K/Y encoder flushes at 4095 words instead of 2047, and no encoder
   repeats the last word after the flush. A scanline has at most about 425
   words, so printed output does not change (#3).
+- IPP `print-color-mode=monochrome` (and bi-level) from generic and
+  AirPrint clients prints in mono; a job's own BRMonoColor still wins,
+  as Duplex does over `sides`.
+- CUPS options are split as `cupsParseOptions` does: quoted values,
+  backslash escapes and `noName` for Name=false. Boolean options take
+  on/off, true/false and yes/no in any case.
+- Copies are limited to 1..9999: 0 and -1 sent PageCopies 0 and 65535.
+- An rc file with an unknown choice, a `%` or a non-number no longer
+  stops the CLI; it reads them as Brother's filter does (default,
+  C `atoi`, BRResolution other than Normal is Fine).
+- Uncollated copies in duplex no longer print a page on both sides of a
+  sheet. Ghostscript repeated each page for NumCopies; in duplex it now
+  renders the whole job once per copy, and a copy that prints an odd
+  number of pages gets a blank back, so the next copy starts on a new
+  sheet. The count is taken after BRSkipBlank, which keeps that blank
+  back. Simplex copies are unchanged.
 - Grayscale (BRMonoColor=Mono) ignores the Red, Green and Blue keys and
   keeps Brightness and Contrast with BRColorMatching=None, as the
   original does.
+- `Copies` and `Collate` from an rc file (CLI `--rc`) give the original's
+  bytes: uncollated, each page is sent `Copies` times in a row with
+  PageCopies = Copies, duplex sides counting sends; with `Collate=ON`
+  each page goes once with PageCopies 1. Repeated sends reuse the
+  rendered bytes. CUPS jobs carry one copy and are unchanged.
 
 ## [1.2.0] — 2026-10-28
 
