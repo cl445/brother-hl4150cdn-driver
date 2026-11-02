@@ -158,9 +158,9 @@ fn emit_context_skip(o: &mut Vec<u8>, count: isize) {
 
 /// Split the scanline into `bits`-bit words, MSB first, like rle.group_bits.
 /// The last word is zero-padded.
-fn extract_words(p: &[u8], bits: u32) -> Vec<u32> {
+fn extract_words(p: &[u8], bits: u32, out: &mut Vec<u32>) {
     let mask = (1u64 << bits) - 1;
-    let mut out = Vec::with_capacity((p.len() * 8).div_ceil(bits as usize));
+    out.clear();
     let mut buf = 0u64;
     let mut buf_bits = 0u32;
     for &b in p {
@@ -174,7 +174,6 @@ fn extract_words(p: &[u8], bits: u32) -> Vec<u32> {
     if buf_bits > 0 {
         out.push(((buf << (bits - buf_bits)) & mask) as u32);
     }
-    out
 }
 
 #[derive(Clone, Copy)]
@@ -190,7 +189,7 @@ enum State {
 ///
 /// `bits` selects the settings of rle.CONFIG_10BIT / CONFIG_12BIT /
 /// CONFIG_20BIT (context size, literal overflow); keep the two in sync.
-fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>) {
+fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
     let n = words.len();
     if n == 0 {
         return;
@@ -198,7 +197,8 @@ fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>) {
     let ctx_size = if bits == 10 { 5 } else { 3 };
     let lit_overflow: isize = if bits == 20 { 0x7FF } else { 0xFFF };
     let mut ctx = [0u32; 5];
-    let mut wbuf = vec![0u32; n + 2];
+    wbuf.clear();
+    wbuf.resize(n + 2, 0);
     let mut wlen = 0usize;
     let mut match_count: isize = 0;
     let mut run_len: isize = 0;
@@ -358,24 +358,39 @@ pub fn is_word_size(bits: i32) -> bool {
 /// config: 12 (CONFIG_12BIT), 20 (CONFIG_20BIT) or 10 (CONFIG_10BIT).
 /// Appends nothing if every word is zero. Returns the number of bytes appended.
 pub fn encode_line(p: &[u8], bits: u32, o: &mut Vec<u8>) -> usize {
-    let start = o.len();
-    // Every word is zero exactly when every byte is (the padding is zero).
-    if p.iter().all(|&b| b == 0) {
-        return 0;
-    }
-    let words = extract_words(p, bits);
-    o.reserve(words.len() * 3 + 64);
-    sw_rle(&words, bits, o);
+    LineEncoder::default().encode(p, bits, o)
+}
 
-    if o.len() - start > p.len() + 0x14 {
-        // Raw fallback, see rle.finalize_compressed.
-        o.truncate(start);
-        literal_header(o, words.len() as isize);
-        let padded_bytes = (words.len() * bits as usize).div_ceil(8);
-        o.extend_from_slice(p);
-        o.resize(o.len() + padded_bytes - p.len(), 0);
+/// `encode_line` with scratch space kept between lines.
+#[derive(Default)]
+pub struct LineEncoder {
+    words: Vec<u32>,
+    wbuf: Vec<u32>,
+}
+
+impl LineEncoder {
+    /// See `encode_line`.
+    pub fn encode(&mut self, p: &[u8], bits: u32, o: &mut Vec<u8>) -> usize {
+        let start = o.len();
+        // Every word is zero exactly when every byte is (the padding is zero).
+        if p.iter().all(|&b| b == 0) {
+            return 0;
+        }
+        extract_words(p, bits, &mut self.words);
+        let n_words = self.words.len();
+        o.reserve(n_words * 3 + 64);
+        sw_rle(&self.words, bits, o, &mut self.wbuf);
+
+        if o.len() - start > p.len() + 0x14 {
+            // Raw fallback, see rle.finalize_compressed.
+            o.truncate(start);
+            literal_header(o, n_words as isize);
+            let padded_bytes = (n_words * bits as usize).div_ceil(8);
+            o.extend_from_slice(p);
+            o.resize(o.len() + padded_bytes - p.len(), 0);
+        }
+        o.len() - start
     }
-    o.len() - start
 }
 
 #[cfg(feature = "python")]

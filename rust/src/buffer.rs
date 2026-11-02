@@ -79,6 +79,17 @@ pub fn matrix_mut<T: Element>(buf: &mut PyBuffer<T>) -> PyResult<(&mut [T], usiz
     Ok((items, rows, cols))
 }
 
+/// A writable C-contiguous one-dimensional buffer as a slice, like Cython's `T[::1]`.
+pub fn contiguous_mut<T: Element>(buf: &mut PyBuffer<T>) -> PyResult<&mut [T]> {
+    if buf.readonly() {
+        return Err(PyValueError::new_err("expected a writable buffer"));
+    }
+    let items = contiguous(buf)?;
+    // SAFETY: the exporter allows writes, and the exclusive borrow of `buf`
+    // makes this the only view of the buffer.
+    Ok(unsafe { std::slice::from_raw_parts_mut(items.as_ptr() as *mut T, items.len()) })
+}
+
 /// The rows of a two-dimensional byte buffer whose rows are contiguous, like
 /// Cython's `const unsigned char[:, :]` with unit column stride; the row
 /// stride may be anything (cropped and reversed views).
