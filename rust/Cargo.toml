@@ -1,0 +1,29 @@
+[package]
+name = "brother-xl2hb-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+description = "Rust kernels for brother_xl2hb, loaded as brother_xl2hb._native._rust"
+publish = false
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib", "rlib"]
+
+# The kernels build without Python, so `cargo test --no-default-features`
+# needs no libpython to link against.
+[features]
+default = ["python"]
+python = ["dep:pyo3", "dep:pyo3-build-config"]
+
+[dependencies]
+# abi3-py313: one build serves every Python the driver supports (>= 3.13).
+pyo3 = { version = "0.30.1", optional = true, features = ["abi3-py313", "extension-module"] }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.30.1", optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1

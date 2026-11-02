@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Experimental Rust kernels in `rust/` (PyO3), built with
+  `scripts/build_rust.sh` into `brother_xl2hb._native._rust`. The first
+  one is `_dither_fast`. `_native.load` takes a kernel from Rust, then
+  Cython, then falls back to Python; `BRXL2HB_BACKEND=cython|python`
+  narrows that. CI runs the byte-identity suite with the Rust kernels
+  too.
+
 ### Changed
 - The code is one package, `brother_xl2hb`, with the subpackages `codec`,
   `color`, `protocol`, `render` and `_native` (Cython). The CLI without

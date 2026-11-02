@@ -30,16 +30,32 @@ jobs:
       - name: Dependency check
         run: uv run nox -s deps
 
+  rust-checks:
+    name: cargo fmt + clippy + test
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rustfmt
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test --no-default-features
+
   tests:
-    # Both variants run the byte-identity suite: "cython" covers the native
-    # modules, "pure-python" the fallbacks used when no compiler is available.
+    # Every variant runs the byte-identity suite: "cython" covers the native
+    # modules, "rust" the Rust kernels (with Cython for those not ported yet),
+    # "pure-python" the fallbacks used when no compiler is available.
     # Python: the oldest version pyproject.toml allows and the newest.
     name: pytest (${{ matrix.variant }}, Python ${{ matrix.python }}, with Brother blobs)
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        variant: [cython, pure-python]
+        variant: [cython, rust, pure-python]
         python: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
@@ -52,12 +68,18 @@ jobs:
       - name: Pull Brother blobs (verified SHA-256; not redistributed)
         run: ./scripts/extract_blobs.sh
       - name: Build Cython modules
-        if: matrix.variant == 'cython'
+        if: matrix.variant != 'pure-python'
         run: uv run --with cython==3.3.0,setuptools==84.2.1 python setup_cython.py build_ext --inplace
+      - name: Build Rust kernels
+        if: matrix.variant == 'rust'
+        run: ./scripts/build_rust.sh
       - name: Check that the native modules load
-        # The Cython comparison tests skip when a module is missing; fail
+        # The native comparison tests skip when a module is missing; fail
         # here instead so a broken build cannot pass silently.
-        if: matrix.variant == 'cython'
+        if: matrix.variant != 'pure-python'
         run: uv run python -c "import sys; sys.path.insert(0, 'src'); from brother_xl2hb import _native; sys.exit(_native.summary() if _native.missing() else 0)"
+      - name: Check that the Rust kernels are in use
+        if: matrix.variant == 'rust'
+        run: uv run python -c "import sys; sys.path.insert(0, 'src'); from brother_xl2hb import _native; sys.exit(0 if _native.backend('_dither_fast') == 'rust' else _native.summary())"
       - name: Run pytest
         run: uv run pytest tests/
