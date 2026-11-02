@@ -1,11 +1,15 @@
 """Session-wide pytest fixtures, and a check that the built native kernels are current."""
 
+import contextlib
+import importlib
 import re
 from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 
 import pytest
+from _pytest.mark import ParameterSet
 
+from brother_xl2hb import _native
 from extract_fixtures import CaptureFixture
 from fixture_utils import CAPTURE_NAMES, parse_capture
 
@@ -52,6 +56,25 @@ def rust_build_is_stale(native_dir: Path = _NATIVE_DIR, crate: Path = _RUST_CRAT
         return False
     sources = [crate / "Cargo.toml", crate / "build.rs", *(crate / "src").rglob("*.rs")]
     return any(path.stat().st_mtime > built.stat().st_mtime for path in sources if path.exists())
+
+
+def native_variants(name: str) -> list[ParameterSet]:
+    """Every built implementation of the native kernel `name`, for a parametrized fixture.
+
+    Empty when BRXL2HB_BACKEND or BRXL2HB_PURE_PYTHON turn the native kernels off.
+
+    Returns:
+        pytest.param(module, id="rust" | "cython") for the Rust and the Cython build, as far as they exist.
+    """
+    if not _native.backend_chain():
+        return []
+    variants = []
+    rust = _native.rust_build()
+    if not isinstance(rust, str) and hasattr(rust, name):
+        variants.append(pytest.param(getattr(rust, name), id="rust"))
+    with contextlib.suppress(ImportError):
+        variants.append(pytest.param(importlib.import_module(f"brother_xl2hb._native.{name}"), id="cython"))
+    return variants
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:

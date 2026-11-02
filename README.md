@@ -230,11 +230,12 @@ pytest refuses to start while a built extension is older than its
 extensions and use the pure-Python fallbacks.
 
 An experimental Rust port of the kernels lives in `rust/` (PyO3, one
-abi3 build for every supported Python). So far it has `_dither_fast`.
-Build it with `./scripts/build_rust.sh` (needs cargo); the driver then
-takes each kernel from Rust if it is ported, else from Cython.
-`BRXL2HB_BACKEND=cython` skips the Rust build, `BRXL2HB_BACKEND=python`
-skips both. `cups/install.sh` does not build it yet.
+abi3 build for every supported Python). So far it has `_dither_fast`
+and `_rle_fast`. Build it with `./scripts/build_rust.sh` (needs cargo);
+the driver then takes each kernel from Rust if it is ported, else from
+Cython. `BRXL2HB_BACKEND=cython` skips the Rust build,
+`BRXL2HB_BACKEND=python` skips both. `cups/install.sh` does not build
+it yet.
 
 The test fixtures in `tests/fixtures/` are zstd-compressed XL2HB
 captures from the manufacturer's filter — pytest decompresses them on

@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 mod buffer;
 pub mod dither;
+pub mod rle;
 
 #[cfg(feature = "python")]
 #[pymodule]
@@ -16,5 +17,8 @@ fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let dither_fast = PyModule::new(m.py(), "_dither_fast")?;
     dither::register(&dither_fast)?;
     m.add_submodule(&dither_fast)?;
+    let rle_fast = PyModule::new(m.py(), "_rle_fast")?;
+    rle::register(&rle_fast)?;
+    m.add_submodule(&rle_fast)?;
     Ok(())
 }

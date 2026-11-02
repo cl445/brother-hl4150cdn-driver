@@ -112,7 +112,8 @@ def test_rust_kernel_comes_first(fresh_loader, monkeypatch) -> None:
     assert _native.load("_dither_fast") is rust._dither_fast
     assert _native.backend("_dither_fast") == "rust"
     assert _native.backend("_fine_fast") == "cython"
-    assert "Rust: _dither_fast" in _native.summary()
+    rust_part = _native.summary().split("Rust: ")[1].split(";")[0]
+    assert "_dither_fast" in rust_part.split(", ")
 
     _native.load.cache_clear()
     monkeypatch.setenv(_native.BACKEND_VAR, "cython")
