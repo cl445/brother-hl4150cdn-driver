@@ -72,6 +72,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `encode_plane_12bit` (K, Y; was `encode_plane(data, plane)`),
   `encode_plane_20bit` (C; was `encode_c_plane`) and `encode_plane_10bit`
   (M; was `encode_m_plane_10`).
+- Grayscale pages in Normal mode render in the native band kernel
+  (`render_band_mono` in `_band_fast`) on the render threads, with NEON
+  on 64-bit ARM. On the Raspberry Pi 3B+ an A4 page takes 0.3 to 0.4 s
+  instead of 2.5 to 2.8 s, and a 4-page job peaks at 45 MB instead of
+  89 MB. Fine grayscale, and grayscale without the native modules, still
+  render per line.
+- The Normal and Fine band kernels work in two passes: they convert a
+  row to KCMY once per run of equal pixels and reuse the last row when it
+  repeats, then dither (Normal: NEON on 64-bit ARM) and skip plane lines
+  without ink. Fine passes its nibble tables as (h, 256, w) so the
+  lookups of a scanline stay in the L1 cache. On the Raspberry Pi 3B+ an
+  A4 photo page takes 0.97 s instead of 1.42 s in Normal and 1.64 s
+  instead of 2.19 s in Fine; without the inverse LUTs, 0.98 s instead of
+  2.07 s and 1.68 s instead of 3.48 s. A 4-page job needs a third less
+  CPU time.
 
 ### Fixed
 - Grayscale pages handed over as one block (the command-line tool,
