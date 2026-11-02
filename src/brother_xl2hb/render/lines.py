@@ -19,7 +19,7 @@ from brother_xl2hb.color.dither import (
 )
 from brother_xl2hb.color.saturation import adjust_saturation
 from brother_xl2hb.color.transforms import apply_input_remap_rgb
-from brother_xl2hb.render.rows import RowBlocks, iter_rows, page_rows, white_rows
+from brother_xl2hb.render.rows import LineBlocks, page_rows, white_rows
 from brother_xl2hb.settings import PrintSettings
 
 LineCodes = tuple[bytes, bytes, bytes, bytes]
@@ -132,7 +132,7 @@ def _clear_first_byte(data: bytes) -> bytes:
 
 
 def encode_lines(
-    blocks: RowBlocks,
+    blocks: LineBlocks,
     width: int,
     sw: int,
     colour: ColourSetup,
@@ -147,47 +147,48 @@ def encode_lines(
     a threshold matrix, Fine channels without nibble tables).
 
     Yields:
-        Encoded planes of each input row, top to bottom.
+        Encoded planes of each input row, in input order.
     """
     dither_fn = DITHER_FNS[is_fine]
     encoders = PLANE_ENCODERS[is_fine]
     pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
 
-    for line_idx, (row, is_white) in enumerate(iter_rows(blocks)):
-        if is_white:
-            yield BLANK_LINE
-            continue
-        rgb_row = adjust_rgb(row, width, colour)
-        k_arr, c_arr, m_arr, y_arr = color_lut.rgb_to_cmyk_lut_arr(rgb_row, width, colour.table)
-        if pad_arr is not None:
-            k_arr = np.concatenate((k_arr, pad_arr))
-            c_arr = np.concatenate((c_arr, pad_arr))
-            m_arr = np.concatenate((m_arr, pad_arr))
-            y_arr = np.concatenate((y_arr, pad_arr))
-        k_dots = dither_fn(k_arr, line_idx, sw, channels["K"])
-        c_dots = dither_fn(c_arr, line_idx, sw, channels["C"])
-        m_dots = dither_fn(m_arr, line_idx, sw, channels["M"])
-        y_dots = dither_fn(y_arr, line_idx, sw, channels["Y"])
-        if is_fine and fine_overrun_planes(row, width, (k_arr, c_arr, m_arr, y_arr)):
-            k_dots, m_dots, y_dots = map(_clear_first_byte, (k_dots, m_dots, y_dots))
-        yield encoders[0](k_dots), encoders[1](c_dots), encoders[2](m_dots), encoders[3](y_dots)
+    for block, first_line in blocks:
+        for line_idx, (row, is_white) in enumerate(zip(block, white_rows(block).tolist(), strict=True), first_line):
+            if is_white:
+                yield BLANK_LINE
+                continue
+            rgb_row = adjust_rgb(row, width, colour)
+            k_arr, c_arr, m_arr, y_arr = color_lut.rgb_to_cmyk_lut_arr(rgb_row, width, colour.table)
+            if pad_arr is not None:
+                k_arr = np.concatenate((k_arr, pad_arr))
+                c_arr = np.concatenate((c_arr, pad_arr))
+                m_arr = np.concatenate((m_arr, pad_arr))
+                y_arr = np.concatenate((y_arr, pad_arr))
+            k_dots = dither_fn(k_arr, line_idx, sw, channels["K"])
+            c_dots = dither_fn(c_arr, line_idx, sw, channels["C"])
+            m_dots = dither_fn(m_arr, line_idx, sw, channels["M"])
+            y_dots = dither_fn(y_arr, line_idx, sw, channels["Y"])
+            if is_fine and fine_overrun_planes(row, width, (k_arr, c_arr, m_arr, y_arr)):
+                k_dots, m_dots, y_dots = map(_clear_first_byte, (k_dots, m_dots, y_dots))
+            yield encoders[0](k_dots), encoders[1](c_dots), encoders[2](m_dots), encoders[3](y_dots)
 
 
-# Rows converted to luma at a time. A flipped page arrives as one whole-page
+# Rows converted to luma at a time. A whole-page buffer arrives as one
 # block, and `_luma` widens to uint32 with temporaries, ~9 bytes per input
 # byte: unsplit, an A4 page peaks near 1 GB.
 _MONO_CHUNK_ROWS = 128
 
 
-def _split_rows(blocks: RowBlocks, rows: int) -> Iterator[npt.NDArray[np.uint8]]:
+def _split_rows(blocks: LineBlocks, rows: int) -> Iterator[tuple[npt.NDArray[np.uint8], int]]:
     """Cut row blocks into views of at most `rows` rows.
 
     Yields:
-        (rows, width * 3) uint8 views, top to bottom.
+        (rows, width * 3) uint8 views, in input order, and the page line of their first row.
     """
-    for block in blocks:
+    for block, first_line in blocks:
         for lo in range(0, block.shape[0], rows):
-            yield block[lo : lo + rows]
+            yield block[lo : lo + rows], first_line + lo
 
 
 def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
@@ -201,7 +202,7 @@ def _luma(rgb: npt.NDArray[np.uint8], width: int) -> npt.NDArray[np.uint8]:
 
 
 def encode_lines_mono(
-    blocks: RowBlocks,
+    blocks: LineBlocks,
     width: int,
     sw: int,
     colour: ColourSetup,
@@ -217,14 +218,13 @@ def encode_lines_mono(
     brightness/contrast input remap does.
 
     Yields:
-        Encoded planes of each input row, top to bottom.
+        Encoded planes of each input row, in input order.
     """
     dither_fn = DITHER_FNS[is_fine]
     encode_k = PLANE_ENCODERS[is_fine][0]
     pad_arr = np.full(sw - width, 255, dtype=np.uint8) if sw > width else None
-    line_idx = 0
 
-    for block in _split_rows(blocks, _MONO_CHUNK_ROWS):
+    for block, first_line in _split_rows(blocks, _MONO_CHUNK_ROWS):
         n = block.shape[0]
         white = white_rows(block).tolist()
         rgb = block
@@ -235,9 +235,8 @@ def encode_lines_mono(
         luma = _luma(rgb, width)
         if pad_arr is not None:
             luma = np.concatenate((luma, np.broadcast_to(pad_arr, (n, pad_arr.size))), axis=1)
-        for row, is_white in zip(luma, white, strict=True):
+        for line_idx, (row, is_white) in enumerate(zip(luma, white, strict=True), first_line):
             if is_white:
                 yield BLANK_LINE
             else:
                 yield (encode_k(dither_fn(row, line_idx, sw, channels["K"])), b"", b"", b"")
-            line_idx += 1

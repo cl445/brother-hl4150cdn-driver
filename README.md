@@ -39,7 +39,8 @@ Time per A4 colour page with the native modules:
 
 Grayscale (Normal) takes 0.3 to 0.4 s per A4 page on the Raspberry Pi 3B+.
 
-The filter needs about 100 to 250 MB of memory, depending on the options.
+The filter needs about 50 to 160 MB of memory on the Raspberry Pi 3B+,
+depending on the options.
 
 ## Requirements
 

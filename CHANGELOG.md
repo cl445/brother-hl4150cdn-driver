@@ -79,6 +79,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of 2.19 s in Fine; without the inverse LUTs, 0.98 s instead of
   2.07 s and 1.68 s instead of 3.48 s. A 4-page job needs a third less
   CPU time.
+- Long-edge back sides, BRReverse and skip blank no longer hold a whole
+  page (about 100 MB for A4). Flipped pages are read top to bottom as
+  they stream and encoded mirrored; only the encoded lines wait for the
+  page to end. Skip blank tests a page while it renders and drops the
+  rendered page if it was blank. On the Raspberry Pi 3B+ a 4-page job
+  peaks at 136 MB instead of 224 MB with BRReverse, 127 MB instead of
+  236 MB with skip blank, 150 MB instead of 225 MB for Fine duplex and
+  50 MB instead of 138 MB for grayscale duplex. Skip blank together with
+  collated copies still collects each page.
+- The Ghostscript reader buffers 4 instead of 16 blocks of 128 rows ahead
+  of the renderer; more did not make jobs faster.
 
 ### Fixed
 - Grayscale pages handed over as one block (the command-line tool,

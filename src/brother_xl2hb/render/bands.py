@@ -17,7 +17,7 @@ from brother_xl2hb.color.dither import (
     DitherChannel,
 )
 from brother_xl2hb.render.lines import ColourSetup, LineCodes, adjust_rgb, fine_overrun_rows
-from brother_xl2hb.render.rows import RowBlocks, page_rows, white_rows
+from brother_xl2hb.render.rows import LineBlocks, page_rows, white_rows
 
 _band_fast = _native.load("_band_fast")
 _fine_fast = _native.load("_fine_fast")
@@ -105,18 +105,15 @@ def _band_executor(workers: int) -> ThreadPoolExecutor:
     return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="brxl2hb-band")
 
 
-def _split_bands(blocks: RowBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], int]]:
+def _split_bands(blocks: LineBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], int]]:
     """Cut row blocks into bands of at most `_BAND_ROWS` rows.
 
     Yields:
-        (band, page line index of its first row).
+        (band, page line index of its first row), in input order.
     """
-    first_line = 0
-    for block in blocks:
+    for block, first_line in blocks:
         for lo in range(0, block.shape[0], _BAND_ROWS):
-            band = block[lo : lo + _BAND_ROWS]
-            yield band, first_line
-            first_line += band.shape[0]
+            yield block[lo : lo + _BAND_ROWS], first_line + lo
 
 
 def _nibble_rows(channel: DitherChannel) -> npt.NDArray[np.uint8]:
@@ -135,7 +132,7 @@ def _nibble_rows(channel: DitherChannel) -> npt.NDArray[np.uint8]:
 
 
 def encode_lines_banded(
-    blocks: RowBlocks,
+    blocks: LineBlocks,
     width: int,
     sw: int,
     colour: ColourSetup,
@@ -151,7 +148,7 @@ def encode_lines_banded(
     `kernel_colour` comes from `band_kernel_colour`.
 
     Yields:
-        Encoded planes of each input row, top to bottom.
+        Encoded planes of each input row, in input order.
 
     Raises:
         RuntimeError: If the kernel for `is_fine` is not loaded.
@@ -209,7 +206,7 @@ def mono_band_kernel_ready(channels: dict[str, DitherChannel], *, is_fine: bool)
 
 
 def encode_lines_mono_banded(
-    blocks: RowBlocks,
+    blocks: LineBlocks,
     width: int,
     sw: int,
     colour: ColourSetup,
@@ -220,7 +217,7 @@ def encode_lines_mono_banded(
     Check `mono_band_kernel_ready` first.
 
     Yields:
-        Encoded planes of each input row, top to bottom.
+        Encoded planes of each input row, in input order.
 
     Raises:
         RuntimeError: If `_band_fast` is not loaded.
@@ -246,12 +243,12 @@ def encode_lines_mono_banded(
 
 
 def _render_bands(
-    blocks: RowBlocks, encode: Callable[[npt.NDArray[np.uint8], int], list[LineCodes]]
+    blocks: LineBlocks, encode: Callable[[npt.NDArray[np.uint8], int], list[LineCodes]]
 ) -> Iterator[LineCodes]:
     """Run `encode(band, first_line)` over the page's bands on the render threads.
 
     Yields:
-        The encoded lines, strictly in page order.
+        The encoded lines, strictly in input order.
     """
     workers = render_threads()
     if workers == 0:
