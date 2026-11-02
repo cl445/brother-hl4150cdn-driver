@@ -29,11 +29,7 @@ impl<'a> ByteView<'a> {
 
     /// The bytes as a slice if they are contiguous.
     pub fn as_slice(&self) -> Option<&[u8]> {
-        // SAFETY: the buffer holds `len` contiguous bytes and stays exported
-        // (so unchanged in size) while `buf` lives.
-        (self.stride == 1).then(|| unsafe {
-            std::slice::from_raw_parts(self.buf.buf_ptr() as *const u8, self.len)
-        })
+        (self.stride == 1).then(|| bytes(self.buf, self.len))
     }
 
     /// Byte `i`, which the caller keeps below `len`.
@@ -54,7 +50,20 @@ pub fn contiguous(buf: &PyBuffer<u8>) -> PyResult<&[u8]> {
             "expected a contiguous one-dimensional buffer",
         ));
     }
-    // SAFETY: the buffer is contiguous, holds item_count bytes and stays
-    // exported (so unchanged in size) while `buf` lives.
-    Ok(unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.item_count()) })
+    Ok(bytes(buf, buf.item_count()))
+}
+
+/// The first `len` bytes of a buffer that holds at least `len` contiguous bytes.
+///
+/// The slice is only read while the GIL is held, so no Python thread
+/// writes to a writable exporter (bytearray, numpy array) meanwhile.
+fn bytes(buf: &PyBuffer<u8>, len: usize) -> &[u8] {
+    if len == 0 {
+        // An empty exporter may report a null pointer, which a slice must not have.
+        return &[];
+    }
+    // SAFETY: the pointer is non-null for a non-empty buffer, which holds
+    // `len` contiguous bytes and stays exported (so unchanged in size)
+    // while `buf` lives.
+    unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, len) }
 }

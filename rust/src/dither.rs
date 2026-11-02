@@ -47,13 +47,15 @@ mod bindings {
                 "row or thresholds shorter than width",
             ));
         }
+        // The GIL stays held: another thread could otherwise write to a
+        // writable `row` or `thresholds` buffer while the kernel reads it.
         PyBytes::new_with(py, width.div_ceil(8), |out| {
             let thresholds = &thresholds[..width];
             // SAFETY: dither_1bpp reads pixels i < width <= row.len() only.
-            py.detach(|| match row.as_slice() {
+            match row.as_slice() {
                 Some(row) => dither_1bpp(|i| unsafe { *row.get_unchecked(i) }, thresholds, out),
                 None => dither_1bpp(|i| unsafe { row.get_unchecked(i) }, thresholds, out),
-            });
+            }
             Ok(())
         })
     }

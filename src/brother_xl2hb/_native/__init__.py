@@ -141,18 +141,23 @@ def missing() -> list[str]:
 
 
 def summary() -> str:
-    """Say which kernels are in use, and why the others are not.
+    """Say which kernels are in use, from which backend, and why the others are not.
 
     Returns:
         One line for the log.
     """
     absent = [name for name in MODULES if load(name) is None]
+    rust = [name for name in MODULES if backend(name) == "rust"]
     if not absent:
-        rust = [name for name in MODULES if backend(name) == "rust"]
         source = f" (Rust: {', '.join(rust)}; Cython: the rest)" if rust else ""
         return f"native kernels: all {len(MODULES)} loaded{source}"
     reasons = "; ".join(f"{name}: {_unavailable[name]}" for name in absent)
-    return f"native kernels not in use, pure-Python fallbacks instead ({reasons})"
+    if len(absent) == len(MODULES):
+        return f"native kernels not in use, pure-Python fallbacks instead ({reasons})"
+    cython = [name for name in MODULES if backend(name) == "cython"]
+    by_backend = (("Rust", rust), ("Cython", cython))
+    sources = "; ".join(f"{label}: {', '.join(names)}" for label, names in by_backend if names)
+    return f"native kernels partly in use ({sources}), pure-Python fallbacks for the rest ({reasons})"
 
 
 def log_status() -> None:

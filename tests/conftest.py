@@ -46,7 +46,7 @@ def stale_extensions(native_dir: Path = _NATIVE_DIR) -> list[str]:
 
 
 def rust_build_is_stale(native_dir: Path = _NATIVE_DIR, crate: Path = _RUST_CRATE) -> bool:
-    """Whether the Rust build exists and is older than a file of its crate (Cargo.toml, build.rs, src/).
+    """Whether the Rust build exists and is older than a file of its crate (Cargo.toml, Cargo.lock, build.rs, src/).
 
     Returns:
         True if `_rust.abi3.so` needs a rebuild.
@@ -54,7 +54,7 @@ def rust_build_is_stale(native_dir: Path = _NATIVE_DIR, crate: Path = _RUST_CRAT
     built = native_dir / "_rust.abi3.so"
     if not built.exists():
         return False
-    sources = [crate / "Cargo.toml", crate / "build.rs", *(crate / "src").rglob("*.rs")]
+    sources = [crate / "Cargo.toml", crate / "Cargo.lock", crate / "build.rs", *(crate / "src").rglob("*.rs")]
     return any(path.stat().st_mtime > built.stat().st_mtime for path in sources if path.exists())
 
 

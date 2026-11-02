@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -105,12 +106,12 @@ def test_rust_kernel_comes_first(fresh_loader, monkeypatch) -> None:
     rust = _native.rust_build()
     if isinstance(rust, str):
         pytest.skip(f"Rust build not in use ({rust}); see scripts/build_rust.sh")
-    if importlib.util.find_spec("brother_xl2hb._native._dither_fast") is None:
-        pytest.skip("Cython extensions not built")
     monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
     monkeypatch.delenv(_native.BACKEND_VAR, raising=False)
     assert _native.load("_dither_fast") is rust._dither_fast
     assert _native.backend("_dither_fast") == "rust"
+    if importlib.util.find_spec("brother_xl2hb._native._dither_fast") is None:
+        pytest.skip("Cython extensions not built")
     assert _native.backend("_fine_fast") == "cython"
     rust_part = _native.summary().split("Rust: ")[1].split(";")[0]
     assert "_dither_fast" in rust_part.split(", ")
@@ -131,6 +132,32 @@ def test_rust_kernel_comes_first(fresh_loader, monkeypatch) -> None:
 
     monkeypatch.setattr(_native.importlib, "import_module", import_module)
     assert _native.backend("_dither_fast") == "cython"
+
+
+def test_partly_loaded_kernels_are_named(fresh_loader, monkeypatch) -> None:
+    """With some kernels missing, the status line names the backend of those in use."""
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.delenv(_native.BACKEND_VAR, raising=False)
+    fake_rust = types.ModuleType("_rust")
+    fake_rust.__dict__["_dither_fast"] = types.ModuleType("_dither_fast")
+
+    def import_module(name: str):
+        if name.endswith("._rust"):
+            return fake_rust
+        if name.endswith("._rle_fast"):
+            return types.ModuleType(name)
+        msg = "not built"
+        raise ImportError(msg)
+
+    monkeypatch.setattr(_native.importlib, "import_module", import_module)
+    assert _native.summary().startswith("native kernels partly in use (Rust: _dither_fast; Cython: _rle_fast), ")
+    assert "_fine_fast: rust: not ported; cython: not built" in _native.summary()
+
+
+def test_no_loaded_kernel_is_not_in_use(fresh_loader, monkeypatch) -> None:
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.setenv(_native.BACKEND_VAR, "python")
+    assert _native.summary().startswith("native kernels not in use, pure-Python fallbacks instead (")
 
 
 def test_pure_python_var_switches_every_caller() -> None:

@@ -24,11 +24,14 @@ if [[ -z "${PYO3_PYTHON:-}" ]]; then
 fi
 export PYO3_PYTHON
 
-cargo build --release --manifest-path "$CRATE/Cargo.toml"
+# An explicit target dir, so a CARGO_TARGET_DIR elsewhere cannot leave an
+# old library at the path copied below.
+TARGET="$CRATE/target"
+cargo build --release --manifest-path "$CRATE/Cargo.toml" --target-dir "$TARGET"
 
 case "$(uname -s)" in
-    Darwin) LIB="$CRATE/target/release/lib_rust.dylib" ;;
-    *) LIB="$CRATE/target/release/lib_rust.so" ;;
+    Darwin) LIB="$TARGET/release/lib_rust.dylib" ;;
+    *) LIB="$TARGET/release/lib_rust.so" ;;
 esac
 cp "$LIB" "$DEST"
 echo "Installed $DEST"
