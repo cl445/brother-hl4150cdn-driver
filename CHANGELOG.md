@@ -90,6 +90,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   collated copies still collects each page.
 - The Ghostscript reader buffers 4 instead of 16 blocks of 128 rows ahead
   of the renderer; more did not make jobs faster.
+- The native colour interpolation reads a compact form of the colour
+  grid (`color_lut.interp_arrays`, built once per table): the grid as
+  bytes (20 KB instead of 79 KB, so it stays in the L1 cache), only the at
+  most 4 non-zero corner weights per entry, and a multiplication by an
+  exactly checked reciprocal instead of the division. The result is the
+  same for every colour. On the Raspberry Pi 3B+, one thread, an A4 page
+  of random colours takes 5.1 s of CPU time instead of 7.8 s, and
+  interpolating is now as fast as the inverse LUT or faster, except on a
+  smooth full-page gradient (1.28 s instead of 1.20 s).
 
 ### Fixed
 - Grayscale pages handed over as one block (the command-line tool,

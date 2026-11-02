@@ -12,7 +12,7 @@ import time
 from collections.abc import Buffer, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -193,22 +193,89 @@ def black_ink(table: ColorTable, lut: npt.NDArray[np.int32]) -> npt.NDArray[np.i
     return lut[0].copy() if table.rich_black else _K_PRESET.copy()
 
 
-def interp_arrays(
-    table: ColorTable,
-) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint8], npt.NDArray[np.int32]]:
-    """Flat, contiguous grid, interpolation weights and black ink for the native interpolation.
+class InterpArrays(NamedTuple):
+    """A colour table in the compact form the native interpolation (`interp_pixel`) reads."""
 
-    Views on the cached `_load_data` arrays, so cheap to call per scanline.
+    grid: npt.NDArray[np.uint8]
+    """4913 * 4 bytes: C, M, Y, K ink of each grid entry."""
+    weights: npt.NDArray[np.uint8]
+    """4913 * 8 bytes: per weight entry the 4 non-zero corner weights, their
+    total, and the 4 corner numbers (0-7) packed 3 bits each into bytes 5-6."""
+    recip: npt.NDArray[np.uint64]
+    """256 values ceil(2**32 / total), 2**32 for a total of 0 (divides by 1)."""
+    black: npt.NDArray[np.int32]
+    """C, M, Y, K ink for pure black."""
+
+
+# Weight entries have at most this many non-zero corners (tetrahedral
+# interpolation: one tetrahedron of the cube).
+_INTERP_CORNERS = 4
+
+
+@functools.lru_cache(maxsize=32)
+def interp_arrays(table: ColorTable) -> InterpArrays:
+    """The grid, interpolation weights and black ink of `table` for the native interpolation.
+
+    Built once per table and shared (read-only). The compact weights keep
+    only the non-zero corners, and the quotient by the total becomes a
+    multiplication; both give the same values as `_rgb_to_cmyk_interp_arr`.
 
     Returns:
-        (grid of 4913*4 int32 as C, M, Y, K; 17*289*9 uint8 weights; 4 int32 black ink).
+        The compact arrays.
+
+    Raises:
+        ValueError: If the grid has values outside 0-255 or a weight entry
+            more than 4 non-zero corners; never for Brother's tables or the
+            generated ones.
     """
     lut, interp = _load_data(table)
-    return (
-        np.ascontiguousarray(lut, dtype=np.int32).reshape(-1),
-        np.ascontiguousarray(interp).reshape(-1),
-        black_ink(table, lut),
-    )
+    if lut.min() < 0 or lut.max() > 255:
+        msg = f"colour grid {table.name} has values outside 0-255"
+        raise ValueError(msg)
+    entries = interp.reshape(-1, 9)
+    corner_weights = entries[:, 1:]
+    nonzero = corner_weights != 0
+    if int(nonzero.sum(axis=1).max()) > _INTERP_CORNERS:
+        msg = f"interpolation weights of {table.name} have more than {_INTERP_CORNERS} corners"
+        raise ValueError(msg)
+    # Corner numbers of the non-zero weights first (stable, so in weight order), then zero weights.
+    order = np.argsort(~nonzero, axis=1, kind="stable")[:, :_INTERP_CORNERS]
+    weights = np.zeros((entries.shape[0], 8), dtype=np.uint8)
+    weights[:, :_INTERP_CORNERS] = np.take_along_axis(corner_weights, order, axis=1)
+    weights[:, 4] = entries[:, 0]
+    packed = (order << (3 * np.arange(_INTERP_CORNERS))).sum(axis=1)
+    weights[:, 5] = packed & 0xFF
+    weights[:, 6] = packed >> 8
+
+    divisors = np.maximum(np.arange(256, dtype=np.uint64), np.uint64(1))
+    recip = ((np.uint64(1) << np.uint64(32)) + divisors - np.uint64(1)) // divisors
+    _check_recip(recip, weights)
+
+    grid = np.ascontiguousarray(lut, dtype=np.uint8).reshape(-1)
+    black = black_ink(table, lut)
+    for array in (grid, weights, recip, black):
+        array.flags.writeable = False
+    return InterpArrays(grid, weights.reshape(-1), recip, black)
+
+
+def _check_recip(recip: npt.NDArray[np.uint64], weights: npt.NDArray[np.uint8]) -> None:
+    """Check (n * recip[t]) >> 32 == n // t for every numerator the interpolation can reach.
+
+    A numerator is the weighted sum of four grid values (<= 255 * the sum
+    of the weights) plus half the total.
+
+    Raises:
+        ValueError: If a quotient would differ; ceil(2**32 / t) never does
+            for these numerators.
+    """
+    sums = weights[:, :_INTERP_CORNERS].astype(np.int64).sum(axis=1)
+    for total in np.unique(weights[:, 4]).tolist():
+        divisor = max(total, 1)
+        top = int(sums[weights[:, 4] == total].max()) * 255 + (total >> 1)
+        n = np.arange(top + 1, dtype=np.uint64)
+        if not np.array_equal((n * recip[total]) >> np.uint64(32), n // np.uint64(divisor)):
+            msg = f"reciprocal of {total} is not exact up to {top}"
+            raise ValueError(msg)
 
 
 @functools.lru_cache(maxsize=32)

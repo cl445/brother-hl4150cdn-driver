@@ -183,5 +183,5 @@ def test_missing_grids_are_an_error_without_generated_fallback(tmp_path, use_col
     other = dataclasses.replace(HL4150CDN, generated_grids=False)
     with pytest.raises(FileNotFoundError, match=r"run scripts/extract_blobs\.sh hl4150cdn"):
         color_lut.interp_arrays(other.grid())
-    lut, _, _ = color_lut.interp_arrays(HL4150CDN.grid())
+    lut = color_lut.interp_arrays(HL4150CDN.grid()).grid
     assert lut.size == 4913 * 4

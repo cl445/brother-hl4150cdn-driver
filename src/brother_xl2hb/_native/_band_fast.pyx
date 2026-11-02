@@ -138,8 +138,9 @@ def render_band(
     Py_ssize_t first_line,
     Py_ssize_t sw,
     const unsigned char[::1] lut,
-    const int[::1] grid,
+    const unsigned char[::1] grid,
     const unsigned char[::1] weights,
+    const uint64_t[::1] recip,
     const int[::1] black,
     const unsigned char[:, ::1] thr_k,
     const unsigned char[:, ::1] thr_c,
@@ -164,8 +165,9 @@ def render_band(
         sw: image width in pixels; pixels past `width` count as white.
         lut: flat (256*256*256*4) KCMY inverse LUT, or empty to interpolate
             `grid` instead.
-        grid, weights, black: colour grid, interpolation weights and black
-            ink from `color_lut.interp_arrays`; used when `lut` is empty.
+        grid, weights, recip, black: colour grid, interpolation weights,
+            reciprocals and black ink from `color_lut.interp_arrays`; used
+            when `lut` is empty.
         thr_k, thr_c, thr_m, thr_y: threshold matrices tiled to >= sw columns.
         lengths: (n, 4) output, encoded length per line and plane (K, C, M, Y);
             0 means the plane line has no ink.
@@ -205,8 +207,10 @@ def render_band(
         raise ValueError("rows must be contiguous scanlines")
     if has_lut and lut.shape[0] != _LUT_SIZE:
         raise ValueError("lut must be the flat 256*256*256*4 inverse LUT")
-    if not has_lut and (grid.shape[0] != 4913 * 4 or weights.shape[0] != 17 * 289 * 9 or black.shape[0] != 4):
-        raise ValueError("without an inverse LUT, grid, weights and black ink are required")
+    if not has_lut and (
+        grid.shape[0] != 4913 * 4 or weights.shape[0] != 4913 * 8 or recip.shape[0] != 256 or black.shape[0] != 4
+    ):
+        raise ValueError("without an inverse LUT, grid, weights, reciprocals and black ink are required")
     if (
         min(thr_k.shape[0], thr_c.shape[0], thr_m.shape[0], thr_y.shape[0]) == 0
         or min(thr_k.shape[1], thr_c.shape[1], thr_m.shape[1], thr_y.shape[1]) < npx
@@ -268,7 +272,14 @@ def render_band(
                                 value = load_u32(&lut[(<size_t>px) << 2])
                             else:
                                 interp_pixel(
-                                    &grid[0], &weights[0], &black[0], row[3 * j], row[3 * j + 1], row[3 * j + 2], kcmy4
+                                    &grid[0],
+                                    &weights[0],
+                                    &recip[0],
+                                    &black[0],
+                                    row[3 * j],
+                                    row[3 * j + 1],
+                                    row[3 * j + 2],
+                                    kcmy4,
                                 )
                                 value = load_u32(kcmy4)
                         store_u32(kcmy + 4 * j, value)

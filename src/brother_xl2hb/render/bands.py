@@ -37,12 +37,14 @@ class KernelColour(NamedTuple):
     """Colour arguments of `render_band`: the inverse LUT, or the grid to interpolate."""
 
     inverse: npt.NDArray[np.uint8]
-    grid: npt.NDArray[np.int32]
+    grid: npt.NDArray[np.uint8]
     weights: npt.NDArray[np.uint8]
+    recip: npt.NDArray[np.uint64]
     black: npt.NDArray[np.int32]
 
 
 _EMPTY_INT = np.empty(0, dtype=np.int32)
+_EMPTY_U64 = np.empty(0, dtype=np.uint64)
 
 
 def band_kernel_colour(
@@ -68,7 +70,7 @@ def band_kernel_colour(
         return None
     inverse = color_lut.inverse_lut(table)
     if inverse is not None:
-        return KernelColour(inverse.reshape(-1), _EMPTY_INT, _EMPTY_TABLE, _EMPTY_INT)
+        return KernelColour(inverse.reshape(-1), _EMPTY_TABLE, _EMPTY_TABLE, _EMPTY_U64, _EMPTY_INT)
     return KernelColour(_EMPTY_TABLE, *color_lut.interp_arrays(table))
 
 
