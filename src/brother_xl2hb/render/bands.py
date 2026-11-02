@@ -51,8 +51,8 @@ def band_kernel_colour(
     """Return the colour arguments for `render_band`, or None if it cannot render the page.
 
     The kernels cover Normal mode with threshold-matrix dither channels
-    (`render_band`) and Fine mode with BRCD nibble tables
-    (`render_band_fine`); each needs its native module. Both gather through
+    (`render_band`) and Fine mode with BRCD nibble tables whose level 0 is
+    all zero (`render_band_fine`); each needs its native module. Both gather through
     the installed inverse LUT of `table` when there is one and interpolate
     the grid otherwise. `render_band_fine` takes the same colour arguments.
 
@@ -60,7 +60,9 @@ def band_kernel_colour(
         The kernel's colour arguments, or None for the per-line path.
     """
     if is_fine:
-        if _fine_fast is None or any(channel.nibble_levels is None for channel in channels.values()):
+        if _fine_fast is None or any(
+            channel.nibble_levels is None or channel.nibble_levels[0].any() for channel in channels.values()
+        ):
             return None
     elif _band_fast is None or any(channel.threshold_matrix is None for channel in channels.values()):
         return None
@@ -117,6 +119,21 @@ def _split_bands(blocks: RowBlocks) -> Iterator[tuple[npt.NDArray[np.uint8], int
             first_line += band.shape[0]
 
 
+def _nibble_rows(channel: DitherChannel) -> npt.NDArray[np.uint8]:
+    """Return the nibble tables of `channel` as `render_band_fine` takes them.
+
+    That is (h, 256, w): the 256 levels of one dither row lie together, a
+    few KB per channel, so a scanline's lookups stay in the L1 cache.
+
+    Raises:
+        RuntimeError: If `channel` has no nibble tables.
+    """
+    if channel.nibble_levels is None:
+        msg = "Fine channel without nibble tables; check band_kernel_colour first"
+        raise RuntimeError(msg)
+    return np.ascontiguousarray(channel.nibble_levels.transpose(1, 0, 2))
+
+
 def encode_lines_banded(
     blocks: RowBlocks,
     width: int,
@@ -145,13 +162,17 @@ def encode_lines_banded(
         raise RuntimeError(msg)
     # Prepare the dither tables up front; the render threads only read them.
     if is_fine:
-        tables = tuple(np.ascontiguousarray(channels[c].nibble_levels) for c in "KCMY")
+        tables = tuple(_nibble_rows(channels[c]) for c in "KCMY")
     else:
         tables = tuple(channels[c].tiled_thresholds(sw) for c in "KCMY")
 
     def encode(band: npt.NDArray[np.uint8], first_line: int) -> list[LineCodes]:
         n = band.shape[0]
-        skip = white_rows(band).view(np.uint8)
+        # White rows of the source carry no ink. The kernels find them
+        # themselves, unless the RGB adjustments run first and change what they see.
+        skip = _EMPTY_TABLE
+        if colour.adjusts_rgb:
+            skip = white_rows(band).view(np.uint8)
         rgb = band
         if colour.adjusts_rgb:
             rgb = page_rows(adjust_rgb(np.ascontiguousarray(band), n * width, colour), width, n)

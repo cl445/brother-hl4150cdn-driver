@@ -82,6 +82,7 @@ _SETTINGS = {
     "saturation_p10": PrintSettings(saturation=10),
     "saturation_n15": PrintSettings(saturation=-15),
     "input_remap": PrintSettings(brightness=-20, contrast=10, red=5, blue=-7),
+    "brightness_p20": PrintSettings(brightness=20),  # turns near-white rows white
     "saturation_remap": PrintSettings(saturation=5, brightness=12),
     "toner_save": PrintSettings(toner_save=True),
     "improve_gray": PrintSettings(improve_gray=True),
