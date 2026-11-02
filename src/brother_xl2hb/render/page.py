@@ -11,7 +11,12 @@ from brother_xl2hb.color.dither import (
 from brother_xl2hb.color.transforms import build_input_remap_lut
 from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
-from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
+from brother_xl2hb.render.bands import (
+    band_kernel_colour,
+    encode_lines_banded,
+    encode_lines_mono_banded,
+    mono_band_kernel_ready,
+)
 from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, LineCodes, encode_lines, encode_lines_mono
 from brother_xl2hb.render.rows import BUFFER_TYPES, Page, RowBlocks, collect_rows, flip_vertical, page_rows
 from brother_xl2hb.settings import MonoColor, PrintSettings, Resolution
@@ -74,7 +79,9 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
     w.write_begin_image(sw, sh, copies=send.copies, fine=is_fine, color=not mono)
 
     colour = _colour_setup(settings, model)
-    if mono:
+    if mono and mono_band_kernel_ready(channels, is_fine=is_fine):
+        lines = encode_lines_mono_banded(blocks, width, sw, colour, channels)
+    elif mono:
         lines = encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
     elif (kernel_colour := band_kernel_colour(colour.table, channels, is_fine=is_fine)) is not None:
         lines = encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour, is_fine=is_fine)
