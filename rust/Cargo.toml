@@ -2,7 +2,7 @@
 name = "brother-xl2hb-native"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "GPL-3.0-or-later"
 description = "Rust kernels for brother_xl2hb, loaded as brother_xl2hb._native._rust"
 publish = false

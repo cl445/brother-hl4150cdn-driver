@@ -57,22 +57,19 @@ pub struct Band<'a> {
     pub thresholds: [Thresholds<'a>; 4],
 }
 
-/// K, C, M, Y of one pixel.
-#[inline(always)]
-fn kcmy(colour: &Colour<'_>, px: &[u8]) -> [u8; 4] {
-    match colour {
-        Colour::Lut(lut) => {
-            let off =
-                ((usize::from(px[0]) << 16) | (usize::from(px[1]) << 8) | usize::from(px[2])) << 2;
-            let entry = &lut[off..off + 4];
-            [entry[0], entry[1], entry[2], entry[3]]
-        }
-        Colour::Grid(grid) => grid.interp_pixel(px[0], px[1], px[2]),
-    }
-}
-
 /// Dither one scanline's four planes into `planes` (4 x bpl bytes, K, C, M, Y).
-fn dither_line(band: &Band<'_>, row: &[u8], line: usize, planes: &mut [u8], bpl: usize) {
+///
+/// `ink` maps one RGB pixel to its K, C, M, Y; generic so that each colour
+/// source gets its own pixel loop.
+#[inline(always)]
+fn dither_line(
+    band: &Band<'_>,
+    ink: impl Fn(&[u8]) -> [u8; 4],
+    row: &[u8],
+    line: usize,
+    planes: &mut [u8],
+    bpl: usize,
+) {
     let npx = band.width.min(band.sw);
     planes.fill(0);
     let thr = band.thresholds.map(|t| t.row(line, npx));
@@ -81,9 +78,9 @@ fn dither_line(band: &Band<'_>, row: &[u8], line: usize, planes: &mut [u8], bpl:
     let (pm, py) = rest.split_at_mut(bpl);
     for (n, px8) in row[..npx * 3].chunks(24).enumerate() {
         let mut acc = [0u8; 4];
-        for (k, px) in px8.chunks_exact(3).enumerate() {
+        for (k, px) in px8.as_chunks::<3>().0.iter().enumerate() {
             let j = n * 8 + k;
-            let ink = kcmy(&band.colour, px);
+            let ink = ink(px);
             let bit = 0x80 >> k;
             for p in 0..4 {
                 if 255 - ink[p] > thr[p][j] {
@@ -98,31 +95,58 @@ fn dither_line(band: &Band<'_>, row: &[u8], line: usize, planes: &mut [u8], bpl:
     }
 }
 
-/// Colour-convert, dither and encode the band.
-///
-/// `lengths` gets 4 entries per row: the encoded length per plane (K, C,
-/// M, Y), 0 when the plane line has no ink. Returns the encoded plane
-/// lines back to back, in line then plane order.
-pub fn render_band(band: &Band<'_>, lengths: &mut [i32]) -> Vec<u8> {
+/// `render_band` for one colour source.
+#[inline(always)]
+fn render_rows(
+    band: &Band<'_>,
+    ink: impl Fn(&[u8]) -> [u8; 4] + Copy,
+    lengths: &mut [i32],
+) -> Vec<u8> {
     let bpl = band.sw.div_ceil(8);
     let mut planes = vec![0u8; 4 * bpl];
     let mut out = Vec::new();
     for (i, (row, lens)) in band
         .rows
         .iter()
-        .zip(lengths.chunks_exact_mut(4))
+        .zip(lengths.as_chunks_mut::<4>().0.iter_mut())
         .enumerate()
     {
         if band.skip[i] != 0 {
             lens.fill(0);
             continue;
         }
-        dither_line(band, row, band.first_line + i, &mut planes, bpl);
+        dither_line(band, ink, row, band.first_line + i, &mut planes, bpl);
         for (pid, len) in lens.iter_mut().enumerate() {
             *len = encode_line(&planes[pid * bpl..][..bpl], BITS[pid], &mut out) as i32;
         }
     }
     out
+}
+
+/// Colour-convert, dither and encode the band.
+///
+/// `lengths` gets 4 entries per row: the encoded length per plane (K, C,
+/// M, Y), 0 when the plane line has no ink. Returns the encoded plane
+/// lines back to back, in line then plane order.
+pub fn render_band(band: &Band<'_>, lengths: &mut [i32]) -> Vec<u8> {
+    match band.colour {
+        Colour::Lut(lut) => {
+            // One 4-byte entry per RGB colour; a 24-bit index never leaves the table.
+            let (entries, _) = lut.as_chunks::<4>();
+            let entries: &[[u8; 4]; 1 << 24] = entries.try_into().expect("LUT_SIZE bytes");
+            let ink = |px: &[u8]| {
+                let rgb =
+                    (usize::from(px[0]) << 16) | (usize::from(px[1]) << 8) | usize::from(px[2]);
+                entries[rgb & 0xFF_FFFF]
+            };
+            render_rows(band, ink, lengths)
+        }
+        Colour::Grid(grid) => render_rows(
+            band,
+            |px: &[u8]| grid.interp_pixel(px[0], px[1], px[2]),
+            lengths,
+        ),
+    }
 }
 
 #[cfg(feature = "python")]
