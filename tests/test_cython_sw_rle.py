@@ -118,3 +118,10 @@ def test_accepts_buffers(variant, python_encoder):
     assert python_encoder(variant, bytearray(data)) == expected
     assert python_encoder(variant, memoryview(data)) == expected
     assert encode_sw_rle(bytearray(), bits) == b""
+
+
+@pytest.mark.parametrize("size", [0, 1, 7, 32754, 1 << 20])
+def test_byte_sum_matches_sum(size):
+    data = bytearray(np.random.default_rng(size).integers(0, 256, size, dtype=np.uint8).tobytes())
+    assert _rle_fast.byte_sum(data) == sum(data)
+    assert _rle_fast.byte_sum(b"\xff" * size) == 255 * size

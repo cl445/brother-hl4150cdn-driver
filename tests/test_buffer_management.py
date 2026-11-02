@@ -7,6 +7,10 @@ and the complete driver buffer loop that produces correct block boundaries.
 
 import struct
 
+import numpy as np
+import pytest
+
+from brother_xl2hb.protocol import xl2hb
 from brother_xl2hb.protocol.xl2hb import (
     FLUSH_ORDER,
     PLANE_BUF_INIT_FREE,
@@ -139,6 +143,22 @@ class TestFlushOutput:
         pb = PlaneBuffer(plane_id=0, bpl=BPL)
         for i in range(10):
             pb.append_scanline(bytes([i] * 20), i)
+        result = pb.flush()
+        assert result is not None
+        _, _, blob = result
+        assert sum(blob) % 256 == 0
+
+    @pytest.mark.parametrize("native", [True, False], ids=["native", "python"])
+    def test_blob_checksum_with_and_without_native_sum(self, native, monkeypatch):
+        """Entries whose byte sum overflows a byte many times; the checksum byte is the same either way."""
+        if native and xl2hb._rle_fast is None:
+            pytest.skip("_rle_fast extension not built")
+        if not native:
+            monkeypatch.setattr(xl2hb, "_rle_fast", None)
+        rng = np.random.default_rng(31)
+        pb = PlaneBuffer(plane_id=2, bpl=BPL)
+        for i in range(60):
+            pb.append_scanline(rng.integers(1, 256, int(rng.integers(1, 400)), dtype=np.uint8).tobytes(), i)
         result = pb.flush()
         assert result is not None
         _, _, blob = result

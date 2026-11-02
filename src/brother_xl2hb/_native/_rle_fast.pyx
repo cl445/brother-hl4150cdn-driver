@@ -4,7 +4,8 @@
 `group_bits` reads a byte stream as N-bit groups (MSB first) and
 `pack_groups` is its inverse. `encode_sw_rle` is the native counterpart
 of rle.sw_rle_encode; its core (`encode_line`) runs without the GIL and
-is shared with _band_fast through _rle_fast.pxd.
+is shared with _band_fast through _rle_fast.pxd. `byte_sum` adds up a
+plane block's bytes for its checksum.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
@@ -15,6 +16,15 @@ cdef int _check_group_size(int group_size) except -1:
     if group_size < 1 or group_size > 32:
         raise ValueError(f"group size {group_size} outside 1..32")
     return 0
+
+
+def byte_sum(const unsigned char[::1] data):
+    """Return the sum of all bytes in `data`, like `sum(data)`."""
+    cdef Py_ssize_t i
+    cdef unsigned long long total = 0
+    for i in range(data.shape[0]):
+        total += data[i]
+    return total
 
 
 def group_bits(const unsigned char[::1] data, int group_size):

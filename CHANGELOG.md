@@ -64,6 +64,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `encode_plane_12bit` (K, Y; was `encode_plane(data, plane)`),
   `encode_plane_20bit` (C; was `encode_c_plane`) and `encode_plane_10bit`
   (M; was `encode_m_plane_10`).
+- `PlaneBuffer` appends entries with fewer allocations, and its block
+  checksum adds up the bytes in `_rle_fast.byte_sum` (Python's `sum` without
+  the native modules). A 4-page job on the Raspberry Pi 3B+ takes 4.6 instead
+  of 5.1 s in Normal mode and 5.6 instead of 6.0 s in Fine mode. Because the
+  main thread holds the GIL less, the reader thread now fills its queue of
+  16 row blocks from gs, so the peak in Fine mode is about 30 MB higher.
 
 ### Fixed
 - Grayscale pages handed over as one block (the command-line tool,

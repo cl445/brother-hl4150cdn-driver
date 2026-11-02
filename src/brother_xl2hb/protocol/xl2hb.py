@@ -9,6 +9,10 @@ its paper sizes and media is in `brother_xl2hb.models`.
 import struct
 from typing import BinaryIO
 
+from brother_xl2hb import _native
+
+_rle_fast = _native.load("_rle_fast")
+
 # ---------------------------------------------------------------------------
 # PCL-XL data type tags
 # ---------------------------------------------------------------------------
@@ -100,6 +104,14 @@ FLUSH_ORDER = (1, 2, 3, 0)
 # PlaneBuffer sizing constants.
 PLANE_BUF_INIT_FREE = 0x7FF2  # 32754 bytes: 0x8000 minus the 14-byte plane header
 PLANE_BUF_FLUSH_THRESH = 0x1688  # 5768 bytes
+
+# Entry bytes above which free space is below the flush threshold.
+_NEARLY_FULL_SIZE = PLANE_BUF_INIT_FREE - PLANE_BUF_FLUSH_THRESH
+_ENTRY_SIZE = struct.Struct(">H").pack
+# Zero bytes that pad an entry of n bytes to 4-byte alignment, by -n & 3.
+_ENTRY_PADDING = (b"", b"\x00", b"\x00\x00", b"\x00\x00\x00")
+_PLANE_HEADER = struct.Struct(">BBBBHHI2s")
+_PLANE_TERMINATOR = b"\x00\x00"
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +332,7 @@ class PlaneBuffer:
         Returns:
             True if a flush should be triggered before the next entry.
         """
-        return self.free_space < PLANE_BUF_FLUSH_THRESH
+        return len(self.entries) > _NEARLY_FULL_SIZE
 
     def append_scanline(self, compressed: bytes, line_idx: int) -> None:
         """Add the entry of scanline `line_idx` if its compressed data is non-empty.
@@ -334,16 +346,13 @@ class PlaneBuffer:
         if self._first:
             self.start_line = line_idx
             self._first = False
-        comp_len = len(compressed)
-        # Leading size (big-endian)
-        self.entries.extend(struct.pack(">H", comp_len))
-        # Compressed data
-        self.entries.extend(compressed)
-        # Pad data to 4-byte alignment
-        padded = (comp_len + 3) & ~3
-        self.entries.extend(b"\x00" * (padded - comp_len))
-        # Trailing size (big-endian)
-        self.entries.extend(struct.pack(">H", comp_len))
+        # Size, data padded to 4 bytes, size again; sizes big-endian.
+        size = _ENTRY_SIZE(len(compressed))
+        entries = self.entries
+        entries += size
+        entries += compressed
+        entries += _ENTRY_PADDING[-len(compressed) & 3]
+        entries += size
         self.line_count += 1
 
     def flush(self) -> tuple[int, int, bytes] | None:
@@ -358,36 +367,22 @@ class PlaneBuffer:
         if self.line_count == 0:
             return None
 
-        # Build the complete blob
-        # Terminator: 00 00
-        body = bytes(self.entries) + b"\x00\x00"
-
-        # Total extended data size = 14 (header) + len(body) + 1 (checksum)
-        total_size = 14 + len(body) + 1
-
-        # Build 14-byte header
-        header = struct.pack(
-            ">BBBBHHI2s",
+        # 14-byte header; data_size counts header, entries, terminator and checksum.
+        header = _PLANE_HEADER.pack(
             0,  # comp_type = 0 (RLE)
             self.bit_depth,  # bit_depth: 4 for Normal, 12 for Fine
             self.quant_type,
             self.comp_size,
             self.bpl,  # row_width
             self.line_count,
-            total_size,  # data_size = total extended data length
+            14 + len(self.entries) + len(_PLANE_TERMINATOR) + 1,
             b"\x00\x00",  # always zero
         )
-
-        blob = header + body
-
-        # Compute checksum: sum of all bytes must be 0 mod 256
-        byte_sum = sum(blob) & 0xFF
-        checksum = (256 - byte_sum) & 0xFF
-        blob += bytes([checksum])
-
-        start = self.start_line
-        count = self.line_count
-        return (start, count, blob)
+        # The checksum byte makes the sum of all bytes 0 mod 256; the terminator is zeros.
+        entries_sum = sum(self.entries) if _rle_fast is None else _rle_fast.byte_sum(self.entries)
+        byte_sum = sum(header) + entries_sum
+        checksum = bytes((-byte_sum & 0xFF,))
+        return (self.start_line, self.line_count, b"".join((header, self.entries, _PLANE_TERMINATOR, checksum)))
 
 
 # ---------------------------------------------------------------------------
