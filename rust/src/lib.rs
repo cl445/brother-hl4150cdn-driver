@@ -6,8 +6,10 @@
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
+pub mod band;
 #[cfg(feature = "python")]
 mod buffer;
+pub mod color;
 pub mod dither;
 pub mod rle;
 
@@ -20,5 +22,8 @@ fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let rle_fast = PyModule::new(m.py(), "_rle_fast")?;
     rle::register(&rle_fast)?;
     m.add_submodule(&rle_fast)?;
+    let band_fast = PyModule::new(m.py(), "_band_fast")?;
+    band::register(&band_fast)?;
+    m.add_submodule(&band_fast)?;
     Ok(())
 }

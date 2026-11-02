@@ -1,6 +1,6 @@
-//! Read-only views of one-dimensional Python byte buffers.
+//! Views of Python buffers: strided and contiguous rows, matrices, a writable output.
 
-use pyo3::buffer::PyBuffer;
+use pyo3::buffer::{Element, PyBuffer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -43,27 +43,87 @@ impl<'a> ByteView<'a> {
     }
 }
 
-/// A C-contiguous byte buffer as a slice, like Cython's `const unsigned char[::1]`.
-pub fn contiguous(buf: &PyBuffer<u8>) -> PyResult<&[u8]> {
+/// A C-contiguous one-dimensional buffer as a slice, like Cython's `const T[::1]`.
+pub fn contiguous<T: Element>(buf: &PyBuffer<T>) -> PyResult<&[T]> {
     if buf.dimensions() != 1 || !buf.is_c_contiguous() {
         return Err(PyValueError::new_err(
             "expected a contiguous one-dimensional buffer",
         ));
     }
-    Ok(bytes(buf, buf.item_count()))
+    items(buf, buf.item_count())
 }
 
-/// The first `len` bytes of a buffer that holds at least `len` contiguous bytes.
-///
-/// The slice is only read while the GIL is held, so no Python thread
-/// writes to a writable exporter (bytearray, numpy array) meanwhile.
-fn bytes(buf: &PyBuffer<u8>, len: usize) -> &[u8] {
+/// A C-contiguous two-dimensional buffer as (items, rows, columns), like Cython's `const T[:, ::1]`.
+pub fn matrix<T: Element>(buf: &PyBuffer<T>) -> PyResult<(&[T], usize, usize)> {
+    if buf.dimensions() != 2 || !buf.is_c_contiguous() {
+        return Err(PyValueError::new_err(
+            "expected a contiguous two-dimensional buffer",
+        ));
+    }
+    Ok((
+        items(buf, buf.item_count())?,
+        buf.shape()[0],
+        buf.shape()[1],
+    ))
+}
+
+/// A writable C-contiguous two-dimensional buffer as (items, rows, columns), like Cython's `T[:, ::1]`.
+pub fn matrix_mut<T: Element>(buf: &mut PyBuffer<T>) -> PyResult<(&mut [T], usize, usize)> {
+    if buf.readonly() {
+        return Err(PyValueError::new_err("expected a writable buffer"));
+    }
+    let (items, rows, cols) = matrix(buf)?;
+    // SAFETY: the exporter allows writes, and the exclusive borrow of `buf`
+    // makes this the only view of the buffer.
+    let items = unsafe { std::slice::from_raw_parts_mut(items.as_ptr() as *mut T, items.len()) };
+    Ok((items, rows, cols))
+}
+
+/// The rows of a two-dimensional byte buffer whose rows are contiguous, like
+/// Cython's `const unsigned char[:, :]` with unit column stride; the row
+/// stride may be anything (cropped and reversed views).
+pub fn byte_rows(buf: &PyBuffer<u8>) -> PyResult<(Vec<&[u8]>, usize)> {
+    if buf.dimensions() != 2 {
+        return Err(PyValueError::new_err("expected a two-dimensional buffer"));
+    }
+    let (n, len) = (buf.shape()[0], buf.shape()[1]);
+    if len > 1 && buf.strides()[1] != 1 {
+        return Err(PyValueError::new_err("rows must be contiguous scanlines"));
+    }
+    let base = buf.buf_ptr() as *const u8;
+    let stride = buf.strides()[0];
+    let rows = (0..n)
+        .map(|i| {
+            if len == 0 {
+                return &[][..];
+            }
+            // SAFETY: row i starts `i * stride` bytes from the first and holds
+            // `len` contiguous bytes; the buffer stays exported while `buf` lives.
+            unsafe { std::slice::from_raw_parts(base.offset(i as isize * stride), len) }
+        })
+        .collect();
+    Ok((rows, len))
+}
+
+/// The first `len` items of a buffer that holds at least `len` contiguous items.
+fn items<T: Element>(buf: &PyBuffer<T>, len: usize) -> PyResult<&[T]> {
     if len == 0 {
         // An empty exporter may report a null pointer, which a slice must not have.
-        return &[];
+        return Ok(&[]);
     }
-    // SAFETY: the pointer is non-null for a non-empty buffer, which holds
-    // `len` contiguous bytes and stays exported (so unchanged in size)
-    // while `buf` lives.
-    unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, len) }
+    let ptr = buf.buf_ptr() as *const T;
+    if !ptr.is_aligned() {
+        return Err(PyValueError::new_err(
+            "buffer is not aligned for its item type",
+        ));
+    }
+    // SAFETY: the pointer is non-null and aligned, the buffer holds `len`
+    // contiguous items and stays exported (so unchanged in size) while
+    // `buf` lives.
+    Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
+/// The first `len` bytes of a byte buffer that holds at least `len` contiguous bytes.
+fn bytes(buf: &PyBuffer<u8>, len: usize) -> &[u8] {
+    items(buf, len).expect("bytes are always aligned")
 }

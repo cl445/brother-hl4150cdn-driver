@@ -9,7 +9,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Experimental Rust kernels in `rust/` (PyO3), built with
   `scripts/build_rust.sh` into `brother_xl2hb._native._rust`. Ported so
-  far: `_dither_fast` and `_rle_fast`. `_native.load` takes a kernel
+  far: `_dither_fast`, `_rle_fast` and `_band_fast`. `_native.load` takes a kernel
   from Rust, then Cython, then falls back to Python;
   `BRXL2HB_BACKEND=cython|python` narrows that. CI runs the
   byte-identity suite with the Rust kernels too.
