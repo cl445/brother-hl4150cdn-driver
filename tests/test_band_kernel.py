@@ -253,17 +253,21 @@ def test_fine_mono_does_not_use_mono_kernel():
     assert not mono_band_kernel_ready(init_channels(settings, HL4150CDN), is_fine=True)
 
 
-@pytest.mark.parametrize(("resolution", "banded"), [(Resolution.NORMAL, True), (Resolution.FINE, False)])
-def test_render_page_routes_mono_pages(resolution, banded, monkeypatch):
+@pytest.mark.parametrize(("resolution", "encoder"), [(Resolution.NORMAL, "banded"), (Resolution.FINE, "per_line")])
+def test_render_page_routes_mono_pages(resolution, encoder, monkeypatch):
     """Normal grayscale pages go through the mono band kernel, Fine ones through the per-line path."""
-    calls = []
-    real = page.encode_lines_mono_banded
+    consumed = []
 
-    def spy(*args, **kwargs):
-        calls.append(args)
-        return real(*args, **kwargs)
+    def spy(name, real):
+        def encode(*args, **kwargs):
+            for line in real(*args, **kwargs):
+                consumed.append(name)
+                yield line
 
-    monkeypatch.setattr(page, "encode_lines_mono_banded", spy)
+        return encode
+
+    monkeypatch.setattr(page, "encode_lines_mono_banded", spy("banded", page.encode_lines_mono_banded))
+    monkeypatch.setattr(page, "encode_lines_mono", spy("per_line", page.encode_lines_mono))
     settings = PrintSettings(mono_color=_MONO, resolution=resolution)
     _render([(_A4_W, 1000, _page(_A4_W, 1000, seed=10))], settings, kernel=True, threads=0, monkeypatch=monkeypatch)
-    assert bool(calls) == banded
+    assert set(consumed) == {encoder}
