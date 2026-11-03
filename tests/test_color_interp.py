@@ -92,7 +92,8 @@ def test_interp_arrays_compact_form() -> None:
     assert interp.grid.dtype == np.uint8
     assert interp.grid.size == 4913 * 4
     assert interp.weights.size == 4913 * 8
-    assert not interp.weights.flags.writeable
+    for array in interp:
+        assert not array.flags.writeable
     # Each entry keeps the non-zero weights of the 9-byte table, corners in weight order.
     _, raw = color_lut._load_data(HL4150CDN.grid())
     entries = raw.reshape(-1, 9)
@@ -113,6 +114,11 @@ def test_interp_arrays_rejects_grids_it_cannot_compact(monkeypatch) -> None:
     monkeypatch.setattr(color_lut, "_load_data", lambda t: (wide, interp))
     with pytest.raises(ValueError, match="outside 0-255"):
         color_lut.interp_arrays(table)
+    negative = lut.copy()
+    negative[7, 1] = -1
+    monkeypatch.setattr(color_lut, "_load_data", lambda t: (negative, interp))
+    with pytest.raises(ValueError, match="outside 0-255"):
+        color_lut.interp_arrays(dataclasses.replace(table, variant="test3"))
     eight = interp.copy().reshape(-1, 9)
     eight[3, 1:] = 28
     monkeypatch.setattr(color_lut, "_load_data", lambda t: (lut, eight))
