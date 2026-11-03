@@ -233,7 +233,8 @@ def test_interp_arrays_compact_form() -> None:
     assert interp.grid.dtype == np.uint8
     assert interp.grid.size == 4913 * 4
     assert interp.weights.size == 4913 * 8
-    assert not interp.weights.flags.writeable
+    for array in interp:
+        assert not array.flags.writeable
     # Each entry keeps the non-zero weights of the 9-byte table, corners in weight order.
     _, raw = color_lut._load_data(HL4150CDN.grid())
     entries = raw.reshape(-1, 9)

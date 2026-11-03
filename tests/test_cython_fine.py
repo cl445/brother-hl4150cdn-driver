@@ -256,3 +256,5 @@ def test_fine_kernel_rejects_bad_shapes(fine_channels):
         _fine_fast.render_band_fine(rows, flags, flags, 11, *args[4:], *levels, lengths)
     with pytest.raises(ValueError, match=r"\(h, 256, w\)"):
         _fine_fast.render_band_fine(*args, np.ascontiguousarray(levels[0][:, :255]), *levels[1:], lengths)
+    with pytest.raises(ValueError, match="reciprocals"):
+        _fine_fast.render_band_fine(*args[:-2], interp.recip[:255], args[-1], *levels, lengths)
