@@ -235,7 +235,7 @@ def test_fine_kernel_selection(fine_channels, monkeypatch):
     # The kernel leaves channels without ink empty, which needs level 0 to be all zero.
     for name in "KCMY":
         levels = fine_channels[name].nibble_levels.copy()
-        levels[0, 0, 0] = 1
+        levels[0, -1, -1] = 1
         inky = dict(fine_channels)
         inky[name] = dataclasses.replace(fine_channels[name], nibble_levels=levels)
         assert band_kernel_colour(table, inky, is_fine=True) is None
