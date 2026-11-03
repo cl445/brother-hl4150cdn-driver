@@ -1,15 +1,11 @@
-"""Native sliding-window RLE encoder: byte-identity vs. the pure-Python fallback in plane_encoders."""
+"""Native sliding-window RLE encoder (Rust and Cython): byte-identity vs. the pure-Python fallback in plane_encoders."""
 
 import numpy as np
 import pytest
 
 from brother_xl2hb.codec import plane_encoders
 from brother_xl2hb.codec.rle import BytesLike, group_bits_py
-
-_rle_fast = pytest.importorskip("brother_xl2hb._native._rle_fast")
-if not hasattr(_rle_fast, "encode_sw_rle"):
-    pytest.skip("_rle_fast built without encode_sw_rle; rebuild the extension", allow_module_level=True)
-encode_sw_rle = _rle_fast.encode_sw_rle
+from conftest import native_variants
 
 # Word size per plane encoder of plane_encoders.
 _VARIANTS = {
@@ -17,6 +13,12 @@ _VARIANTS = {
     "C 20-bit": (20, plane_encoders.encode_plane_20bit),
     "M 10-bit": (10, plane_encoders.encode_plane_10bit),
 }
+
+
+@pytest.fixture(scope="module", params=native_variants("_rle_fast"))
+def encode_sw_rle(request):
+    """`encode_sw_rle` of each built `_rle_fast`: the Rust and the Cython one."""
+    return request.param.encode_sw_rle
 
 
 @pytest.fixture
@@ -67,7 +69,7 @@ def _rows() -> list[bytes]:
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
-def test_matches_python_encoder(variant, python_encoder):
+def test_matches_python_encoder(encode_sw_rle, variant, python_encoder):
     bits, _ = _VARIANTS[variant]
     for data in _rows():
         expected = python_encoder(variant, data)
@@ -75,7 +77,7 @@ def test_matches_python_encoder(variant, python_encoder):
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
-def test_matches_python_encoder_random_sparse(variant, python_encoder):
+def test_matches_python_encoder_random_sparse(encode_sw_rle, variant, python_encoder):
     """Many short sparse rows: exercises every state transition cheaply."""
     bits, _ = _VARIANTS[variant]
     rng = np.random.default_rng(hash(variant) & 0xFFFF)
@@ -89,7 +91,7 @@ def test_matches_python_encoder_random_sparse(variant, python_encoder):
 
 @pytest.mark.parametrize("variant", _VARIANTS)
 @pytest.mark.parametrize("n_literals", [2047, 2048, 4095, 4096, 9000])
-def test_matches_python_encoder_literal_overflow(variant, n_literals, python_encoder):
+def test_matches_python_encoder_literal_overflow(encode_sw_rle, variant, n_literals, python_encoder):
     """Literal stretches past the overflow limit, with a zero tail so no raw fallback hides them."""
     bits, _ = _VARIANTS[variant]
     words = [(i % ((1 << bits) - 2)) + 1 for i in range(n_literals)] + [0] * 6000
@@ -101,13 +103,13 @@ def test_matches_python_encoder_literal_overflow(variant, n_literals, python_enc
     assert encode_sw_rle(data, bits) == python_encoder(variant, data)
 
 
-def test_rejects_unknown_word_size():
+def test_rejects_unknown_word_size(encode_sw_rle):
     with pytest.raises(ValueError, match="unsupported"):
         encode_sw_rle(b"\x01", 16)
 
 
 @pytest.mark.parametrize("variant", _VARIANTS)
-def test_accepts_buffers(variant, python_encoder):
+def test_accepts_buffers(encode_sw_rle, variant, python_encoder):
     """Like the Python fallback, the native encoder takes any contiguous byte buffer."""
     bits, _ = _VARIANTS[variant]
     data = _rows()[5]

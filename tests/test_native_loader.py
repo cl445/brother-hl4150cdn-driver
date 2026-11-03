@@ -1,9 +1,11 @@
-"""The native-kernel loader: availability, BRXL2HB_PURE_PYTHON, the per-job log line."""
+"""The native-kernel loader: availability, backend order, BRXL2HB_BACKEND/_PURE_PYTHON, the per-job log line."""
 
+import importlib.util
 import logging
 import os
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -14,9 +16,12 @@ from brother_xl2hb import _native
 def fresh_loader(monkeypatch):
     """Let `_native.load` import again in this test; the cache is restored afterwards."""
     monkeypatch.setattr(_native, "_unavailable", {})
+    monkeypatch.setattr(_native, "_backend", {})
     _native.load.cache_clear()
+    _native.rust_build.cache_clear()
     yield
     _native.load.cache_clear()
+    _native.rust_build.cache_clear()
 
 
 def test_unknown_module_is_rejected() -> None:
@@ -43,6 +48,7 @@ def test_disabled_kernels_are_not_missing(fresh_loader, monkeypatch, caplog) -> 
 
 def test_failed_import_is_a_warning(fresh_loader, monkeypatch, caplog) -> None:
     monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.delenv(_native.BACKEND_VAR, raising=False)
     real_import = _native.importlib.import_module
 
     def import_module(name: str):
@@ -59,9 +65,99 @@ def test_failed_import_is_a_warning(fresh_loader, monkeypatch, caplog) -> None:
     [record] = caplog.records
     assert record.levelno == logging.WARNING
     message = record.getMessage()
-    assert "_fine_fast: built for another Python" in message
+    assert "cython: built for another Python" in message
     assert "setup_cython.py build_ext --inplace" in message
     assert "cups/install.sh" in message
+
+
+@pytest.mark.parametrize(
+    ("value", "chain"),
+    [("", ("rust", "cython")), ("auto", ("rust", "cython")), ("Cython", ("cython",)), ("python", ())],
+)
+def test_backend_var(monkeypatch, value, chain) -> None:
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.setenv(_native.BACKEND_VAR, value)
+    assert _native.backend_chain() == chain
+
+
+def test_unknown_backend_is_rejected(monkeypatch) -> None:
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.setenv(_native.BACKEND_VAR, "rsut")
+    with pytest.raises(ValueError, match="rsut"):
+        _native.backend_chain()
+
+
+def test_pure_python_var_beats_backend_var(monkeypatch) -> None:
+    monkeypatch.setenv(_native.PURE_PYTHON_VAR, "1")
+    monkeypatch.setenv(_native.BACKEND_VAR, "cython")
+    assert _native.backend_chain() == ()
+
+
+def test_python_backend_kernels_are_not_missing(fresh_loader, monkeypatch) -> None:
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.setenv(_native.BACKEND_VAR, "python")
+    assert all(_native.load(name) is None for name in _native.MODULES)
+    assert _native.missing() == []
+    assert _native.backend("_dither_fast") == "python"
+
+
+def test_rust_kernel_comes_first(fresh_loader, monkeypatch) -> None:
+    """A kernel ported to Rust loads from the Rust build; `cython` and a missing build fall back to Cython."""
+    rust = _native.rust_build()
+    if isinstance(rust, str):
+        pytest.skip(f"Rust build not in use ({rust}); see scripts/build_rust.sh")
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.delenv(_native.BACKEND_VAR, raising=False)
+    assert _native.load("_dither_fast") is rust._dither_fast
+    assert _native.backend("_dither_fast") == "rust"
+    if importlib.util.find_spec("brother_xl2hb._native._dither_fast") is None:
+        pytest.skip("Cython extensions not built")
+    assert _native.backend("_fine_fast") == "cython"
+    rust_part = _native.summary().split("Rust: ")[1].split(";")[0]
+    assert "_dither_fast" in rust_part.split(", ")
+
+    _native.load.cache_clear()
+    monkeypatch.setenv(_native.BACKEND_VAR, "cython")
+    assert _native.backend("_dither_fast") == "cython"
+
+    _native.load.cache_clear()
+    _native.rust_build.cache_clear()
+    monkeypatch.delenv(_native.BACKEND_VAR)
+    real_import = _native.importlib.import_module
+
+    def import_module(name: str):
+        if name.endswith("._rust"):
+            raise ModuleNotFoundError(name=name)
+        return real_import(name)
+
+    monkeypatch.setattr(_native.importlib, "import_module", import_module)
+    assert _native.backend("_dither_fast") == "cython"
+
+
+def test_partly_loaded_kernels_are_named(fresh_loader, monkeypatch) -> None:
+    """With some kernels missing, the status line names the backend of those in use."""
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.delenv(_native.BACKEND_VAR, raising=False)
+    fake_rust = types.ModuleType("_rust")
+    fake_rust.__dict__["_dither_fast"] = types.ModuleType("_dither_fast")
+
+    def import_module(name: str):
+        if name.endswith("._rust"):
+            return fake_rust
+        if name.endswith("._rle_fast"):
+            return types.ModuleType(name)
+        msg = "not built"
+        raise ImportError(msg)
+
+    monkeypatch.setattr(_native.importlib, "import_module", import_module)
+    assert _native.summary().startswith("native kernels partly in use (Rust: _dither_fast; Cython: _rle_fast), ")
+    assert "_fine_fast: rust: not ported; cython: not built" in _native.summary()
+
+
+def test_no_loaded_kernel_is_not_in_use(fresh_loader, monkeypatch) -> None:
+    monkeypatch.delenv(_native.PURE_PYTHON_VAR, raising=False)
+    monkeypatch.setenv(_native.BACKEND_VAR, "python")
+    assert _native.summary().startswith("native kernels not in use, pure-Python fallbacks instead (")
 
 
 def test_pure_python_var_switches_every_caller() -> None:

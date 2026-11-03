@@ -1,11 +1,10 @@
-"""Native band kernel (+ render threads): byte-identity vs. the per-line path."""
+"""Native band kernels, Rust and Cython (+ render threads): byte-identity vs. the per-line path."""
 
 import io
 
 import numpy as np
 import pytest
 
-from brother_xl2hb import _native
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
@@ -20,11 +19,20 @@ from brother_xl2hb.render.bands import (
 from brother_xl2hb.render.lines import ColourSetup, encode_lines, encode_lines_mono
 from brother_xl2hb.render.page import _colour_setup, init_channels
 from brother_xl2hb.settings import ColorMatching, DuplexMode, MediaType, MonoColor, PrintSettings, Resolution
+from conftest import native_variants
 from fixture_utils import read_fixture
 from test_full_pipeline import _SETTING_VARIANTS, _duplex_test_pages, _run_settings_variant
 
 if bands._band_fast is None:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
+
+
+@pytest.fixture(autouse=True, params=native_variants("_band_fast"))
+def band_kernel(request, monkeypatch):
+    """Each built `_band_fast` (Rust and Cython), as the kernel the band path uses."""
+    monkeypatch.setattr(bands, "_band_fast", request.param)
+    return request.param
+
 
 _A4_W, _A4_H = 4760, 6812
 
@@ -68,10 +76,16 @@ def _page(width: int, height: int, seed: int) -> bytes:
 
 
 def _render(pages, settings, *, kernel: bool, threads: int, monkeypatch) -> bytes:
-    monkeypatch.setattr(bands, "_band_fast", _native.load("_band_fast") if kernel else None)
+    """Filter `pages` with the kernel of the `band_kernel` fixture, or per line without it."""
+    native = bands._band_fast
+    if not kernel:
+        monkeypatch.setattr(bands, "_band_fast", None)
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
     out = io.BytesIO()
-    filter_pages(pages, settings, out)
+    try:
+        filter_pages(pages, settings, out)
+    finally:
+        monkeypatch.setattr(bands, "_band_fast", native)
     return out.getvalue()
 
 
@@ -82,6 +96,7 @@ _SETTINGS = {
     "saturation_p10": PrintSettings(saturation=10),
     "saturation_n15": PrintSettings(saturation=-15),
     "input_remap": PrintSettings(brightness=-20, contrast=10, red=5, blue=-7),
+    "brightness_p20": PrintSettings(brightness=20),  # turns near-white rows white
     "saturation_remap": PrintSettings(saturation=5, brightness=12),
     "toner_save": PrintSettings(toner_save=True),
     "improve_gray": PrintSettings(improve_gray=True),

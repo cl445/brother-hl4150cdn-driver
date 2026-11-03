@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Experimental Rust kernels in `rust/` (PyO3), built with
+  `scripts/build_rust.sh` into `brother_xl2hb._native._rust`. Ported so
+  far: `_dither_fast`, `_rle_fast` and `_band_fast`. `_native.load` takes a kernel
+  from Rust, then Cython, then falls back to Python;
+  `BRXL2HB_BACKEND=cython|python` narrows that. CI runs the
+  byte-identity suite with the Rust kernels too.
+
 ### Changed
 - The code is one package, `brother_xl2hb`, with the subpackages `codec`,
   `color`, `protocol`, `render` and `_native` (Cython). The CLI without
@@ -70,6 +78,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of 2.5 to 2.8 s, and a 4-page job peaks at 45 MB instead of
   89 MB. Fine grayscale, and grayscale without the native modules, still
   render per line.
+- The Normal and Fine band kernels work in two passes: they convert a
+  row to KCMY once per run of equal pixels and reuse the last row when it
+  repeats, then dither (Normal: NEON on 64-bit ARM) and skip plane lines
+  without ink. Fine passes its nibble tables as (h, 256, w) so the
+  lookups of a scanline stay in the L1 cache. On the Raspberry Pi 3B+ an
+  A4 photo page takes 0.97 s instead of 1.42 s in Normal and 1.64 s
+  instead of 2.19 s in Fine; without the inverse LUTs, 0.98 s instead of
+  2.07 s and 1.68 s instead of 3.48 s. A 4-page job needs a third less
+  CPU time.
 
 ### Fixed
 - Grayscale pages handed over as one block (the command-line tool,

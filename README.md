@@ -35,7 +35,7 @@ Time per A4 colour page with the native modules:
 | Machine | Normal | Fine |
 |---|---|---|
 | Desktop (Apple M4 Pro) | 0.35 s | 0.4 s |
-| Raspberry Pi 3B+ | 1 s | 6.5 s |
+| Raspberry Pi 3B+ | 0.4 to 1 s | 0.8 to 1.7 s |
 
 Grayscale (Normal) takes 0.3 to 0.4 s per A4 page on the Raspberry Pi 3B+.
 
@@ -197,7 +197,7 @@ The code is one package, `src/brother_xl2hb/`:
 | `protocol` | XL2HB stream writer and PJL, without model data |
 | `models` | `PrinterModel` per printer: paper geometry, media and tray codes, dither set, colour grid choice, PJL, how pages are sent |
 | `render` | one page: PPM input, the per-line and the band path |
-| `_native` | optional Cython kernels, each with a pure-Python fallback |
+| `_native` | optional Cython kernels (and, experimentally, Rust ones), each with a pure-Python fallback |
 
 `job` (PJL, the session, page order, duplex, reverse, skip blank),
 `settings`, `cli` and `cups_filter` sit at the top; `cups/brhl4150cdn-filter`
@@ -230,6 +230,14 @@ uv run --with cython==3.3.0,setuptools==84.2.1 python setup_cython.py build_ext 
 pytest refuses to start while a built extension is older than its
 `.pyx`. `BRXL2HB_PURE_PYTHON=1` makes the driver ignore the built
 extensions and use the pure-Python fallbacks.
+
+An experimental Rust port of the kernels lives in `rust/` (PyO3, one
+abi3 build for every supported Python). So far it has `_dither_fast`,
+`_rle_fast` and `_band_fast`. Build it with `./scripts/build_rust.sh` (needs cargo);
+the driver then takes each kernel from Rust if it is ported, else from
+Cython. `BRXL2HB_BACKEND=cython` skips the Rust build,
+`BRXL2HB_BACKEND=python` skips both. `cups/install.sh` does not build
+it yet.
 
 The test fixtures in `tests/fixtures/` are zstd-compressed XL2HB
 captures from the manufacturer's filter — pytest decompresses them on
