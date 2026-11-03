@@ -66,6 +66,13 @@ reviews:
         under `nogil` must not touch Python objects. The driver runs on any
         architecture; the smallest machine it runs on is a Raspberry Pi 3B+
         (aarch64, 905 MB RAM), so watch allocations per band.
+        The extensions are always built from the same tree as the Python
+        package: `cups/install.sh` deletes every installed `.so` and builds
+        all of them anew (or none, then the pure-Python fallbacks run), and
+        `tests/conftest.py` refuses to run against builds older than their
+        `.pyx`/`.pxd`. A stale or mismatched binary is therefore not a
+        supported state; do not ask for `hasattr` checks, ABI versions or
+        signature probes before calling a kernel function.
     - path: "src/brother_xl2hb/models/**"
       instructions: >-
         Everything printer-specific belongs in a `PrinterModel`
