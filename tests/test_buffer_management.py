@@ -148,21 +148,39 @@ class TestFlushOutput:
         _, _, blob = result
         assert sum(blob) % 256 == 0
 
-    @pytest.mark.parametrize("native", [True, False], ids=["native", "python"])
-    def test_blob_checksum_with_and_without_native_sum(self, native, monkeypatch):
-        """Entries whose byte sum overflows a byte many times; the checksum byte is the same either way."""
-        if native and xl2hb._rle_fast is None:
+    def test_blob_checksum_with_and_without_native_sum(self, monkeypatch):
+        """Entries whose byte sum overflows a byte many times; native and Python sums give the same blob."""
+        native = xl2hb._rle_fast
+        if native is None:
             pytest.skip("_rle_fast extension not built")
-        if not native:
-            monkeypatch.setattr(xl2hb, "_rle_fast", None)
+        native_sum = native.byte_sum
         rng = np.random.default_rng(31)
-        pb = PlaneBuffer(plane_id=2, bpl=BPL)
-        for i in range(60):
-            pb.append_scanline(rng.integers(1, 256, int(rng.integers(1, 400)), dtype=np.uint8).tobytes(), i)
-        result = pb.flush()
-        assert result is not None
-        _, _, blob = result
-        assert sum(blob) % 256 == 0
+        lines = [rng.integers(1, 256, int(rng.integers(1, 400)), dtype=np.uint8).tobytes() for _ in range(60)]
+
+        def flush() -> bytes:
+            pb = PlaneBuffer(plane_id=2, bpl=BPL)
+            for i, line in enumerate(lines):
+                pb.append_scanline(line, i)
+            result = pb.flush()
+            assert result is not None
+            return result[2]
+
+        calls = []
+
+        class Recording:
+            def __getattr__(self, name):
+                return getattr(native, name)
+
+            def byte_sum(self, entries):
+                calls.append(len(entries))
+                return native_sum(entries)
+
+        monkeypatch.setattr(xl2hb, "_rle_fast", Recording())
+        with_native = flush()
+        assert calls
+        monkeypatch.setattr(xl2hb, "_rle_fast", None)
+        assert flush() == with_native
+        assert sum(with_native) % 256 == 0
 
     def test_blob_data_size_matches(self):
         """data_size field in header == total blob length."""
