@@ -233,11 +233,12 @@ def test_fine_kernel_selection(fine_channels, monkeypatch):
     # Bayer fallback channels (no BRCD tables) have no nibble tables: per-line path.
     assert band_kernel_colour(table, dither._build_bayer_tables(toner_save=False), is_fine=True) is None
     # The kernel leaves channels without ink empty, which needs level 0 to be all zero.
-    inky = dict(fine_channels)
-    levels = fine_channels["C"].nibble_levels.copy()
-    levels[0, 0, 0] = 1
-    inky["C"] = dataclasses.replace(fine_channels["C"], nibble_levels=levels)
-    assert band_kernel_colour(table, inky, is_fine=True) is None
+    for name in "KCMY":
+        levels = fine_channels[name].nibble_levels.copy()
+        levels[0, 0, 0] = 1
+        inky = dict(fine_channels)
+        inky[name] = dataclasses.replace(fine_channels[name], nibble_levels=levels)
+        assert band_kernel_colour(table, inky, is_fine=True) is None
 
 
 def test_fine_kernel_rejects_bad_shapes(fine_channels):
