@@ -9,7 +9,7 @@ from brother_xl2hb import _native
 from brother_xl2hb.color import color_lut
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
-from brother_xl2hb.render import bands
+from brother_xl2hb.render import bands, page
 from brother_xl2hb.render.bands import (
     band_kernel_colour,
     encode_lines_banded,
@@ -251,3 +251,19 @@ def test_mono_banded_lines_match_encode_lines_mono():
 def test_fine_mono_does_not_use_mono_kernel():
     settings = PrintSettings(mono_color=_MONO, resolution=Resolution.FINE)
     assert not mono_band_kernel_ready(init_channels(settings, HL4150CDN), is_fine=True)
+
+
+@pytest.mark.parametrize(("resolution", "banded"), [(Resolution.NORMAL, True), (Resolution.FINE, False)])
+def test_render_page_routes_mono_pages(resolution, banded, monkeypatch):
+    """Normal grayscale pages go through the mono band kernel, Fine ones through the per-line path."""
+    calls = []
+    real = page.encode_lines_mono_banded
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(page, "encode_lines_mono_banded", spy)
+    settings = PrintSettings(mono_color=_MONO, resolution=resolution)
+    _render([(_A4_W, 1000, _page(_A4_W, 1000, seed=10))], settings, kernel=True, threads=0, monkeypatch=monkeypatch)
+    assert bool(calls) == banded
