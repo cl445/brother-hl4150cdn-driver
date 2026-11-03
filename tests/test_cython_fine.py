@@ -1,5 +1,6 @@
 """Native Fine codec, 4bpp dither and Fine band kernel: byte-identity vs. the pure-Python reference."""
 
+import dataclasses
 import io
 import random
 
@@ -147,17 +148,6 @@ def fine_channels():
     return channels
 
 
-@pytest.fixture(params=["interp", "random_lut"])
-def colour_source(request, monkeypatch):
-    """Grid interpolation (white maps to no ink, so the overrun quirk fires) or a random inverse LUT."""
-    if request.param == "interp":
-        monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: None)
-    else:
-        lut = np.random.default_rng(4150).integers(0, 256, color_lut._INVERSE_LUT_SHAPE, dtype=np.uint8)
-        monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: lut)
-    return request.param
-
-
 def _fine_page(width: int, height: int, seed: int) -> bytes:
     """Noise, ramps ending in white, solid bars and rows that end in two equal or near-equal pixels."""
     rng = np.random.default_rng(seed)
@@ -199,7 +189,7 @@ _SETTINGS = {
 
 
 @pytest.mark.parametrize("name", list(_SETTINGS))
-def test_fine_kernel_matches_per_line_path(name, fine_channels, colour_source, monkeypatch):
+def test_fine_kernel_matches_per_line_path(name, fine_channels, monkeypatch):
     settings = _SETTINGS[name]
     pages = [(_A4_W, 400, _fine_page(_A4_W, 400, seed=1))]
     expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
@@ -216,7 +206,7 @@ def test_fine_kernel_matches_per_line_path(name, fine_channels, colour_source, m
         (4904, PageSize.LETTER),  # overrun geometry at the padded width
     ],
 )
-def test_fine_kernel_matches_per_line_path_for_widths(width, page_size, fine_channels, colour_source, monkeypatch):
+def test_fine_kernel_matches_per_line_path_for_widths(width, page_size, fine_channels, monkeypatch):
     settings = PrintSettings(resolution=_FINE, page_size=page_size)
     pages = [(width, 400, _fine_page(width, 400, seed=2))]
     expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
@@ -231,21 +221,29 @@ def test_fine_kernel_selection(fine_channels, monkeypatch):
     monkeypatch.setattr(bands, "_fine_fast", _fine_fast)
     # Bayer fallback channels (no BRCD tables) have no nibble tables: per-line path.
     assert band_kernel_colour(table, dither._build_bayer_tables(toner_save=False), is_fine=True) is None
+    # The kernel leaves channels without ink empty, which needs level 0 to be all zero.
+    for name in "KCMY":
+        levels = fine_channels[name].nibble_levels.copy()
+        levels[0, -1, -1] = 1
+        inky = dict(fine_channels)
+        inky[name] = dataclasses.replace(fine_channels[name], nibble_levels=levels)
+        assert band_kernel_colour(table, inky, is_fine=True) is None
 
 
 def test_fine_kernel_rejects_bad_shapes(fine_channels):
-    levels = [np.ascontiguousarray(fine_channels[c].nibble_levels) for c in "KCMY"]
-    grid, weights, black = color_lut.interp_arrays(HL4150CDN.grid())
+    levels = [np.ascontiguousarray(fine_channels[c].nibble_levels.transpose(1, 0, 2)) for c in "KCMY"]
+    interp = color_lut.interp_arrays(HL4150CDN.grid())
     rows = np.full((2, 30), 255, np.uint8)
     flags = np.zeros(2, np.uint8)
     lengths = np.empty((2, 4), np.int32)
-    empty = np.empty(0, np.uint8)
-    args = (rows, flags, flags, 10, 0, 10, empty, grid, weights, black)
+    args = (rows, flags, flags, 10, 0, 10, *interp)
     _fine_fast.render_band_fine(*args, *levels, lengths)
     assert lengths.tolist() == [[0, 0, 0, 0]] * 2
     with pytest.raises(ValueError, match="one entry per row"):
         _fine_fast.render_band_fine(rows, flags[:1], flags, *args[3:], *levels, lengths)
     with pytest.raises(ValueError, match="shorter than width"):
         _fine_fast.render_band_fine(rows, flags, flags, 11, *args[4:], *levels, lengths)
-    with pytest.raises(ValueError, match=r"\(256, h, w\)"):
-        _fine_fast.render_band_fine(*args, levels[0][:255], *levels[1:], lengths)
+    with pytest.raises(ValueError, match=r"\(h, 256, w\)"):
+        _fine_fast.render_band_fine(*args, np.ascontiguousarray(levels[0][:, :255]), *levels[1:], lengths)
+    with pytest.raises(ValueError, match="reciprocals"):
+        _fine_fast.render_band_fine(*args[:-2], interp.recip[:255], args[-1], *levels, lengths)

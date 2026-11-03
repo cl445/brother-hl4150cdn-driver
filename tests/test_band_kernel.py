@@ -6,14 +6,19 @@ import numpy as np
 import pytest
 
 from brother_xl2hb import _native
-from brother_xl2hb.color import color_lut
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
-from brother_xl2hb.render import bands
-from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded, render_threads
-from brother_xl2hb.render.lines import ColourSetup, encode_lines
-from brother_xl2hb.render.page import init_channels
-from brother_xl2hb.settings import ColorMatching, DuplexMode, MediaType, PrintSettings
+from brother_xl2hb.render import bands, page
+from brother_xl2hb.render.bands import (
+    band_kernel_colour,
+    encode_lines_banded,
+    encode_lines_mono_banded,
+    mono_band_kernel_ready,
+    render_threads,
+)
+from brother_xl2hb.render.lines import ColourSetup, encode_lines, encode_lines_mono
+from brother_xl2hb.render.page import _colour_setup, init_channels
+from brother_xl2hb.settings import ColorMatching, DuplexMode, MediaType, MonoColor, PrintSettings, Resolution
 from fixture_utils import read_fixture
 from test_full_pipeline import _SETTING_VARIANTS, _duplex_test_pages, _run_settings_variant
 
@@ -21,31 +26,6 @@ if bands._band_fast is None:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
 
 _A4_W, _A4_H = 4760, 6812
-
-
-@pytest.fixture(scope="module")
-def random_lut() -> np.ndarray:
-    """A random inverse LUT: every colour, white included, maps to some ink."""
-    rng = np.random.default_rng(4150)
-    return rng.integers(0, 256, color_lut._INVERSE_LUT_SHAPE, dtype=np.uint8)
-
-
-@pytest.fixture(autouse=True)
-def _use_random_lut(request, monkeypatch, random_lut) -> None:
-    if "real_lut" not in request.fixturenames and "no_inverse_lut" not in request.fixturenames:
-        monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: random_lut)
-
-
-@pytest.fixture
-def no_inverse_lut(monkeypatch) -> None:
-    """No inverse LUT installed: kernel and per-line path interpolate the grid."""
-    monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: None)
-
-
-@pytest.fixture
-def real_lut(use_color_data_root, installed_inverse_luts):
-    """The real inverse LUTs, as installed by install.sh."""
-    use_color_data_root(installed_inverse_luts)
 
 
 def _page(width: int, height: int, seed: int) -> bytes:
@@ -76,6 +56,7 @@ _SETTINGS = {
     "saturation_p10": PrintSettings(saturation=10),
     "saturation_n15": PrintSettings(saturation=-15),
     "input_remap": PrintSettings(brightness=-20, contrast=10, red=5, blue=-7),
+    "brightness_p20": PrintSettings(brightness=20),  # turns near-white rows white
     "saturation_remap": PrintSettings(saturation=5, brightness=12),
     "toner_save": PrintSettings(toner_save=True),
     "improve_gray": PrintSettings(improve_gray=True),
@@ -91,15 +72,6 @@ def test_kernel_matches_per_line_path(name, monkeypatch):
     pages = [(_A4_W, 1700, _page(_A4_W, 1700, seed=1))]
     expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
     assert _render(pages, settings, kernel=True, threads=0, monkeypatch=monkeypatch) == expected
-    assert _render(pages, settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
-
-
-@pytest.mark.parametrize("name", list(_SETTINGS))
-def test_kernel_interpolation_matches_per_line_path(name, no_inverse_lut, monkeypatch):
-    """Without an inverse LUT the kernel interpolates natively; same bytes as the per-line path."""
-    settings = _SETTINGS[name]
-    pages = [(_A4_W, 1700, _page(_A4_W, 1700, seed=5))]
-    expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
     assert _render(pages, settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
 
 
@@ -153,16 +125,14 @@ def test_banded_lines_run_to_the_end_of_the_page(threads, monkeypatch):
     kernel_colour = band_kernel_colour(colour.table, channels, is_fine=False)
     assert kernel_colour is not None
     sw, _ = HL4150CDN.image_dimensions("A4")
-    expected = list(encode_lines((rows,), _A4_W, sw, colour, channels, is_fine=False))
+    expected = list(encode_lines(((rows, 0),), _A4_W, sw, colour, channels, is_fine=False))
 
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
-    banded = encode_lines_banded((rows,), _A4_W, sw, colour, channels, kernel_colour, is_fine=False)
+    banded = encode_lines_banded(((rows, 0),), _A4_W, sw, colour, channels, kernel_colour, is_fine=False)
     assert [tuple(map(bytes, line)) for line in banded] == expected
 
 
 def test_fine_channels_do_not_use_normal_kernel(monkeypatch):
-    from brother_xl2hb.settings import Resolution
-
     fine_channels = init_channels(PrintSettings(resolution=Resolution.FINE), HL4150CDN)
     # Without the Fine kernel (_fine_fast, see test_cython_fine.py) Fine renders per line.
     monkeypatch.setattr(bands, "_fine_fast", None)
@@ -181,15 +151,89 @@ def test_render_threads_from_environment(monkeypatch):
 
 
 @pytest.mark.parametrize(("name", "settings"), _SETTING_VARIANTS)
-def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
-    """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
+def test_kernel_matches_brother_captures(name, settings, monkeypatch):
+    """The banded render is byte-exact against brhl4150cdnfilter."""
     table = HL4150CDN.color_table(settings)
     assert band_kernel_colour(table, init_channels(settings, HL4150CDN), is_fine=False) is not None
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "3")
     _run_settings_variant(name, settings)
 
 
-def test_kernel_matches_brother_duplex_capture(real_lut, monkeypatch):
+def test_kernel_matches_brother_duplex_capture(monkeypatch):
     expected = read_fixture("duplex4_long_edge.xl2hb")
     settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE)
     assert _render(_duplex_test_pages(), settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
+
+
+_MONO = MonoColor.MONO
+
+_MONO_SETTINGS = {
+    "plain": PrintSettings(mono_color=_MONO),
+    "input_remap": PrintSettings(mono_color=_MONO, brightness=-20, contrast=10, red=5, blue=-7),
+    "brighter": PrintSettings(mono_color=_MONO, brightness=15, contrast=-12),
+    "toner_save": PrintSettings(mono_color=_MONO, toner_save=True),
+    "long_edge_duplex": PrintSettings(mono_color=_MONO, duplex=DuplexMode.NO_TUMBLE),
+}
+
+
+@pytest.mark.parametrize("name", list(_MONO_SETTINGS))
+def test_mono_kernel_matches_per_line_path(name, monkeypatch):
+    settings = _MONO_SETTINGS[name]
+    pages = [(_A4_W, _A4_H, _page(_A4_W, _A4_H, seed=s)) for s in (6, 7)]
+    expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
+    assert _render(pages, settings, kernel=True, threads=0, monkeypatch=monkeypatch) == expected
+    assert _render(pages, settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
+
+
+@pytest.mark.parametrize(("width", "height"), [(3001, 1700), (5000, 1650), (4761, 1650)])
+def test_mono_kernel_matches_per_line_path_for_page_sizes(width, height, monkeypatch):
+    """Narrower (white padding), wider (cut at sw), and a width that is no multiple of 16."""
+    settings = PrintSettings(mono_color=_MONO)
+    pages = [(width, height, _page(width, height, seed=8))]
+    expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
+    assert _render(pages, settings, kernel=True, threads=2, monkeypatch=monkeypatch) == expected
+
+
+def test_mono_banded_lines_match_encode_lines_mono():
+    """Line by line, including repeated rows split by white ones and near-white single pixels."""
+    height = 3 * bands._BAND_ROWS + 5
+    page = np.full((height, _A4_W, 3), 255, np.uint8)
+    page[10:20] = (90, 30, 200)
+    page[25:35] = (90, 30, 200)
+    page[40, ::97] = (254, 255, 255)
+    page[41, -1] = (0, 0, 0)
+    page[200:300] = np.random.default_rng(9).integers(0, 256, (100, _A4_W, 3), dtype=np.uint8)
+    rows = page.reshape(height, -1)
+    settings = PrintSettings(mono_color=_MONO, brightness=-25)
+    channels = init_channels(settings, HL4150CDN)
+    assert mono_band_kernel_ready(channels, is_fine=False)
+    sw, _ = HL4150CDN.image_dimensions("A4")
+    colour = _colour_setup(settings, HL4150CDN)
+    expected = list(encode_lines_mono(((rows, 0),), _A4_W, sw, colour, channels, is_fine=False))
+    banded = encode_lines_mono_banded(((rows, 0),), _A4_W, sw, colour, channels)
+    assert [tuple(map(bytes, line)) for line in banded] == expected
+
+
+def test_fine_mono_does_not_use_mono_kernel():
+    settings = PrintSettings(mono_color=_MONO, resolution=Resolution.FINE)
+    assert not mono_band_kernel_ready(init_channels(settings, HL4150CDN), is_fine=True)
+
+
+@pytest.mark.parametrize(("resolution", "encoder"), [(Resolution.NORMAL, "banded"), (Resolution.FINE, "per_line")])
+def test_render_page_routes_mono_pages(resolution, encoder, monkeypatch):
+    """Normal grayscale pages go through the mono band kernel, Fine ones through the per-line path."""
+    consumed = []
+
+    def spy(name, real):
+        def encode(*args, **kwargs):
+            for line in real(*args, **kwargs):
+                consumed.append(name)
+                yield line
+
+        return encode
+
+    monkeypatch.setattr(page, "encode_lines_mono_banded", spy("banded", page.encode_lines_mono_banded))
+    monkeypatch.setattr(page, "encode_lines_mono", spy("per_line", page.encode_lines_mono))
+    settings = PrintSettings(mono_color=_MONO, resolution=resolution)
+    _render([(_A4_W, 1000, _page(_A4_W, 1000, seed=10))], settings, kernel=True, threads=0, monkeypatch=monkeypatch)
+    assert set(consumed) == {encoder}

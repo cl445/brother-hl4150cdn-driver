@@ -2,13 +2,12 @@
 
 import io
 import sys
-from pathlib import Path
 
 import pytest
 
 from brother_xl2hb import cli
 from brother_xl2hb.job import filter_pages
-from brother_xl2hb.models import DEFAULT_MODEL, HL4150CDN
+from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.settings import DuplexMode, MonoColor, PageSize, PrintSettings, Resolution
 from fixture_utils import assert_matches_fixture
 
@@ -170,12 +169,3 @@ def test_cli_setting_flags(monkeypatch, flags, overrides):
 
     assert out == render(PrintSettings(**overrides))
     assert out != render(PrintSettings())
-
-
-@pytest.mark.parametrize(("argv", "directory"), [(["--precompute-lut"], None), (["--precompute-lut", "luts"], "luts")])
-def test_cli_precompute_lut_writes_the_models_inverse_luts(monkeypatch, argv, directory):
-    calls = []
-    monkeypatch.setattr(cli, "write_inverse_luts", lambda tables, out_dir: calls.append((tables, out_dir)))
-    # Nothing is read from stdin or written to stdout.
-    assert _run_cli(monkeypatch, argv, b"") == b""
-    assert calls == [(HL4150CDN.inverse_lut_tables, None if directory is None else Path(directory))]

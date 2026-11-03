@@ -64,12 +64,54 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `encode_plane_12bit` (K, Y; was `encode_plane(data, plane)`),
   `encode_plane_20bit` (C; was `encode_c_plane`) and `encode_plane_10bit`
   (M; was `encode_m_plane_10`).
+- Grayscale pages in Normal mode render in the native band kernel
+  (`render_band_mono` in `_band_fast`) on the render threads, with NEON
+  on 64-bit ARM. On the Raspberry Pi 3B+ an A4 page takes 0.3 to 0.4 s
+  instead of 2.5 to 2.8 s, and a 4-page job peaks at 45 MB instead of
+  89 MB. Fine grayscale, and grayscale without the native modules, still
+  render per line.
+- The Normal and Fine band kernels work in two passes: they convert a
+  row to KCMY once per run of equal pixels and reuse the last row when it
+  repeats, then dither (Normal: NEON on 64-bit ARM) and skip plane lines
+  without ink. Fine passes its nibble tables as (h, 256, w) so the
+  lookups of a scanline stay in the L1 cache. On the Raspberry Pi 3B+ an
+  A4 photo page takes 0.97 s instead of 1.42 s in Normal and 1.64 s
+  instead of 2.19 s in Fine; without the inverse LUTs, 0.98 s instead of
+  2.07 s and 1.68 s instead of 3.48 s. A 4-page job needs a third less
+  CPU time.
+- Long-edge back sides, BRReverse and skip blank no longer hold a whole
+  page (about 100 MB for A4). Flipped pages are read top to bottom as
+  they stream and encoded mirrored; only the encoded lines wait for the
+  page to end. Skip blank tests a page while it renders and drops the
+  rendered page if it was blank. On the Raspberry Pi 3B+ a 4-page job
+  peaks at 136 MB instead of 224 MB with BRReverse, 127 MB instead of
+  236 MB with skip blank, 150 MB instead of 225 MB for Fine duplex and
+  50 MB instead of 138 MB for grayscale duplex. Skip blank together with
+  collated copies still collects each page.
+- The Ghostscript reader buffers 4 instead of 16 blocks of 128 rows ahead
+  of the renderer; more did not make jobs faster.
+- The native colour interpolation reads a compact form of the colour
+  grid (`color_lut.interp_arrays`, built once per table): the grid as
+  bytes (20 KB instead of 79 KB, so it stays in the L1 cache), only the at
+  most 4 non-zero corner weights per entry, and a multiplication by an
+  exactly checked reciprocal instead of the division. The result is the
+  same for every colour. On the Raspberry Pi 3B+, one thread, an A4 page
+  of random colours takes 5.1 s of CPU time instead of 7.8 s, and
+  interpolating is now as fast as the inverse LUT or faster, except on a
+  smooth full-page gradient (1.28 s instead of 1.20 s).
 - `PlaneBuffer` appends entries with fewer allocations, and its block
   checksum adds up the bytes in `_rle_fast.byte_sum` (Python's `sum` without
   the native modules). A 4-page job on the Raspberry Pi 3B+ takes 4.6 instead
-  of 5.1 s in Normal mode and 5.6 instead of 6.0 s in Fine mode. Because the
-  main thread holds the GIL less, the reader thread now fills its queue of
-  16 row blocks from gs, so the peak in Fine mode is about 30 MB higher.
+  of 5.1 s in Normal mode and 5.6 instead of 6.0 s in Fine mode.
+
+### Removed
+- The precomputed inverse LUTs. Every colour is now interpolated in the
+  colour grid, with the same output. `install.sh` no longer spends about
+  four minutes on a Raspberry Pi 3 computing them and removes those of
+  an earlier installation (256 MB); jobs need about 60 MB less memory.
+  The `--precompute-lut` option of the CLI is gone. Without the native
+  modules the numpy interpolation is slower than the LUT was (an A4
+  colour page takes about 10 s instead of 4 s on a desktop).
 
 ### Fixed
 - Grayscale pages handed over as one block (the command-line tool,

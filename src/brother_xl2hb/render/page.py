@@ -1,8 +1,13 @@
 """One page of the XL2HB stream, from BeginPage to EndPage."""
 
-from collections.abc import Iterator
+import functools
+import itertools
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Self
+
+import numpy as np
+import numpy.typing as npt
 
 from brother_xl2hb.color.dither import (
     DitherChannel,
@@ -11,9 +16,14 @@ from brother_xl2hb.color.dither import (
 from brother_xl2hb.color.transforms import build_input_remap_lut
 from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import FLUSH_ORDER, PlaneBuffer, XL2HBWriter
-from brother_xl2hb.render.bands import band_kernel_colour, encode_lines_banded
+from brother_xl2hb.render.bands import (
+    band_kernel_colour,
+    encode_lines_banded,
+    encode_lines_mono_banded,
+    mono_band_kernel_ready,
+)
 from brother_xl2hb.render.lines import BLANK_LINE, ColourSetup, LineCodes, encode_lines, encode_lines_mono
-from brother_xl2hb.render.rows import BUFFER_TYPES, Page, RowBlocks, collect_rows, flip_vertical, page_rows
+from brother_xl2hb.render.rows import BUFFER_TYPES, LineBlocks, Page, RowBlocks, numbered_blocks, page_rows
 from brother_xl2hb.settings import MonoColor, PrintSettings, Resolution
 
 
@@ -47,21 +57,19 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
     Handles: BeginPage -> scanline loop -> flush -> EndPage, as `send`
     says (bottom-up with the back-side marker, PageCopies; see
     `PrinterModel.page_sends`). Scanlines are read as views into the
-    page's pixel data, which may also be a stream of row blocks; only
-    flipped pages are collected into one buffer to be mirrored.
+    page's pixel data, which may also be a stream of row blocks, and are
+    read once, top to bottom, flipped pages included.
 
     Raises:
         ValueError: If the page has fewer than its `height` rows.
     """
-    width = page[0]
+    width, height, pixel_data = page
     settings, model, channels = job.settings, job.model, job.channels
     is_fine = settings.resolution == Resolution.FINE
     mono = settings.mono_color == MonoColor.MONO
     page_size = settings.page_size
     _, paper_h = model.paper_sizes[page_size]
     sw, sh = model.image_dimensions(page_size, fine=is_fine)
-
-    blocks, height = _row_blocks(page, paper_h, flip=send.flip)
 
     w.write_begin_page(
         media_size=model.media_size_code(page_size),
@@ -73,13 +81,13 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
     w.write_set_page_origin(*model.page_origin)
     w.write_begin_image(sw, sh, copies=send.copies, fine=is_fine, color=not mono)
 
-    colour = _colour_setup(settings, model)
-    if mono:
-        lines = encode_lines_mono(blocks, width, sw, colour, channels, is_fine=is_fine)
-    elif (kernel_colour := band_kernel_colour(colour.table, channels, is_fine=is_fine)) is not None:
-        lines = encode_lines_banded(blocks, width, sw, colour, channels, kernel_colour, is_fine=is_fine)
+    encode = _line_encoder(settings, model, channels, width, sw)
+    blocks: RowBlocks = (page_rows(pixel_data, width, height),) if isinstance(pixel_data, BUFFER_TYPES) else pixel_data
+    if send.flip:
+        lines = _flipped_lines(encode, blocks, height, paper_h)
+        height = paper_h
     else:
-        lines = encode_lines(blocks, width, sw, colour, channels, is_fine=is_fine)
+        lines = encode(numbered_blocks(blocks))
     bpl = (sw + 1) // 2 if is_fine else (sw + 7) // 8  # 4bpp: 2 pixels per byte, 1bpp: 8
     _write_planes(w, lines, height, paper_h, bpl=bpl, is_fine=is_fine)
 
@@ -87,21 +95,78 @@ def render_page(w: XL2HBWriter, page: Page, job: JobContext, send: PageSend) -> 
     w.write_end_page(copies=send.copies)
 
 
-def _row_blocks(page: Page, paper_h: int, *, flip: bool) -> tuple[RowBlocks, int]:
-    """The page's rows as blocks, top to bottom as they are sent.
+LineEncoder = Callable[[LineBlocks], Iterator[LineCodes]]
+"""Encodes row blocks (with their first page lines) to scanlines, in input order."""
 
-    A flipped page is collected and mirrored top to bottom (columns stay)
-    over the full paper height.
+
+def _line_encoder(
+    settings: PrintSettings, model: PrinterModel, channels: dict[str, DitherChannel], width: int, sw: int
+) -> LineEncoder:
+    """The scanline encoder for the page: a native band kernel where one applies, else per line.
 
     Returns:
-        The row blocks and the number of rows they hold.
+        The encoder.
     """
-    width, height, pixel_data = page
-    if flip:
-        return (flip_vertical(collect_rows(pixel_data, width, height), paper_h),), paper_h
-    if isinstance(pixel_data, BUFFER_TYPES):
-        return (page_rows(pixel_data, width, height),), height
-    return pixel_data, height
+    is_fine = settings.resolution == Resolution.FINE
+    colour = _colour_setup(settings, model)
+    if settings.mono_color == MonoColor.MONO:
+        if mono_band_kernel_ready(channels, is_fine=is_fine):
+            return functools.partial(encode_lines_mono_banded, width=width, sw=sw, colour=colour, channels=channels)
+        return functools.partial(
+            encode_lines_mono, width=width, sw=sw, colour=colour, channels=channels, is_fine=is_fine
+        )
+    kernel_colour = band_kernel_colour(colour.table, channels, is_fine=is_fine)
+    if kernel_colour is not None:
+        return functools.partial(
+            encode_lines_banded,
+            width=width,
+            sw=sw,
+            colour=colour,
+            channels=channels,
+            kernel_colour=kernel_colour,
+            is_fine=is_fine,
+        )
+    return functools.partial(encode_lines, width=width, sw=sw, colour=colour, channels=channels, is_fine=is_fine)
+
+
+def _flipped_lines(encode: LineEncoder, blocks: RowBlocks, height: int, paper_h: int) -> Iterator[LineCodes]:
+    """Encode the page mirrored top to bottom over the full paper height (columns stay).
+
+    Brother's filter sends long-edge duplex back pages and BRReverse pages
+    this way (verified byte-for-byte against captures). Each output line
+    depends only on its source row and its line number, so the blocks are
+    read top to bottom as they come and encoded mirrored, source row r as
+    line paper_h - 1 - r; the encoded lines, not the raster, are kept until
+    the page is complete. Rows past `paper_h` are dropped; rows missing
+    below a short page become blank lines at the top.
+
+    Yields:
+        The page's paper_h encoded lines, top to bottom as they are sent.
+
+    Raises:
+        ValueError: If `blocks` do not add up to `height` rows.
+    """
+    sizes: list[int] = []
+
+    def mirrored() -> Iterator[tuple[npt.NDArray[np.uint8], int]]:
+        filled = 0
+        for block in blocks:
+            rows = min(block.shape[0], height - filled)
+            keep = max(0, min(rows, paper_h - filled))
+            if keep:
+                sizes.append(keep)
+                yield block[:keep][::-1], paper_h - filled - keep
+            filled += rows
+        if filled != height:
+            msg = f"page has {filled} rows, expected {height}"
+            raise ValueError(msg)
+
+    codes = list(encode(mirrored()))
+    yield from itertools.repeat(BLANK_LINE, paper_h - len(codes))
+    end = len(codes)
+    for size in reversed(sizes):
+        yield from codes[end - size : end]
+        end -= size
 
 
 def _colour_setup(settings: PrintSettings, model: PrinterModel) -> ColourSetup:

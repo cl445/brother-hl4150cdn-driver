@@ -13,8 +13,9 @@ whole band, so bands can render on several threads.
 """
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
+from libc.stdint cimport uint32_t, uint64_t
 from libc.stdlib cimport free, malloc, realloc
-from libc.string cimport memset
+from libc.string cimport memcmp, memset
 
 from brother_xl2hb._native._color_fast cimport interp_pixel
 
@@ -642,21 +643,44 @@ def dither_row_4bpp(const uchar[:] row, const uchar[:, :, :] levels, Py_ssize_t 
     return out
 
 
-_LUT_SIZE = 256 * 256 * 256 * 4
+# Byte access helpers, as in _band_fast.
+cdef extern from *:
+    """
+    #include <string.h>
+    #include <stdint.h>
+
+    static inline uint64_t load_u64(const unsigned char *src) { uint64_t v; memcpy(&v, src, 8); return v; }
+    static inline uint32_t load_u32(const unsigned char *src) { uint32_t v; memcpy(&v, src, 4); return v; }
+    static inline void store_u32(unsigned char *dst, uint32_t v) { memcpy(dst, &v, 4); }
+
+    /* R << 16 | G << 8 | B of the pixel at p. Reads 4 bytes, so not for a row's last pixel. */
+    static inline uint32_t rgb_at(const unsigned char *p) {
+        uint32_t v;
+        memcpy(&v, p, 4);
+    #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        return __builtin_bswap32(v) >> 8;
+    #else
+        return v >> 8;
+    #endif
+    }
+    """
+    uint64_t load_u64(const unsigned char *src) noexcept nogil
+    uint32_t load_u32(const unsigned char *src) noexcept nogil
+    void store_u32(unsigned char *dst, uint32_t v) noexcept nogil
+    uint32_t rgb_at(const unsigned char *p) noexcept nogil
 
 
-cdef inline void _pixel_kcmy(
-    const uchar *px, bint has_lut, const uchar *lut, const int *grid, const uchar *weights, const int *black, uchar *kcmy
-) noexcept nogil:
-    cdef size_t off
-    if has_lut:
-        off = ((<size_t>px[0] << 16) | (<size_t>px[1] << 8) | px[2]) << 2
-        kcmy[0] = lut[off]
-        kcmy[1] = lut[off + 1]
-        kcmy[2] = lut[off + 2]
-        kcmy[3] = lut[off + 3]
-    else:
-        interp_pixel(grid, weights, black, px[0], px[1], px[2], kcmy)
+cdef inline bint _row_white(const uchar *row, Py_ssize_t nbytes) noexcept nogil:
+    cdef Py_ssize_t i = 0
+    while i + 8 <= nbytes:
+        if load_u64(row + i) != 0xFFFFFFFFFFFFFFFFULL:
+            return False
+        i += 8
+    while i < nbytes:
+        if row[i] != 255:
+            return False
+        i += 1
+    return True
 
 
 def render_band_fine(
@@ -666,9 +690,9 @@ def render_band_fine(
     Py_ssize_t width,
     Py_ssize_t first_line,
     Py_ssize_t sw,
-    const unsigned char[::1] lut,
-    const int[::1] grid,
+    const unsigned char[::1] grid,
     const unsigned char[::1] weights,
+    const uint64_t[::1] recip,
     const int[::1] black,
     const unsigned char[:, :, ::1] lv_k,
     const unsigned char[:, :, ::1] lv_c,
@@ -678,12 +702,18 @@ def render_band_fine(
 ):
     """Colour-convert, 4bpp-dither and Fine-encode `rows` (page lines from `first_line`).
 
-    Byte-identical to lines.encode_lines with is_fine=True.
+    Byte-identical to lines.encode_lines with is_fine=True. Two passes per
+    row like _band_fast.render_band: the KCMY values of every pixel (once
+    per run of equal pixels, not at all for a row equal to the last
+    converted one), then the nibble lookup channel by channel. Channels
+    without ink are neither dithered nor encoded; level 0 of every nibble
+    table must be all zero, so they would come out empty anyway.
 
     Args:
         rows: (n, >= width * 3) RGB scanlines; each row contiguous, any row
             stride (cropped or reversed views are fine).
-        skip: n flags; a set flag emits a blank line without looking at it.
+        skip: n flags, a set flag emits a blank line without looking at it;
+            or empty, to skip the rows that are pure white over `width`.
         overrun: n flags, the RGB part of lines.fine_overrun_planes (image
             geometry and the last two input pixels equal); the kernel adds
             the no-ink test of the last pixel and then clears byte 0 of the
@@ -691,12 +721,11 @@ def render_band_fine(
         width: pixels per input row.
         first_line: page line index of rows[0]; selects the dither rows.
         sw: image width in pixels; pixels past `width` count as white.
-        lut: flat (256*256*256*4) KCMY inverse LUT, or empty to interpolate
-            `grid` instead.
-        grid, weights, black: colour grid, interpolation weights and black
-            ink from `color_lut.interp_arrays`; used when `lut` is empty.
-        lv_k, lv_c, lv_m, lv_y: per-channel nibble tables (256, h, w),
-            `DitherChannel.nibble_levels`.
+        grid, weights, recip, black: colour grid, interpolation weights,
+            reciprocals and black ink from `color_lut.interp_arrays`.
+        lv_k, lv_c, lv_m, lv_y: per-channel nibble tables (h, 256, w),
+            `DitherChannel.nibble_levels` with the first two axes swapped:
+            the 256 levels of one dither row lie together.
         lengths: (n, 4) output, encoded length per line and plane (K, C, M, Y);
             0 means the plane line has no ink.
 
@@ -711,55 +740,56 @@ def render_band_fine(
     cdef Py_ssize_t npx = width if width < sw else sw
     cdef Py_ssize_t bpl = (sw + 1) // 2
     cdef Py_ssize_t bound = 2 * bpl + 16
-    cdef bint has_lut = lut.shape[0] != 0
-    cdef Py_ssize_t i, x, line, pid, m
-    cdef Py_ssize_t col[4]
+    cdef bint has_skip = skip.shape[0] != 0
+    cdef bint has_ink = False
+    cdef Py_ssize_t i, x, line, pid, m, w, col, last
+    cdef Py_ssize_t lh[4]
     cdef Py_ssize_t lw[4]
-    cdef Py_ssize_t lplane[4]
-    cdef const uchar *lrow[4]
     cdef const uchar *lv[4]
+    cdef const uchar *lrow
     cdef uchar kcmy[4]
-    cdef uchar a
+    cdef uchar row_ink[4]
+    cdef uchar a, a2
+    cdef uint32_t px, prev_px, value, no_ink
     cdef const uchar *row
-    cdef const int *pgrid = NULL
-    cdef const uchar *pweights = NULL
-    cdef const int *pblack = NULL
-    cdef const uchar *plut = NULL
+    cdef const uchar *prev_row = NULL
+    cdef const uchar *pgrid
+    cdef const uchar *pweights
+    cdef const uint64_t *precip
+    cdef const int *pblack
     cdef uchar *planes
+    cdef uchar *plane
+    cdef uchar *kc
     cdef uchar *scratch
     cdef uchar *out = NULL
     cdef uchar *grown
     cdef Py_ssize_t out_len = 0, out_cap = 0
     cdef bint failed = False
 
-    if skip.shape[0] != n or overrun.shape[0] != n or lengths.shape[0] != n or lengths.shape[1] != 4:
+    if (has_skip and skip.shape[0] != n) or overrun.shape[0] != n or lengths.shape[0] != n or lengths.shape[1] != 4:
         raise ValueError("skip, overrun and lengths must have one entry per row")
     if n and rows.shape[1] < width * 3:
         raise ValueError("rows shorter than width * 3")
     if rows.shape[1] > 1 and rows.strides[1] != 1:
         raise ValueError("rows must be contiguous scanlines")
-    if has_lut and lut.shape[0] != _LUT_SIZE:
-        raise ValueError("lut must be the flat 256*256*256*4 inverse LUT")
-    if not has_lut and (grid.shape[0] != 4913 * 4 or weights.shape[0] != 17 * 289 * 9 or black.shape[0] != 4):
-        raise ValueError("without an inverse LUT, grid, weights and black ink are required")
+    if grid.shape[0] != 4913 * 4 or weights.shape[0] != 4913 * 8 or recip.shape[0] != 256 or black.shape[0] != 4:
+        raise ValueError("grid, weights, reciprocals or black ink has the wrong size")
     if (
-        lv_k.shape[0] != 256
-        or lv_c.shape[0] != 256
-        or lv_m.shape[0] != 256
-        or lv_y.shape[0] != 256
-        or min(lv_k.shape[1], lv_c.shape[1], lv_m.shape[1], lv_y.shape[1]) == 0
+        lv_k.shape[1] != 256
+        or lv_c.shape[1] != 256
+        or lv_m.shape[1] != 256
+        or lv_y.shape[1] != 256
+        or min(lv_k.shape[0], lv_c.shape[0], lv_m.shape[0], lv_y.shape[0]) == 0
         or min(lv_k.shape[2], lv_c.shape[2], lv_m.shape[2], lv_y.shape[2]) == 0
     ):
-        raise ValueError("nibble tables must be of shape (256, h, w)")
+        raise ValueError("nibble tables must be of shape (h, 256, w)")
     if sw <= 0 or width < 0:
         raise ValueError("sw must be positive")
 
-    if has_lut:
-        plut = &lut[0]
-    else:
-        pgrid = &grid[0]
-        pweights = &weights[0]
-        pblack = &black[0]
+    pgrid = &grid[0]
+    pweights = &weights[0]
+    precip = &recip[0]
+    pblack = &black[0]
     lv[0] = &lv_k[0, 0, 0]
     lv[1] = &lv_c[0, 0, 0]
     lv[2] = &lv_m[0, 0, 0]
@@ -768,58 +798,89 @@ def render_band_fine(
     lw[1] = lv_c.shape[2]
     lw[2] = lv_m.shape[2]
     lw[3] = lv_y.shape[2]
-    lplane[0] = lv_k.shape[1] * lw[0]
-    lplane[1] = lv_c.shape[1] * lw[1]
-    lplane[2] = lv_m.shape[1] * lw[2]
-    lplane[3] = lv_y.shape[1] * lw[3]
+    lh[0] = lv_k.shape[0]
+    lh[1] = lv_c.shape[0]
+    lh[2] = lv_m.shape[0]
+    lh[3] = lv_y.shape[0]
 
     planes = <uchar *>malloc(4 * bpl)
+    kc = <uchar *>malloc(4 * npx + 4)
     scratch = <uchar *>malloc(bound)
-    failed = planes == NULL or scratch == NULL
+    failed = planes == NULL or kc == NULL or scratch == NULL
 
     try:
         with nogil:
             for i in range(n):
                 if failed:
                     break
-                if skip[i]:
-                    for pid in range(4):
-                        lengths[i, pid] = 0
-                    continue
-                line = first_line + i
+                for pid in range(4):
+                    lengths[i, pid] = 0
                 row = &rows[i, 0]
-                # Row of each channel's level-0 table at this line; level v is lplane * v further.
-                lrow[0] = lv[0] + (line % lv_k.shape[1]) * lw[0]
-                lrow[1] = lv[1] + (line % lv_c.shape[1]) * lw[1]
-                lrow[2] = lv[2] + (line % lv_m.shape[1]) * lw[2]
-                lrow[3] = lv[3] + (line % lv_y.shape[1]) * lw[3]
+                if has_skip:
+                    if skip[i]:
+                        continue
+                elif _row_white(row, width * 3):
+                    continue
+                # Pass 1: KCMY per pixel, unless the row repeats the last converted one.
+                if prev_row == NULL or memcmp(row, prev_row, npx * 3) != 0:
+                    prev_px = 0xFFFFFFFFU
+                    value = 0
+                    # AND of all KCMY values; 255 means the channel has no ink.
+                    no_ink = 0xFFFFFFFFU
+                    for x in range(npx):
+                        if x + 1 < npx:
+                            px = rgb_at(row + 3 * x)
+                        else:
+                            px = (<uint32_t>row[3 * x] << 16) | (<uint32_t>row[3 * x + 1] << 8) | row[3 * x + 2]
+                        if px != prev_px:
+                            prev_px = px
+                            interp_pixel(
+                                pgrid, pweights, precip, pblack, row[3 * x], row[3 * x + 1], row[3 * x + 2], kcmy
+                            )
+                            value = load_u32(kcmy)
+                        store_u32(kc + 4 * x, value)
+                        no_ink &= value
+                    store_u32(row_ink, no_ink)
+                    prev_row = row
+                    has_ink = no_ink != 0xFFFFFFFFU
+                if not has_ink:
+                    continue
+                # Pass 2: nibble lookup, two pixels per byte. Pixels past npx
+                # are white, level 0, so their nibbles stay 0.
+                line = first_line + i
                 memset(planes, 0, 4 * bpl)
                 for pid in range(4):
-                    col[pid] = 0
-                for x in range(sw):
+                    if row_ink[pid] == 255:
+                        continue
+                    lrow = lv[pid] + (line % lh[pid]) * 256 * lw[pid]
+                    w = lw[pid]
+                    plane = planes + pid * bpl
+                    col = 0
+                    x = 0
+                    while x + 1 < npx:
+                        a = lrow[(255 - kc[4 * x + pid]) * w + col]
+                        col += 1
+                        if col == w:
+                            col = 0
+                        a2 = lrow[(255 - kc[4 * x + 4 + pid]) * w + col]
+                        col += 1
+                        if col == w:
+                            col = 0
+                        # uint8 shift as in _nibble_pack: bits above the nibble fall off.
+                        plane[x >> 1] = <uchar>((a << 4) | a2)
+                        x += 2
                     if x < npx:
-                        _pixel_kcmy(row + 3 * x, has_lut, plut, pgrid, pweights, pblack, kcmy)
-                    else:
-                        kcmy[0] = 255
-                        kcmy[1] = 255
-                        kcmy[2] = 255
-                        kcmy[3] = 255
-                    for pid in range(4):
-                        a = lrow[pid][(255 - kcmy[pid]) * lplane[pid] + col[pid]]
-                        if x & 1:
-                            planes[pid * bpl + (x >> 1)] |= a
-                        else:
-                            planes[pid * bpl + (x >> 1)] = <uchar>(a << 4)
-                        col[pid] += 1
-                        if col[pid] == lw[pid]:
-                            col[pid] = 0
+                        plane[x >> 1] = <uchar>(lrow[(255 - kc[4 * x + pid]) * w + col] << 4)
                 if overrun[i] and width >= 1:
-                    _pixel_kcmy(row + 3 * (width - 1), has_lut, plut, pgrid, pweights, pblack, kcmy)
+                    last = 3 * (width - 1)
+                    interp_pixel(pgrid, pweights, precip, pblack, row[last], row[last + 1], row[last + 2], kcmy)
                     if kcmy[0] == 255 and kcmy[1] == 255 and kcmy[2] == 255 and kcmy[3] == 255:
                         planes[0] = 0  # K
                         planes[2 * bpl] = 0  # M
                         planes[3 * bpl] = 0  # Y
                 for pid in range(4):
+                    if row_ink[pid] == 255:
+                        continue
                     if out_cap - out_len < bound:
                         out_cap = 2 * out_cap + 4 * bound
                         grown = <uchar *>realloc(out, out_cap)
@@ -835,5 +896,6 @@ def render_band_fine(
         return PyBytes_FromStringAndSize(<char *>out, out_len)
     finally:
         free(planes)
+        free(kc)
         free(scratch)
         free(out)

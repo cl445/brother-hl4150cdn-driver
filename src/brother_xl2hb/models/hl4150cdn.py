@@ -5,7 +5,7 @@ and ImagingArea files and verified against its output. The protocol
 itself is in `brother_xl2hb.protocol`.
 """
 
-from brother_xl2hb.color.color_lut import ColorTable, Profile
+from brother_xl2hb.color.color_lut import ColorTable
 from brother_xl2hb.color.transforms import color_profile
 from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.pjl import generate_pjl_footer, generate_pjl_header
@@ -174,11 +174,6 @@ _PAPER_POINTS = {
 _DITHER_CACHE = "cache09"
 
 
-# Normal and Vivid colour matching, each with and without improve gray (the
-# PPD default is BRGray=ON); every other grid is interpolated per pixel.
-_INVERSE_LUT_GRIDS: tuple[tuple[Profile, bool], ...] = (("rgb", False), ("rgb", True), ("srgb", False), ("srgb", True))
-
-
 # Spellings of brhl4150cdnrc and Brother's cupswrapper PPD (its B5/B6 are
 # ISO sizes); BOND and PostCard already match without regard to case.
 _ALIASES = {
@@ -277,7 +272,6 @@ HL4150CDN = PrinterModel(
     media_source=_MEDIA_SOURCE,
     duplex_page_mode=_DUPLEX_MAP,
     dither_cache=_DITHER_CACHE,
-    inverse_lut_grids=_INVERSE_LUT_GRIDS,
     # color_lut_gen's grids were fitted to the HL-4150CDN's.
     generated_grids=True,
     color_table=color_table,

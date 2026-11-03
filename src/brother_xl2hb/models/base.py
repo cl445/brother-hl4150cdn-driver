@@ -57,8 +57,6 @@ class PrinterModel:
             SimplexPageMode.
         dither_cache: suffix of the BRCD dither files, e.g. `cache09` for
             `0600-k_cache09.bin`.
-        inverse_lut_grids: (profile, improve_gray) of the default-variant
-            grids that get a precomputed inverse LUT (cups/install.sh).
         generated_grids: `color_lut_gen`'s parametric grids approximate this
             model's, so they may stand in when its grids are not extracted.
             Without that, a missing grid is an error rather than wrong colours.
@@ -90,7 +88,6 @@ class PrinterModel:
     media_source: Mapping[InputSlot, int]
     duplex_page_mode: Mapping[DuplexMode, int | None]
     dither_cache: str
-    inverse_lut_grids: tuple[tuple[Profile, bool], ...]
     generated_grids: bool
     color_table: Callable[[PrintSettings], ColorTable]
     pjl_header: Callable[[PrintSettings], bytes]
@@ -106,7 +103,7 @@ class PrinterModel:
 
     @property
     def color_data_dir(self) -> Path:
-        """The model's colour grids and inverse LUTs: `color_data/<key>/` in the package."""
+        """The model's colour grids: `color_data/<key>/` in the package."""
         return COLOR_DATA_ROOT / self.key
 
     def grid(
@@ -120,23 +117,16 @@ class PrinterModel:
         """The model's colour grid with these properties.
 
         Returns:
-            The table, marked `precomputed` if it is one of `inverse_lut_grids`.
+            The table.
         """
-        precomputed = variant == "default" and not rich_black and (profile, improve_gray) in self.inverse_lut_grids
         return ColorTable(
             profile,
             improve_gray,
             variant,
             rich_black,
             data_dir=self.color_data_dir,
-            precomputed=precomputed,
             generated_fallback=self.generated_grids,
         )
-
-    @property
-    def inverse_lut_tables(self) -> tuple[ColorTable, ...]:
-        """The tables `cups/install.sh` precomputes an inverse LUT for."""
-        return tuple(self.grid(profile, improve_gray=gray) for profile, gray in self.inverse_lut_grids)
 
     def image_height(self, page_size: str) -> int:
         """Rows of the page image, as the original computes its band height.

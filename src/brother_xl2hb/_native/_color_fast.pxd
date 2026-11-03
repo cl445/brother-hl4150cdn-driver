@@ -1,10 +1,23 @@
-# Shared with _band_fast: tetrahedral interpolation through one 17x17x17 colour
-# grid, callable without the GIL. Mirrors color_lut._rgb_to_cmyk_interp_arr
-# (and cmyk_interpolate in the original driver).
+# Shared with _band_fast and _fine_fast: tetrahedral interpolation through one
+# 17x17x17 colour grid, callable without the GIL. Mirrors
+# color_lut._rgb_to_cmyk_interp_arr (and cmyk_interpolate in the original
+# driver), in the compact form of color_lut.interp_arrays.
+
+from libc.stdint cimport uint64_t
+
+cdef extern from *:
+    """
+    /* Grid offset, in bytes of C, M, Y, K, of the 8 cube corners in
+       interpolation-weight order: entries 0, 17, 1, 18, 289, 306, 290, 307. */
+    static const int brxl2hb_corner_offsets[8] = {0, 68, 4, 72, 1156, 1224, 1160, 1228};
+    """
+    const int *brxl2hb_corner_offsets
+
 
 cdef inline void interp_pixel(
-    const int *grid,
+    const unsigned char *grid,
     const unsigned char *weights,
+    const uint64_t *recip,
     const int *black,
     unsigned char r,
     unsigned char g,
@@ -13,16 +26,17 @@ cdef inline void interp_pixel(
 ) noexcept nogil:
     """Write K, C, M, Y (0 = full ink, 255 = none) for one RGB pixel.
 
-    `grid` holds 4913 entries of C, M, Y, K ink; `weights` the 17 tables of
-    289 x 9 bytes; `black` the C, M, Y, K ink for pure black.
+    `grid` holds 4913 entries of C, M, Y, K ink as bytes; `weights` 4913
+    entries of 8 bytes: the 4 non-zero corner weights, their total, and the
+    4 corner numbers (0-7) packed 3 bits each into bytes 5 and 6. `recip`
+    holds ceil(2**32 / total) per total, so (n * recip) >> 32 is n // total;
+    `black` the C, M, Y, K ink for pure black.
     """
-    cdef int r_hi, g_hi, b_hi, r_frac, g_frac, b_frac, base, total, half, ch, k
-    cdef int acc[4]
-    # Grid entry offsets of the 8 cube corners, in interpolation-weight order.
-    cdef int corners[8]
+    cdef int r_hi, g_hi, b_hi, r_frac, g_frac, b_frac, base, half, corners, wk, k
+    cdef int acc0 = 0, acc1 = 0, acc2 = 0, acc3 = 0
+    cdef uint64_t m
     cdef const unsigned char *w
-    cdef const int *corner
-    corners[:] = [0, 17, 1, 18, 289, 306, 290, 307]
+    cdef const unsigned char *corner
     if r == 255 and g == 255 and b == 255:
         kcmy[0] = 255
         kcmy[1] = 255
@@ -53,20 +67,21 @@ cdef inline void interp_pixel(
     else:
         b_hi = b >> 4
         b_frac = b & 15
-    w = weights + (b_frac * 289 + g_frac * 17 + r_frac) * 9
-    total = w[0]
-    if total == 0:
-        total = 1
-    base = r_hi * 289 + g_hi * 17 + b_hi
-    for ch in range(4):
-        acc[ch] = 0
-    for k in range(8):
-        corner = grid + (base + corners[k]) * 4
-        for ch in range(4):
-            acc[ch] += w[k + 1] * corner[ch]
-    half = total >> 1
+    w = weights + (b_frac * 289 + g_frac * 17 + r_frac) * 8
+    base = (r_hi * 289 + g_hi * 17 + b_hi) * 4
+    corners = w[5] | (w[6] << 8)
+    for k in range(4):
+        wk = w[k]
+        corner = grid + base + brxl2hb_corner_offsets[(corners >> (3 * k)) & 7]
+        acc0 += wk * corner[0]
+        acc1 += wk * corner[1]
+        acc2 += wk * corner[2]
+        acc3 += wk * corner[3]
+    # A total of 0 divides by 1, as in the numpy path; its half is 0.
+    half = w[4] >> 1
+    m = recip[w[4]]
     # Ink → pixel-brightness; the uint8 casts wrap like the numpy path.
-    kcmy[0] = <unsigned char>(255 - (acc[3] + half) // total)
-    kcmy[1] = <unsigned char>(255 - (acc[0] + half) // total)
-    kcmy[2] = <unsigned char>(255 - (acc[1] + half) // total)
-    kcmy[3] = <unsigned char>(255 - (acc[2] + half) // total)
+    kcmy[0] = <unsigned char>(255 - <int>(((acc3 + half) * m) >> 32))
+    kcmy[1] = <unsigned char>(255 - <int>(((acc0 + half) * m) >> 32))
+    kcmy[2] = <unsigned char>(255 - <int>(((acc1 + half) * m) >> 32))
+    kcmy[3] = <unsigned char>(255 - <int>(((acc2 + half) * m) >> 32))
