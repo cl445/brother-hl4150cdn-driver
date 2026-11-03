@@ -34,17 +34,12 @@ _BAND_ROWS = 128
 
 
 class KernelColour(NamedTuple):
-    """Colour arguments of `render_band`: the inverse LUT, or the grid to interpolate."""
+    """Colour arguments of `render_band`: the grid to interpolate (`color_lut.interp_arrays`)."""
 
-    inverse: npt.NDArray[np.uint8]
     grid: npt.NDArray[np.uint8]
     weights: npt.NDArray[np.uint8]
     recip: npt.NDArray[np.uint64]
     black: npt.NDArray[np.int32]
-
-
-_EMPTY_INT = np.empty(0, dtype=np.int32)
-_EMPTY_U64 = np.empty(0, dtype=np.uint64)
 
 
 def band_kernel_colour(
@@ -54,9 +49,8 @@ def band_kernel_colour(
 
     The kernels cover Normal mode with threshold-matrix dither channels
     (`render_band`) and Fine mode with BRCD nibble tables whose level 0 is
-    all zero (`render_band_fine`); each needs its native module. Both gather through
-    the installed inverse LUT of `table` when there is one and interpolate
-    the grid otherwise. `render_band_fine` takes the same colour arguments.
+    all zero (`render_band_fine`); each needs its native module. Both
+    interpolate the grid of `table` and take the same colour arguments.
 
     Returns:
         The kernel's colour arguments, or None for the per-line path.
@@ -68,10 +62,7 @@ def band_kernel_colour(
             return None
     elif _band_fast is None or any(channel.threshold_matrix is None for channel in channels.values()):
         return None
-    inverse = color_lut.inverse_lut(table)
-    if inverse is not None:
-        return KernelColour(inverse.reshape(-1), _EMPTY_TABLE, _EMPTY_TABLE, _EMPTY_U64, _EMPTY_INT)
-    return KernelColour(_EMPTY_TABLE, *color_lut.interp_arrays(table))
+    return KernelColour(*color_lut.interp_arrays(table))
 
 
 # Environment variables for the thread count, in order: the current name and

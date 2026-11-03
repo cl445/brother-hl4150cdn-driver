@@ -124,12 +124,14 @@ fi
 echo "Installing library files to $LIB_DIR..."
 mkdir -p "$LIB_DIR"
 
-# Replace the previous installation; up to 1.2.0 the modules and data sat
-# flat in $LIB_DIR. The inverse LUTs are recomputed below anyway.
+# Replace the previous installation, with the inverse LUTs that releases up
+# to 1.2.x precomputed (256 MB); up to 1.2.0 the modules and data sat flat in
+# $LIB_DIR.
 rm -rf "$PKG_DIR" "$LIB_DIR/color_data" "$LIB_DIR/lut" "$LIB_DIR/__pycache__"
 rm -f "$LIB_DIR/"*.py "$LIB_DIR/"_*_fast*.so
 
-# Copy the package with the tables extract_blobs.sh put into it
+# Copy the package with the tables extract_blobs.sh put into it, without
+# build files or inverse LUTs a source checkout may still hold
 cp -R "$PKG_SRC" "$PKG_DIR"
 find "$PKG_DIR" \( -name __pycache__ -o -name '*.so' -o -name '*.c' -o -name 'inverse_lut_*.npy' \) -prune -exec rm -rf {} +
 mkdir -p "$PKG_DIR/color_data/$MODEL"
@@ -159,17 +161,7 @@ echo "Creating virtual environment at $VENV_DIR..."
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --quiet "$NUMPY_REQ"
 
-# Precompute the RGB→KCMY inverse LUTs (64 MiB each: Normal and Vivid colour
-# matching, each with and without improve gray), which the filter reads instead
-# of interpolating each pixel. The file names carry a hash of the colour grids
-# they were computed from; LUTs from older grids (e.g. before extract_blobs.sh)
-# are removed here and ignored by the filter.
-echo "Precomputing inverse color LUTs (takes about four minutes on a Pi 3)..."
-if ! (cd "$LIB_DIR" && PYTHONPATH="$LIB_DIR" "$VENV_DIR/bin/python3" -m brother_xl2hb.cli --model "$MODEL" --precompute-lut); then
-    echo "Warning: inverse LUT precompute failed; falling back to per-pixel interpolation."
-fi
-
-# Optional Cython build of the RLE encoders, the colour-LUT gather, the band
+# Optional Cython build of the RLE encoders, the colour interpolation, the band
 # renderer (colour + dither + RLE per band, renders a page on several cores)
 # and its Fine mode counterpart with the Fine codec.
 # Needs a C compiler and the Python headers (Debian: python3-dev); pure-Python

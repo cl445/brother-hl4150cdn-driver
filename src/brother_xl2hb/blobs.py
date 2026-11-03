@@ -11,5 +11,5 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 
 # BRCD dither tables (0600-*/capt-* `_<cache>.bin`), in lut/<model>/.
 LUT_ROOT = _PACKAGE_DIR / "lut"
-# Colour grids, interpolation tables and the precomputed inverse LUTs, in color_data/<model>/.
+# Colour grids and interpolation tables, in color_data/<model>/.
 COLOR_DATA_ROOT = _PACKAGE_DIR / "color_data"

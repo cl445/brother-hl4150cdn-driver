@@ -100,6 +100,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   interpolating is now as fast as the inverse LUT or faster, except on a
   smooth full-page gradient (1.28 s instead of 1.20 s).
 
+### Removed
+- The precomputed inverse LUTs. Every colour is now interpolated in the
+  colour grid, with the same output. `install.sh` no longer spends about
+  four minutes on a Raspberry Pi 3 computing them and removes those of
+  an earlier installation (256 MB); jobs need about 60 MB less memory.
+  The `--precompute-lut` option of the CLI is gone. Without the native
+  modules the numpy interpolation is slower than the LUT was (an A4
+  colour page takes about 10 s instead of 4 s on a desktop).
+
 ### Fixed
 - Grayscale pages handed over as one block (the command-line tool,
   reverse print, long-edge duplex back sides) peaked near 1 GB of
