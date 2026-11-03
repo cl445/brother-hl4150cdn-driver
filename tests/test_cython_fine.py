@@ -243,12 +243,12 @@ def test_fine_kernel_selection(fine_channels, monkeypatch):
 
 def test_fine_kernel_rejects_bad_shapes(fine_channels):
     levels = [np.ascontiguousarray(fine_channels[c].nibble_levels.transpose(1, 0, 2)) for c in "KCMY"]
-    grid, weights, black = color_lut.interp_arrays(HL4150CDN.grid())
+    interp = color_lut.interp_arrays(HL4150CDN.grid())
     rows = np.full((2, 30), 255, np.uint8)
     flags = np.zeros(2, np.uint8)
     lengths = np.empty((2, 4), np.int32)
     empty = np.empty(0, np.uint8)
-    args = (rows, flags, flags, 10, 0, 10, empty, grid, weights, black)
+    args = (rows, flags, flags, 10, 0, 10, empty, *interp)
     _fine_fast.render_band_fine(*args, *levels, lengths)
     assert lengths.tolist() == [[0, 0, 0, 0]] * 2
     with pytest.raises(ValueError, match="one entry per row"):
@@ -257,3 +257,5 @@ def test_fine_kernel_rejects_bad_shapes(fine_channels):
         _fine_fast.render_band_fine(rows, flags, flags, 11, *args[4:], *levels, lengths)
     with pytest.raises(ValueError, match=r"\(h, 256, w\)"):
         _fine_fast.render_band_fine(*args, np.ascontiguousarray(levels[0][:, :255]), *levels[1:], lengths)
+    with pytest.raises(ValueError, match="reciprocals"):
+        _fine_fast.render_band_fine(*args[:-2], interp.recip[:255], args[-1], *levels, lengths)

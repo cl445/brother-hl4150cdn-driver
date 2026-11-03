@@ -9,6 +9,7 @@ temporaries.
 
 from cpython.bytes cimport PyBytes_AS_STRING, PyBytes_FromStringAndSize
 from libc.math cimport trunc
+from libc.stdint cimport uint64_t
 
 
 def gather_kcmy(
@@ -44,8 +45,9 @@ def gather_kcmy(
 def interp_kcmy(
     const unsigned char[::1] rgb,
     Py_ssize_t width,
-    const int[::1] grid,
+    const unsigned char[::1] grid,
     const unsigned char[::1] weights,
+    const uint64_t[::1] recip,
     const int[::1] black,
     unsigned char[::1] k,
     unsigned char[::1] c,
@@ -54,20 +56,22 @@ def interp_kcmy(
 ):
     """Interpolate `width` RGB pixels through a 17x17x17 colour grid.
 
-    `grid`, `weights` and `black` come from `color_lut.interp_arrays`.
+    `grid`, `weights`, `recip` and `black` come from `color_lut.interp_arrays`.
     Writes the four channels into the preallocated `k`, `c`, `m`, `y`.
     """
     cdef Py_ssize_t i
     cdef unsigned char kcmy[4]
     if rgb.shape[0] < width * 3:
         raise ValueError("rgb row shorter than width * 3")
-    if grid.shape[0] != 4913 * 4 or weights.shape[0] != 17 * 289 * 9 or black.shape[0] != 4:
-        raise ValueError("grid, weights or black ink has the wrong size")
+    if grid.shape[0] != 4913 * 4 or weights.shape[0] != 4913 * 8 or recip.shape[0] != 256 or black.shape[0] != 4:
+        raise ValueError("grid, weights, reciprocals or black ink has the wrong size")
     if k.shape[0] < width or c.shape[0] < width or m.shape[0] < width or y.shape[0] < width:
         raise ValueError("output planes shorter than width")
     with nogil:
         for i in range(width):
-            interp_pixel(&grid[0], &weights[0], &black[0], rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2], kcmy)
+            interp_pixel(
+                &grid[0], &weights[0], &recip[0], &black[0], rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2], kcmy
+            )
             k[i] = kcmy[0]
             c[i] = kcmy[1]
             m[i] = kcmy[2]

@@ -687,7 +687,14 @@ cdef inline bint _row_white(const uchar *row, Py_ssize_t nbytes) noexcept nogil:
 
 
 cdef inline void _pixel_kcmy(
-    const uchar *px, bint has_lut, const uchar *lut, const int *grid, const uchar *weights, const int *black, uchar *kcmy
+    const uchar *px,
+    bint has_lut,
+    const uchar *lut,
+    const uchar *grid,
+    const uchar *weights,
+    const uint64_t *recip,
+    const int *black,
+    uchar *kcmy,
 ) noexcept nogil:
     cdef size_t off
     if has_lut:
@@ -697,7 +704,7 @@ cdef inline void _pixel_kcmy(
         kcmy[2] = lut[off + 2]
         kcmy[3] = lut[off + 3]
     else:
-        interp_pixel(grid, weights, black, px[0], px[1], px[2], kcmy)
+        interp_pixel(grid, weights, recip, black, px[0], px[1], px[2], kcmy)
 
 
 def render_band_fine(
@@ -708,8 +715,9 @@ def render_band_fine(
     Py_ssize_t first_line,
     Py_ssize_t sw,
     const unsigned char[::1] lut,
-    const int[::1] grid,
+    const unsigned char[::1] grid,
     const unsigned char[::1] weights,
+    const uint64_t[::1] recip,
     const int[::1] black,
     const unsigned char[:, :, ::1] lv_k,
     const unsigned char[:, :, ::1] lv_c,
@@ -740,8 +748,9 @@ def render_band_fine(
         sw: image width in pixels; pixels past `width` count as white.
         lut: flat (256*256*256*4) KCMY inverse LUT, or empty to interpolate
             `grid` instead.
-        grid, weights, black: colour grid, interpolation weights and black
-            ink from `color_lut.interp_arrays`; used when `lut` is empty.
+        grid, weights, recip, black: colour grid, interpolation weights,
+            reciprocals and black ink from `color_lut.interp_arrays`; used
+            when `lut` is empty.
         lv_k, lv_c, lv_m, lv_y: per-channel nibble tables (h, 256, w),
             `DitherChannel.nibble_levels` with the first two axes swapped:
             the 256 levels of one dither row lie together.
@@ -773,8 +782,9 @@ def render_band_fine(
     cdef uint32_t px, prev_px, value, no_ink
     cdef const uchar *row
     cdef const uchar *prev_row = NULL
-    cdef const int *pgrid = NULL
+    cdef const uchar *pgrid = NULL
     cdef const uchar *pweights = NULL
+    cdef const uint64_t *precip = NULL
     cdef const int *pblack = NULL
     cdef const uchar *plut = NULL
     cdef uchar *planes
@@ -794,8 +804,10 @@ def render_band_fine(
         raise ValueError("rows must be contiguous scanlines")
     if has_lut and lut.shape[0] != _LUT_SIZE:
         raise ValueError("lut must be the flat 256*256*256*4 inverse LUT")
-    if not has_lut and (grid.shape[0] != 4913 * 4 or weights.shape[0] != 17 * 289 * 9 or black.shape[0] != 4):
-        raise ValueError("without an inverse LUT, grid, weights and black ink are required")
+    if not has_lut and (
+        grid.shape[0] != 4913 * 4 or weights.shape[0] != 4913 * 8 or recip.shape[0] != 256 or black.shape[0] != 4
+    ):
+        raise ValueError("without an inverse LUT, grid, weights, reciprocals and black ink are required")
     if (
         lv_k.shape[1] != 256
         or lv_c.shape[1] != 256
@@ -813,6 +825,7 @@ def render_band_fine(
     else:
         pgrid = &grid[0]
         pweights = &weights[0]
+        precip = &recip[0]
         pblack = &black[0]
     lv[0] = &lv_k[0, 0, 0]
     lv[1] = &lv_c[0, 0, 0]
@@ -858,7 +871,7 @@ def render_band_fine(
                             px = (<uint32_t>row[3 * x] << 16) | (<uint32_t>row[3 * x + 1] << 8) | row[3 * x + 2]
                         if px != prev_px:
                             prev_px = px
-                            _pixel_kcmy(row + 3 * x, has_lut, plut, pgrid, pweights, pblack, kcmy)
+                            _pixel_kcmy(row + 3 * x, has_lut, plut, pgrid, pweights, precip, pblack, kcmy)
                             value = load_u32(kcmy)
                         store_u32(kc + 4 * x, value)
                         no_ink &= value
@@ -894,7 +907,7 @@ def render_band_fine(
                     if x < npx:
                         plane[x >> 1] = <uchar>(lrow[(255 - kc[4 * x + pid]) * w + col] << 4)
                 if overrun[i] and width >= 1:
-                    _pixel_kcmy(row + 3 * (width - 1), has_lut, plut, pgrid, pweights, pblack, kcmy)
+                    _pixel_kcmy(row + 3 * (width - 1), has_lut, plut, pgrid, pweights, precip, pblack, kcmy)
                     if kcmy[0] == 255 and kcmy[1] == 255 and kcmy[2] == 255 and kcmy[3] == 255:
                         planes[0] = 0  # K
                         planes[2 * bpl] = 0  # M
