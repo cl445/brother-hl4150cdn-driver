@@ -99,6 +99,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   of random colours takes 5.1 s of CPU time instead of 7.8 s, and
   interpolating is now as fast as the inverse LUT or faster, except on a
   smooth full-page gradient (1.28 s instead of 1.20 s).
+- `PlaneBuffer` appends entries with fewer allocations, and its block
+  checksum adds up the bytes in `_rle_fast.byte_sum` (Python's `sum` without
+  the native modules). A 4-page job on the Raspberry Pi 3B+ takes 4.6 instead
+  of 5.1 s in Normal mode and 5.6 instead of 6.0 s in Fine mode.
 
 ### Removed
 - The precomputed inverse LUTs. Every colour is now interpolated in the

@@ -203,7 +203,7 @@ def _write_planes(
     Raises:
         ValueError: If `lines` ends before `height` lines.
     """
-    plane_bufs = {i: PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)}
+    plane_bufs = [PlaneBuffer(plane_id=i, bpl=bpl, fine=is_fine) for i in range(4)]
 
     def write_plane(pid: int) -> None:
         result = plane_bufs[pid].flush()
