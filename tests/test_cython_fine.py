@@ -1,5 +1,6 @@
 """Native Fine codec, 4bpp dither and Fine band kernel: byte-identity vs. the pure-Python reference."""
 
+import dataclasses
 import io
 import random
 
@@ -231,10 +232,17 @@ def test_fine_kernel_selection(fine_channels, monkeypatch):
     monkeypatch.setattr(bands, "_fine_fast", _fine_fast)
     # Bayer fallback channels (no BRCD tables) have no nibble tables: per-line path.
     assert band_kernel_colour(table, dither._build_bayer_tables(toner_save=False), is_fine=True) is None
+    # The kernel leaves channels without ink empty, which needs level 0 to be all zero.
+    for name in "KCMY":
+        levels = fine_channels[name].nibble_levels.copy()
+        levels[0, -1, -1] = 1
+        inky = dict(fine_channels)
+        inky[name] = dataclasses.replace(fine_channels[name], nibble_levels=levels)
+        assert band_kernel_colour(table, inky, is_fine=True) is None
 
 
 def test_fine_kernel_rejects_bad_shapes(fine_channels):
-    levels = [np.ascontiguousarray(fine_channels[c].nibble_levels) for c in "KCMY"]
+    levels = [np.ascontiguousarray(fine_channels[c].nibble_levels.transpose(1, 0, 2)) for c in "KCMY"]
     grid, weights, black = color_lut.interp_arrays(HL4150CDN.grid())
     rows = np.full((2, 30), 255, np.uint8)
     flags = np.zeros(2, np.uint8)
@@ -247,5 +255,5 @@ def test_fine_kernel_rejects_bad_shapes(fine_channels):
         _fine_fast.render_band_fine(rows, flags[:1], flags, *args[3:], *levels, lengths)
     with pytest.raises(ValueError, match="shorter than width"):
         _fine_fast.render_band_fine(rows, flags, flags, 11, *args[4:], *levels, lengths)
-    with pytest.raises(ValueError, match=r"\(256, h, w\)"):
-        _fine_fast.render_band_fine(*args, levels[0][:255], *levels[1:], lengths)
+    with pytest.raises(ValueError, match=r"\(h, 256, w\)"):
+        _fine_fast.render_band_fine(*args, np.ascontiguousarray(levels[0][:, :255]), *levels[1:], lengths)
