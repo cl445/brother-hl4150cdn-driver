@@ -1,5 +1,6 @@
 """Flipped and skip-blank pages render from the row stream, without a whole-page buffer."""
 
+import functools
 import io
 
 import numpy as np
@@ -9,7 +10,7 @@ from brother_xl2hb import job
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render import bands
-from brother_xl2hb.render.page import _flipped_lines, _line_encoder, init_channels
+from brother_xl2hb.render.page import _colour_setup, _flipped_lines, _line_encoder, init_channels
 from brother_xl2hb.render.rows import BlankTracker, numbered_blocks
 from brother_xl2hb.settings import DuplexMode, MonoColor, PrintSettings, Resolution
 from fixture_utils import assert_matches_fixture
@@ -51,6 +52,17 @@ def test_flipped_lines_match_encoding_the_mirrored_page(name, height, monkeypatc
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "2")
     channels = init_channels(settings, HL4150CDN)
     encode = _line_encoder(settings, HL4150CDN, channels, _W, _W)
+    is_fine = settings.resolution == Resolution.FINE
+    if settings.mono_color == MonoColor.MONO:
+        banded = bands.encode_lines_mono_banded
+        ready = bands.mono_band_kernel_ready(channels, is_fine=is_fine)
+    else:
+        banded = bands.encode_lines_banded
+        table = _colour_setup(settings, HL4150CDN).table
+        ready = bands.band_kernel_colour(table, channels, is_fine=is_fine) is not None
+    if native and ready:
+        assert isinstance(encode, functools.partial)
+        assert encode.func is banded
     rows = _rows(height, seed=height)
 
     mirrored = np.full((_PAPER_H, _W * 3), 255, np.uint8)
