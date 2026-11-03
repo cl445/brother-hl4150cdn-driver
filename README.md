@@ -50,11 +50,8 @@ depending on the options.
   Debian 12 (bookworm) ships 3.11, which is too old.
 - Recommended: a C compiler and the Python headers (Debian:
   `sudo apt install build-essential python3-dev`). `install.sh` then
-  builds the native modules; without them the driver is several times
-  slower, and Fine mode about 30 times.
-- About 260 MB of disk space for precomputed colour tables. `install.sh`
-  computes them, which takes about 20 seconds on a desktop and about
-  four minutes on a Raspberry Pi 3.
+  builds the native modules; without them the driver is 30 to 100
+  times slower.
 - Brother's HL-4150CDN LPR driver package: `scripts/extract_blobs.sh`
   downloads it and extracts the printer's calibration tables, which this
   repository does not include.

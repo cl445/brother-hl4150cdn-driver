@@ -4,8 +4,8 @@
 Colour lookup, ordered dither and sliding-window RLE for a whole band in
 one call without the GIL, so bands can render on several threads. Output
 is byte-identical to the per-line path in lines.encode_lines: colour
-through the inverse LUT (or interpolated in the colour grid), 1bpp
-threshold dither, then encode_plane_12bit / encode_plane_20bit / encode_plane_10bit.
+interpolated in the colour grid, 1bpp threshold dither, then
+encode_plane_12bit / encode_plane_20bit / encode_plane_10bit.
 `render_band_mono` does the same for grayscale pages, matching
 lines.encode_lines_mono.
 """
@@ -22,7 +22,6 @@ from brother_xl2hb._native._rle_fast cimport OutBuf, encode_line, encode_scratch
 # plane_encoders.encode_plane_12bit / encode_plane_20bit / encode_plane_10bit.
 cdef int[4] _BITS = [12, 20, 10, 12]
 
-_LUT_SIZE = 256 * 256 * 256 * 4
 
 
 cdef extern from *:
@@ -137,7 +136,6 @@ def render_band(
     Py_ssize_t width,
     Py_ssize_t first_line,
     Py_ssize_t sw,
-    const unsigned char[::1] lut,
     const unsigned char[::1] grid,
     const unsigned char[::1] weights,
     const uint64_t[::1] recip,
@@ -163,11 +161,8 @@ def render_band(
         width: pixels per input row.
         first_line: page line index of rows[0]; selects the threshold rows.
         sw: image width in pixels; pixels past `width` count as white.
-        lut: flat (256*256*256*4) KCMY inverse LUT, or empty to interpolate
-            `grid` instead.
         grid, weights, recip, black: colour grid, interpolation weights,
-            reciprocals and black ink from `color_lut.interp_arrays`; used
-            when `lut` is empty.
+            reciprocals and black ink from `color_lut.interp_arrays`.
         thr_k, thr_c, thr_m, thr_y: threshold matrices tiled to >= sw columns.
         lengths: (n, 4) output, encoded length per line and plane (K, C, M, Y);
             0 means the plane line has no ink.
@@ -178,7 +173,6 @@ def render_band(
     cdef Py_ssize_t n = rows.shape[0]
     cdef Py_ssize_t npx = width if width < sw else sw
     cdef Py_ssize_t bpl = (sw + 7) // 8
-    cdef bint has_lut = lut.shape[0] != 0
     cdef bint has_skip = skip.shape[0] != 0
     cdef bint has_ink = False
     cdef Py_ssize_t i, j, k, line, pid, written
@@ -205,12 +199,8 @@ def render_band(
         raise ValueError("rows shorter than width * 3")
     if rows.shape[1] > 1 and rows.strides[1] != 1:
         raise ValueError("rows must be contiguous scanlines")
-    if has_lut and lut.shape[0] != _LUT_SIZE:
-        raise ValueError("lut must be the flat 256*256*256*4 inverse LUT")
-    if not has_lut and (
-        grid.shape[0] != 4913 * 4 or weights.shape[0] != 4913 * 8 or recip.shape[0] != 256 or black.shape[0] != 4
-    ):
-        raise ValueError("without an inverse LUT, grid, weights, reciprocals and black ink are required")
+    if grid.shape[0] != 4913 * 4 or weights.shape[0] != 4913 * 8 or recip.shape[0] != 256 or black.shape[0] != 4:
+        raise ValueError("grid, weights, reciprocals or black ink has the wrong size")
     if (
         min(thr_k.shape[0], thr_c.shape[0], thr_m.shape[0], thr_y.shape[0]) == 0
         or min(thr_k.shape[1], thr_c.shape[1], thr_m.shape[1], thr_y.shape[1]) < npx
@@ -268,20 +258,17 @@ def render_band(
                             px = (<uint32_t>row[3 * j] << 16) | (<uint32_t>row[3 * j + 1] << 8) | row[3 * j + 2]
                         if px != prev_px:
                             prev_px = px
-                            if has_lut:
-                                value = load_u32(&lut[(<size_t>px) << 2])
-                            else:
-                                interp_pixel(
-                                    &grid[0],
-                                    &weights[0],
-                                    &recip[0],
-                                    &black[0],
-                                    row[3 * j],
-                                    row[3 * j + 1],
-                                    row[3 * j + 2],
-                                    kcmy4,
-                                )
-                                value = load_u32(kcmy4)
+                            interp_pixel(
+                                &grid[0],
+                                &weights[0],
+                                &recip[0],
+                                &black[0],
+                                row[3 * j],
+                                row[3 * j + 1],
+                                row[3 * j + 2],
+                                kcmy4,
+                            )
+                            value = load_u32(kcmy4)
                         store_u32(kcmy + 4 * j, value)
                         no_ink &= value
                     prev_row = row

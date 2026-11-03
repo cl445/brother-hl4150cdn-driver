@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from brother_xl2hb import _native
-from brother_xl2hb.color import color_lut
 from brother_xl2hb.job import filter_pages
 from brother_xl2hb.models import HL4150CDN
 from brother_xl2hb.render import bands
@@ -27,31 +26,6 @@ if bands._band_fast is None:
     pytest.skip("_band_fast extension not built", allow_module_level=True)
 
 _A4_W, _A4_H = 4760, 6812
-
-
-@pytest.fixture(scope="module")
-def random_lut() -> np.ndarray:
-    """A random inverse LUT: every colour, white included, maps to some ink."""
-    rng = np.random.default_rng(4150)
-    return rng.integers(0, 256, color_lut._INVERSE_LUT_SHAPE, dtype=np.uint8)
-
-
-@pytest.fixture(autouse=True)
-def _use_random_lut(request, monkeypatch, random_lut) -> None:
-    if "real_lut" not in request.fixturenames and "no_inverse_lut" not in request.fixturenames:
-        monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: random_lut)
-
-
-@pytest.fixture
-def no_inverse_lut(monkeypatch) -> None:
-    """No inverse LUT installed: kernel and per-line path interpolate the grid."""
-    monkeypatch.setattr(color_lut, "inverse_lut", lambda table=None: None)
-
-
-@pytest.fixture
-def real_lut(use_color_data_root, installed_inverse_luts):
-    """The real inverse LUTs, as installed by install.sh."""
-    use_color_data_root(installed_inverse_luts)
 
 
 def _page(width: int, height: int, seed: int) -> bytes:
@@ -98,15 +72,6 @@ def test_kernel_matches_per_line_path(name, monkeypatch):
     pages = [(_A4_W, 1700, _page(_A4_W, 1700, seed=1))]
     expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
     assert _render(pages, settings, kernel=True, threads=0, monkeypatch=monkeypatch) == expected
-    assert _render(pages, settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
-
-
-@pytest.mark.parametrize("name", list(_SETTINGS))
-def test_kernel_interpolation_matches_per_line_path(name, no_inverse_lut, monkeypatch):
-    """Without an inverse LUT the kernel interpolates natively; same bytes as the per-line path."""
-    settings = _SETTINGS[name]
-    pages = [(_A4_W, 1700, _page(_A4_W, 1700, seed=5))]
-    expected = _render(pages, settings, kernel=False, threads=0, monkeypatch=monkeypatch)
     assert _render(pages, settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
 
 
@@ -186,15 +151,15 @@ def test_render_threads_from_environment(monkeypatch):
 
 
 @pytest.mark.parametrize(("name", "settings"), _SETTING_VARIANTS)
-def test_kernel_matches_brother_captures(name, settings, real_lut, monkeypatch):
-    """With the real inverse LUT the banded render is byte-exact against brhl4150cdnfilter."""
+def test_kernel_matches_brother_captures(name, settings, monkeypatch):
+    """The banded render is byte-exact against brhl4150cdnfilter."""
     table = HL4150CDN.color_table(settings)
     assert band_kernel_colour(table, init_channels(settings, HL4150CDN), is_fine=False) is not None
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", "3")
     _run_settings_variant(name, settings)
 
 
-def test_kernel_matches_brother_duplex_capture(real_lut, monkeypatch):
+def test_kernel_matches_brother_duplex_capture(monkeypatch):
     expected = read_fixture("duplex4_long_edge.xl2hb")
     settings = PrintSettings(duplex=DuplexMode.NO_TUMBLE)
     assert _render(_duplex_test_pages(), settings, kernel=True, threads=3, monkeypatch=monkeypatch) == expected
