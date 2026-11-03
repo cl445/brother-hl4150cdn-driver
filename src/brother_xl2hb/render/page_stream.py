@@ -264,7 +264,7 @@ def iter_ppm_pages(
     window: tuple[int, int, int, int],
     *,
     block_rows: int = 128,
-    queue_blocks: int = 16,
+    queue_blocks: int = 4,
 ) -> PageStream:
     """Iterate (src_width, src_height, blocks) for each PPM page in `stream`.
 

@@ -160,10 +160,10 @@ def test_banded_lines_run_to_the_end_of_the_page(threads, monkeypatch):
     kernel_colour = band_kernel_colour(colour.table, channels, is_fine=False)
     assert kernel_colour is not None
     sw, _ = HL4150CDN.image_dimensions("A4")
-    expected = list(encode_lines((rows,), _A4_W, sw, colour, channels, is_fine=False))
+    expected = list(encode_lines(((rows, 0),), _A4_W, sw, colour, channels, is_fine=False))
 
     monkeypatch.setenv("BRXL2HB_RENDER_THREADS", str(threads))
-    banded = encode_lines_banded((rows,), _A4_W, sw, colour, channels, kernel_colour, is_fine=False)
+    banded = encode_lines_banded(((rows, 0),), _A4_W, sw, colour, channels, kernel_colour, is_fine=False)
     assert [tuple(map(bytes, line)) for line in banded] == expected
 
 
@@ -244,8 +244,8 @@ def test_mono_banded_lines_match_encode_lines_mono():
     assert mono_band_kernel_ready(channels, is_fine=False)
     sw, _ = HL4150CDN.image_dimensions("A4")
     colour = _colour_setup(settings, HL4150CDN)
-    expected = list(encode_lines_mono((rows,), _A4_W, sw, colour, channels, is_fine=False))
-    banded = encode_lines_mono_banded((rows,), _A4_W, sw, colour, channels)
+    expected = list(encode_lines_mono(((rows, 0),), _A4_W, sw, colour, channels, is_fine=False))
+    banded = encode_lines_mono_banded(((rows, 0),), _A4_W, sw, colour, channels)
     assert [tuple(map(bytes, line)) for line in banded] == expected
 
 

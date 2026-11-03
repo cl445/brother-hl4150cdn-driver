@@ -16,19 +16,27 @@ from brother_xl2hb.models import DEFAULT_MODEL
 from brother_xl2hb.models.base import PageSend, PrinterModel
 from brother_xl2hb.protocol.xl2hb import XL2HBWriter
 from brother_xl2hb.render.page import JobContext, render_page
-from brother_xl2hb.render.rows import Page, PageBuffer, PageData, collect_rows, is_blank_page
+from brother_xl2hb.render.rows import (
+    BUFFER_TYPES,
+    BlankTracker,
+    Page,
+    PageBuffer,
+    PageData,
+    collect_rows,
+    is_blank_page,
+)
 from brother_xl2hb.settings import PrintSettings
 
 logger = logging.getLogger(__name__)
 
 
-def chain_peeked(first: Page, rest: Iterator[Page]) -> Iterator[Page]:
+def chain_peeked[T](first: T, rest: Iterator[T]) -> Iterator[T]:
     """Yield a page taken off a job with `next()`, then the rest of the job.
 
     Unlike `itertools.chain([first], rest)`, which keeps its arguments and
     so the first page for the whole job, this lets go of `first` once it
     has been handed out. That matters for whole-page buffers (~100 MB for
-    A4).
+    A4) and, less, for rendered pages.
 
     Yields:
         `first`, then the pages of `rest`.
@@ -43,7 +51,9 @@ def drop_blank_pages(pages: Iterable[Page]) -> Iterator[tuple[int, int, PageBuff
 
     Brother's filter drops them before sides are assigned, in simplex and
     duplex alike: the next page takes the blank one's place (verified
-    against captures). Each page is collected into one buffer to be tested.
+    against captures). Each page is collected into one buffer to be tested;
+    `filter_pages` with `skip_blank` set tests pages while it renders them
+    instead.
 
     Yields:
         The pages that are not blank, as whole-page buffers.
@@ -75,16 +85,22 @@ def filter_page(
     logger.debug("Processed %d lines, %dx%d input", paper_h, width, height)
 
 
-def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> None:
+def _render_pages(pages: Iterable[Page], job: JobContext, *, skip_blank: bool) -> Iterator[list[bytes]]:
     """Render pages in input order, each as the model's `page_sends` say.
 
     A page sent in more than one way is collected into one buffer first,
     since streamed row blocks can be read only once. Each distinct send is
     rendered once into memory (its compressed XL2HB, typically well under
-    10 MB) and repeated sends write those bytes again, so many copies cost
-    no rendering time. A send reaches `output` only once it is complete,
-    so a failure while reading or rendering a page never leaves a half
-    page in the printer data stream.
+    10 MB) and repeated sends repeat those bytes, so many copies cost no
+    rendering time. Pages are yielded only once complete, so a failure
+    while reading or rendering a page never leaves a half page in the
+    printer data stream.
+
+    With `skip_blank`, pure-white pages are rendered like the others,
+    while they are read, and then dropped; the next page takes their side.
+
+    Yields:
+        The XL2HB data of each page's sends, in order.
     """
     page_buf = io.BytesIO()
     # A counter instead of enumerate(): enumerate keeps the last (index,
@@ -93,19 +109,37 @@ def _render_pages(pages: Iterable[Page], job: JobContext, output: BinaryIO) -> N
     index = 0
     for width, height, pixel_data in pages:
         sends = job.model.page_sends(job.settings, index)
-        data: PageData = collect_rows(pixel_data, width, height) if len(set(sends)) > 1 else pixel_data
+        tracker: BlankTracker | None = None
+        data: PageData
+        if len(set(sends)) > 1 or isinstance(pixel_data, BUFFER_TYPES):
+            rows = collect_rows(pixel_data, width, height)
+            blank = skip_blank and is_blank_page(rows)
+            data = rows
+            del rows
+        elif skip_blank:
+            data = tracker = BlankTracker(pixel_data)
+            blank = False
+        else:
+            data = pixel_data
+            blank = False
         rendered: dict[PageSend, bytes] = {}
-        for send in sends:
-            if send not in rendered:
-                page_buf.seek(0)
-                page_buf.truncate()
-                render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
-                rendered[send] = page_buf.getvalue()
-            output.write(rendered[send])
+        if not blank:
+            for send in sends:
+                if send not in rendered:
+                    page_buf.seek(0)
+                    page_buf.truncate()
+                    render_page(XL2HBWriter(page_buf), (width, height, data), job, send)
+                    rendered[send] = page_buf.getvalue()
+            blank = tracker is not None and tracker.finish()
         # Release the page's raster before the next page is read; with
-        # whole-page buffers (skip blank, flipped pages) two would add up.
-        del pixel_data, data, rendered
-        index += 1  # noqa: SIM113 - see above, enumerate() would hold the previous page
+        # whole-page buffers two would add up.
+        del pixel_data, data, tracker
+        if blank:
+            logger.info("skipping blank page")
+            continue
+        yield [rendered[send] for send in sends]
+        del rendered
+        index += 1
 
 
 def filter_pages(
@@ -142,13 +176,14 @@ def filter_pages(
             opening and closing writes together
     """
     settings = model.restrict(settings)
+    rendered = _render_pages(pages, JobContext.create(settings, model), skip_blank=settings.skip_blank)
     if settings.skip_blank:
-        pages = drop_blank_pages(pages)
-        first = next(pages, None)
+        # Render up to the first page that is not blank before the session opens.
+        first = next(rendered, None)
         if first is None:
             logger.info("all pages blank, nothing to print")
             return
-        pages = chain_peeked(first, pages)
+        rendered = chain_peeked(first, rendered)
         del first
     # XL2HB stream — one session wrapping all pages.
     w = XL2HBWriter(output)
@@ -160,7 +195,11 @@ def filter_pages(
             w.write_begin_session()
             w.write_open_data_source()
             opened = True
-        _render_pages(pages, JobContext.create(settings, model), output)
+        for sends in rendered:
+            # Not writelines(): the CUPS filter's output wrapper has write() only.
+            for data in sends:  # noqa: FURB122
+                output.write(data)
+            del sends
         with uninterrupted():
             closing = True
             _end_session(w, output, model)
