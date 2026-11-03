@@ -78,8 +78,10 @@ pub struct MonoBand<'a> {
     pub thresholds: Thresholds<'a>,
 }
 
+/// Whether every byte is 255; stops at the first 16-byte block that is not.
 fn all_white(bytes: &[u8]) -> bool {
-    bytes.iter().fold(0xFF, |acc, &b| acc & b) == 0xFF
+    let (blocks, rest) = bytes.as_chunks::<16>();
+    blocks.iter().all(|b| u128::from_ne_bytes(*b) == u128::MAX) && rest.iter().all(|&b| b == 255)
 }
 
 /// Dots of up to 8 values: bit 7 - k set where ink (255 - v[k]) exceeds t[k].
@@ -152,12 +154,16 @@ fn rgb(px: &[u8; 3]) -> u32 {
 #[inline(always)]
 fn convert_row(row: &[u8], ink: impl Fn(u32) -> [u8; 4], planes: &mut [Vec<u8>; 4]) -> bool {
     let [k, c, m, y] = planes;
-    let npx = k.len();
-    let pixels = &row.as_chunks::<3>().0[..npx];
+    let pixels = &row.as_chunks::<3>().0[..k.len()];
     let mut prev = u32::MAX;
     let mut value = [255u8; 4];
     let mut no_ink = [0xFFu8; 4];
-    for (j, px) in pixels.iter().enumerate() {
+    let outputs = k
+        .iter_mut()
+        .zip(c.iter_mut())
+        .zip(m.iter_mut())
+        .zip(y.iter_mut());
+    for (px, (((k, c), m), y)) in pixels.iter().zip(outputs) {
         let packed = rgb(px);
         if packed != prev {
             prev = packed;
@@ -166,10 +172,7 @@ fn convert_row(row: &[u8], ink: impl Fn(u32) -> [u8; 4], planes: &mut [Vec<u8>; 
                 no_ink[p] &= value[p];
             }
         }
-        k[j] = value[0];
-        c[j] = value[1];
-        m[j] = value[2];
-        y[j] = value[3];
+        [*k, *c, *m, *y] = value;
     }
     no_ink != [0xFF; 4]
 }
@@ -243,13 +246,39 @@ pub fn render_band(band: &Band<'_>, lengths: &mut [i32]) -> Vec<u8> {
     }
 }
 
-/// Convert the band to grayscale, dither and encode the K plane.
-///
-/// K ink is 255 - luma, luma = (299 R + 587 G + 114 B + 499) // 1000 after
-/// the optional input remap; pure white is not remapped. `lengths` gets
-/// the encoded K length per row, 0 for no ink. Returns the encoded K lines
-/// back to back.
-pub fn render_band_mono(band: &MonoBand<'_>, lengths: &mut [i32]) -> Vec<u8> {
+/// Pass 1 of the grayscale kernel: the luma of each pixel of `pixels` into
+/// `luma`, looked up once per run of equal pixels. `level` maps a packed
+/// RGB value to its luma. Returns whether any luma has ink (is below 255).
+#[inline(always)]
+fn luma_row(pixels: &[u8], level: impl Fn(u32) -> u8, luma: &mut [u8]) -> bool {
+    let mut prev = u32::MAX;
+    let mut value = 255u8;
+    let mut no_ink = 0xFFu8;
+    for (px, out) in pixels.as_chunks::<3>().0.iter().zip(luma.iter_mut()) {
+        let packed = rgb(px);
+        if packed != prev {
+            prev = packed;
+            value = level(packed);
+            no_ink &= value;
+        }
+        *out = value;
+    }
+    no_ink != 0xFF
+}
+
+/// Luma of R, G, B: (299 R + 587 G + 114 B + 499) // 1000.
+#[inline(always)]
+fn luma_of(r: u32, g: u32, b: u32) -> u8 {
+    ((299 * r + 587 * g + 114 * b + 499) / 1000) as u8
+}
+
+/// `render_band_mono` for one luma function.
+#[inline(always)]
+fn render_rows_mono(
+    band: &MonoBand<'_>,
+    level: impl Fn(u32) -> u8 + Copy,
+    lengths: &mut [i32],
+) -> Vec<u8> {
     let npx = band.width.min(band.sw);
     let bpl = band.sw.div_ceil(8);
     let mut luma = vec![0u8; npx];
@@ -265,26 +294,7 @@ pub fn render_band_mono(band: &MonoBand<'_>, lengths: &mut [i32]) -> Vec<u8> {
             continue;
         }
         if prev_row != Some(pixels) {
-            let mut prev = u32::MAX;
-            let mut level = 255u8;
-            has_ink = false;
-            for (j, px) in pixels.as_chunks::<3>().0.iter().enumerate() {
-                let packed = rgb(px);
-                if packed != prev {
-                    prev = packed;
-                    let [mut r, mut g, mut b] = px.map(u32::from);
-                    if let Some(remap) = band.remap
-                        && packed != 0xFF_FFFF
-                    {
-                        r = u32::from(remap[r as usize]);
-                        g = u32::from(remap[256 + g as usize]);
-                        b = u32::from(remap[512 + b as usize]);
-                    }
-                    level = ((299 * r + 587 * g + 114 * b + 499) / 1000) as u8;
-                    has_ink |= level != 255;
-                }
-                luma[j] = level;
-            }
+            has_ink = luma_row(pixels, level, &mut luma);
             prev_row = Some(pixels);
         }
         if !has_ink {
@@ -296,6 +306,38 @@ pub fn render_band_mono(band: &MonoBand<'_>, lengths: &mut [i32]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Convert the band to grayscale, dither and encode the K plane.
+///
+/// K ink is 255 - luma, luma = (299 R + 587 G + 114 B + 499) // 1000 after
+/// the optional input remap; pure white is not remapped. `lengths` gets
+/// the encoded K length per row, 0 for no ink. Returns the encoded K lines
+/// back to back.
+pub fn render_band_mono(band: &MonoBand<'_>, lengths: &mut [i32]) -> Vec<u8> {
+    let split = |px: u32| ((px >> 16) as u8, (px >> 8) as u8, px as u8);
+    match band.remap {
+        None => {
+            let level = |px: u32| {
+                let (r, g, b) = split(px);
+                luma_of(r.into(), g.into(), b.into())
+            };
+            render_rows_mono(band, level, lengths)
+        }
+        Some(remap) => {
+            let level = |px: u32| {
+                if px == 0xFF_FFFF {
+                    return 255;
+                }
+                let (r, g, b) = split(px);
+                let r = remap[usize::from(r)];
+                let g = remap[256 + usize::from(g)];
+                let b = remap[512 + usize::from(b)];
+                luma_of(r.into(), g.into(), b.into())
+            };
+            render_rows_mono(band, level, lengths)
+        }
+    }
 }
 
 #[cfg(feature = "python")]

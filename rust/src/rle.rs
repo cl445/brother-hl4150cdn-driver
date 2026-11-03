@@ -190,13 +190,22 @@ enum State {
 /// `bits` selects the settings of rle.CONFIG_10BIT / CONFIG_12BIT /
 /// CONFIG_20BIT (context size, literal overflow); keep the two in sync.
 fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
+    if bits == 10 {
+        sw_rle_ctx::<5>(words, bits, o, wbuf);
+    } else {
+        sw_rle_ctx::<3>(words, bits, o, wbuf);
+    }
+}
+
+/// `sw_rle` with a context window of `CTX` words, fixed at compile time so
+/// the window shift is a few register moves.
+fn sw_rle_ctx<const CTX: usize>(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
     let n = words.len();
     if n == 0 {
         return;
     }
-    let ctx_size = if bits == 10 { 5 } else { 3 };
     let lit_overflow: isize = if bits == 20 { 0x7FF } else { 0xFFF };
-    let mut ctx = [0u32; 5];
+    let mut ctx = [0u32; CTX];
     wbuf.clear();
     wbuf.resize(n + 2, 0);
     let mut wlen = 0usize;
@@ -205,7 +214,7 @@ fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
 
     let mut cur = words[0];
     let mut wi = 1;
-    ctx[ctx_size - 1] = cur;
+    ctx[CTX - 1] = cur;
     if cur == 0 {
         match_count = 1;
     }
@@ -213,9 +222,11 @@ fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
 
     // Every state first shifts the context window; the reference word is
     // the one that leaves position 1.
-    let shift = |ctx: &mut [u32; 5]| {
+    let shift = |ctx: &mut [u32; CTX]| {
         let reference = ctx[1];
-        ctx.copy_within(1..ctx_size, 0);
+        for k in 0..CTX - 1 {
+            ctx[k] = ctx[k + 1];
+        }
         reference
     };
 
@@ -233,7 +244,7 @@ fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
                 let w = words[wi];
                 wi += 1;
                 match_count = if reference == w { match_count + 1 } else { 0 };
-                ctx[ctx_size - 1] = w;
+                ctx[CTX - 1] = w;
                 if cur == w {
                     run_len = 2;
                     state = State::Run;
@@ -255,7 +266,7 @@ fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
                 let w = words[wi];
                 wi += 1;
                 match_count = if reference == w { match_count + 1 } else { 0 };
-                ctx[ctx_size - 1] = w;
+                ctx[CTX - 1] = w;
                 if cur == w {
                     run_len += 1;
                     continue;
@@ -276,7 +287,7 @@ fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
                 let w = words[wi];
                 wi += 1;
                 match_count = if reference == w { match_count + 1 } else { 0 };
-                ctx[ctx_size - 1] = w;
+                ctx[CTX - 1] = w;
 
                 if match_count > 1 {
                     if match_count - 1 < run_len {
@@ -322,7 +333,7 @@ fn sw_rle(words: &[u32], bits: u32, o: &mut Vec<u8>, wbuf: &mut Vec<u32>) {
                 }
                 let w = words[wi];
                 wi += 1;
-                ctx[ctx_size - 1] = w;
+                ctx[CTX - 1] = w;
                 if reference != w {
                     emit_context_skip(o, match_count);
                     match_count = 0;
